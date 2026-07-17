@@ -1,0 +1,223 @@
+local UI = require("urhox-libs/UI")
+
+local CONFIG = {
+    Title = "无尽深渊挂机录",
+    DesignW = 1080,
+    DesignH = 1920,
+    StepSeconds = 3.0,
+    OfflineMaxSeconds = 12 * 60 * 60,
+}
+
+local C = {
+    primary = {31, 162, 255, 255},
+    primaryHover = {70, 183, 255, 255},
+    primaryPressed = {13, 126, 230, 255},
+    secondary = {214, 53, 255, 255},
+    secondaryHover = {224, 97, 255, 255},
+    secondaryPressed = {181, 35, 232, 255},
+    background = {34, 89, 183, 255},
+    background2 = {22, 49, 122, 255},
+    surface = {33, 69, 138, 244},
+    surfaceDark = {10, 16, 32, 248},
+    surfaceHover = {45, 102, 200, 255},
+    text = {255, 255, 255, 255},
+    textSecondary = {213, 226, 255, 255},
+    textDim = {139, 150, 184, 255},
+    border = {10, 16, 32, 255},
+    focus = {111, 231, 255, 255},
+    gold = {255, 198, 26, 255},
+    orange = {255, 163, 24, 255},
+    hp = {245, 50, 45, 255},
+    mp = {52, 185, 255, 255},
+    xp = {73, 217, 75, 255},
+    success = {67, 213, 44, 255},
+    warning = {255, 198, 26, 255},
+    error = {245, 50, 45, 255},
+}
+
+local HUD_SHADOW = {
+    { x = 6, y = 6, blur = 0, color = {0, 0, 0, 64} },
+}
+
+local BTN_SHADOW = {
+    { x = 6, y = 6, blur = 0, color = {0, 0, 0, 51} },
+}
+
+local BrawlForgeTheme = UI.Theme.ExtendTheme(UI.Theme.defaultTheme, {
+    fonts = {
+        { family = "sans", weights = {
+            normal = "Fonts/NotoSansSC-Black.ttf",
+            bold = "Fonts/NotoSansSC-Black.ttf",
+        }},
+    },
+    colors = {
+        primary = C.primary,
+        primaryHover = C.primaryHover,
+        primaryPressed = C.primaryPressed,
+        secondary = C.secondary,
+        secondaryHover = C.secondaryHover,
+        secondaryPressed = C.secondaryPressed,
+        background = C.background,
+        surface = C.surface,
+        surfaceHover = C.surfaceHover,
+        text = C.text,
+        textSecondary = C.textSecondary,
+        textDisabled = {157, 166, 198, 255},
+        border = C.border,
+        borderFocus = C.focus,
+        disabled = {57, 71, 107, 255},
+        disabledText = {139, 150, 184, 255},
+        success = C.success,
+        successHover = {98, 232, 78, 255},
+        warning = C.warning,
+        warningHover = {255, 215, 85, 255},
+        error = C.error,
+        errorHover = {255, 90, 71, 255},
+        info = C.mp,
+        overlay = {7, 16, 28, 187},
+        hover = {255, 255, 255, 25},
+    },
+    radius = {
+        none = 0,
+        sm = 0,
+        md = 0,
+        lg = 0,
+        xl = 0,
+        full = 0,
+    },
+    spacing = {
+        xs = 4,
+        sm = 8,
+        md = 12,
+        lg = 16,
+        xl = 24,
+        xxl = 32,
+    },
+    typography = {
+        fontFamily = "sans",
+        h1 = { fontSize = 32 },
+        h2 = { fontSize = 28 },
+        h3 = { fontSize = 24 },
+        body = { fontSize = 18 },
+        bodySmall = { fontSize = 16 },
+        caption = { fontSize = 14 },
+    },
+    componentDefaults = {
+        borderRadius = 0,
+        fontWeight = "bold",
+    },
+    components = {
+        Button = {
+            borderWidth = {2, 4, 4, 2},
+            borderRadius = 0,
+            height = 64,
+            fontSize = 20,
+            fontWeight = "bold",
+            padding = {4, 6, 10, 4},
+            boxShadow = BTN_SHADOW,
+        },
+        Card = {
+            borderWidth = 3,
+            borderRadius = 0,
+            borderColor = C.border,
+            boxShadow = HUD_SHADOW,
+        },
+        ProgressBar = {
+            borderRadius = 0,
+            height = 18,
+            borderWidth = 3,
+            borderColor = C.border,
+        },
+        Badge = { borderWidth = 2, borderRadius = 0 },
+        Chip = { borderWidth = 3, borderRadius = 0 },
+        Alert = { borderWidth = 3, borderRadius = 0 },
+        Tabs = {
+            borderWidth = 3,
+            borderRadius = 0,
+            activeBorderColor = C.focus,
+            activeBgColor = C.primary,
+            inactiveTextColor = C.textSecondary,
+            variantTabHeight = { line = 70, pills = 70, enclosed = 76 },
+            variantTabGap = { pills = 8 },
+            variantBorderRadius = { pills = 0, enclosed = 0 },
+        },
+        Modal = {
+            borderWidth = 3,
+            borderRadius = 0,
+            boxShadow = HUD_SHADOW,
+            headerBgColor = {14, 137, 255, 255},
+            contentBgColor = C.surface,
+            headerBorderWidth = 5,
+        },
+        Toast = {
+            borderWidth = 2,
+            borderRadius = 0,
+            boxShadow = HUD_SHADOW,
+        },
+    },
+})
+
+local RARITIES = {
+    common = { name = "普通", short = "白", rank = 1, color = {111, 120, 151, 255}, mult = 1.0, fragment = 1 },
+    blue = { name = "高级", short = "蓝", rank = 2, color = {38, 182, 255, 255}, mult = 1.25, fragment = 2 },
+    purple = { name = "稀有", short = "紫", rank = 3, color = {193, 60, 255, 255}, mult = 1.65, fragment = 5 },
+    epic = { name = "史诗", short = "橙", rank = 4, color = {255, 163, 24, 255}, mult = 2.35, fragment = 18 },
+    myth = { name = "神话", short = "彩", rank = 5, color = {111, 231, 255, 255}, mult = 3.35, fragment = 80 },
+}
+
+local RARITY_ORDER = { "common", "blue", "purple", "epic", "myth" }
+
+local CATEGORIES = {
+    { id = "weapon", name = "武器" },
+    { id = "armor", name = "防具" },
+    { id = "jewelry", name = "首饰" },
+    { id = "special", name = "特殊" },
+    { id = "consumable", name = "消耗品" },
+    { id = "material", name = "材料" },
+}
+
+local SLOTS = {
+    { id = "weapon", name = "武器", category = "weapon", short = "武" },
+    { id = "shoulder", name = "头肩", category = "armor", short = "肩" },
+    { id = "coat", name = "上衣", category = "armor", short = "衣" },
+    { id = "pants", name = "下装", category = "armor", short = "裤" },
+    { id = "belt", name = "腰带", category = "armor", short = "带" },
+    { id = "shoes", name = "鞋", category = "armor", short = "鞋" },
+    { id = "bracelet", name = "手镯", category = "jewelry", short = "镯" },
+    { id = "necklace", name = "项链", category = "jewelry", short = "链" },
+    { id = "ring", name = "戒指", category = "jewelry", short = "戒" },
+    { id = "support", name = "辅助装备", category = "special", short = "辅" },
+    { id = "magicstone", name = "魔法石", category = "special", short = "石" },
+    { id = "earring", name = "耳环", category = "special", short = "耳" },
+}
+
+local SET_ORDER = { "nightmare", "lucky", "voyage", "abyss", "prophecy" }
+local SETS = {
+    nightmare = { name = "绝望的噩梦·地狱之路", short = "噩梦", style = "血量换伤", mythSlot = "earring", mythName = "终末的宿命", color = C.error },
+    lucky = { name = "幸运三角·命运的骰子", short = "幸运", style = "摸奖爆发", mythSlot = "bracelet", mythName = "幸运的第七只手", color = C.gold },
+    voyage = { name = "永恒之旅·军神的隐秘", short = "军神", style = "速度压制", mythSlot = "support", mythName = "军神的远古地图", color = C.mp },
+    abyss = { name = "深渊窥视者·黑暗祭祀", short = "深渊", style = "吸血永动", mythSlot = "coat", mythName = "吞噬深渊的祭袍", color = C.secondary },
+    prophecy = { name = "古代祭祀·神圣预言", short = "预言", style = "越战越强", mythSlot = "ring", mythName = "千魂祭的预言戒指", color = C.success },
+}
+
+local EVENT_INFO = {
+    monster = { name = "普通怪物", short = "怪", color = C.primary },
+    elite = { name = "精英怪物", short = "精", color = C.secondary },
+    chest = { name = "宝箱", short = "箱", color = C.gold },
+    merchant = { name = "商人", short = "商", color = C.success },
+    random = { name = "随机事件", short = "事", color = C.mp },
+    boss = { name = "首领", short = "王", color = C.error },
+}
+
+return {
+    CONFIG = CONFIG,
+    Colors = C,
+    Theme = BrawlForgeTheme,
+    Rarities = RARITIES,
+    RarityOrder = RARITY_ORDER,
+    Categories = CATEGORIES,
+    Slots = SLOTS,
+    SetOrder = SET_ORDER,
+    Sets = SETS,
+    EventInfo = EVENT_INFO,
+}

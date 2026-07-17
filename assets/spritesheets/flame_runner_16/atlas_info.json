@@ -1,0 +1,121 @@
+{
+  "run": {
+    "file": "flame_runner_run_sheet.png",
+    "frame_width": 256,
+    "frame_height": 256,
+    "columns": 8,
+    "rows": 2,
+    "total_frames": 16,
+    "sheet_width": 2048,
+    "sheet_height": 512,
+    "fps": 3.2,
+    "crop_warning_frames": [
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "frame_bboxes": [
+      {
+        "left": 39,
+        "top": 49,
+        "right": 199,
+        "bottom": 224
+      },
+      {
+        "left": 30,
+        "top": 36,
+        "right": 210,
+        "bottom": 237
+      },
+      {
+        "left": 21,
+        "top": 29,
+        "right": 219,
+        "bottom": 230
+      },
+      {
+        "left": 21,
+        "top": 29,
+        "right": 218,
+        "bottom": 237
+      },
+      {
+        "left": 21,
+        "top": 32,
+        "right": 212,
+        "bottom": 251
+      },
+      {
+        "left": 21,
+        "top": 33,
+        "right": 206,
+        "bottom": 250
+      },
+      {
+        "left": 21,
+        "top": 36,
+        "right": 192,
+        "bottom": 251
+      },
+      {
+        "left": 22,
+        "top": 36,
+        "right": 192,
+        "bottom": 250
+      },
+      {
+        "left": 24,
+        "top": 36,
+        "right": 193,
+        "bottom": 251
+      },
+      {
+        "left": 24,
+        "top": 36,
+        "right": 193,
+        "bottom": 251
+      },
+      {
+        "left": 27,
+        "top": 33,
+        "right": 206,
+        "bottom": 250
+      },
+      {
+        "left": 28,
+        "top": 33,
+        "right": 206,
+        "bottom": 250
+      },
+      {
+        "left": 25,
+        "top": 30,
+        "right": 215,
+        "bottom": 246
+      },
+      {
+        "left": 26,
+        "top": 30,
+        "right": 216,
+        "bottom": 246
+      },
+      {
+        "left": 21,
+        "top": 28,
+        "right": 219,
+        "bottom": 235
+      },
+      {
+        "left": 21,
+        "top": 28,
+        "right": 218,
+        "bottom": 235
+      }
+    ]
+  }
+}

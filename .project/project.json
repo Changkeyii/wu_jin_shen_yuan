@@ -1,0 +1,30 @@
+{
+  "$schema": "../schemas/project.schema.json",
+  "project_id": "p_4mzc",
+  "author": {
+    "id": "1379670410"
+  },
+  "entry": "main.lua",
+  "entry@client": "main.lua",
+  "entry@server": "server/ServerMain.lua",
+  "version": "1.0.1",
+  "taptap_publish": {
+    "title": "<game title, required>",
+    "description": "<game description>",
+    "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
+    "screen_orientation": "portrait",
+    "collection_type": "sce",
+    "trial_note": "<developer's note>",
+    "transparent": false,
+    "app_platforms": "1,2",
+    "developer_id": 402032
+  },
+  "assets": {
+    "icon": "",
+    "screenshots": [],
+    "promotional_image": ""
+  },
+  "metadata": {
+    "updated_at": "2026-07-13T09:29:10.886Z"
+  }
+}
