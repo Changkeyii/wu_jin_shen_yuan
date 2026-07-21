@@ -94,6 +94,21 @@ function GameCommands.Register(router, services)
         },
     }
     router:Register({
+        name = "Game.Unequip",
+        schema = {
+            type = "object",
+            required = { "slot" },
+            allowUnknown = false,
+            fields = { slot = slotSchema },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "unequip equipment", function(state, payload, now)
+            return GameEngine.Unequip(state, payload.slot, now)
+        end),
+    })
+
+    router:Register({
         name = "Game.Strengthen",
         schema = {
             type = "object",

@@ -1,5 +1,7 @@
 local ServerClient = require("client.ServerClient")
 
+local SECTION_BACKGROUND = "image/ui/generated/panel_940x320.png"
+
 local AdminPanel = {}
 
 -- Embedded page boundary contract (1080x1920 design space):
@@ -112,9 +114,9 @@ local function Section(UI, title, children)
         width = "100%",
         padding = 16,
         gap = 10,
-        backgroundColor = {12, 36, 90, 248},
-        borderWidth = 2,
-        borderColor = {10, 16, 32, 255},
+        backgroundImage = SECTION_BACKGROUND,
+        backgroundFit = "sliced",
+        backgroundSlice = { 8, 8, 8, 8 },
         children = content,
     }
 end

@@ -465,6 +465,7 @@ function GameStateSchema.BuildSnapshot(state, options)
         serverTime = currentTime(options.serverTime),
         status = options.status or "ready",
         isAdmin = options.isAdmin == true,
+        playerNickname = options.playerNickname,
     }
     for _, fieldName in ipairs(SNAPSHOT_FIELDS) do
         if state[fieldName] ~= nil then
@@ -530,6 +531,9 @@ function GameStateSchema.ValidateSnapshot(snapshot)
     end
     if type(snapshot.inventory) ~= "table" or #snapshot.inventory > GameStateSchema.INVENTORY_CAP then
         return false, stateError("Invalid snapshot inventory", "$snapshot.inventory")
+    end
+    if type(snapshot.playerNickname) ~= "string" or snapshot.playerNickname == "" or #snapshot.playerNickname > 128 then
+        return false, stateError("Invalid snapshot player nickname", "$snapshot.playerNickname")
     end
     return true, nil
 end

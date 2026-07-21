@@ -269,6 +269,7 @@ end
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
 function ServerClient.AutoRun(enabled, callback) return ServerClient.Send("Game.SetAutoRun", { enabled = enabled }, callback) end
 function ServerClient.Equip(itemId, callback) return ServerClient.Send("Game.Equip", { itemId = itemId }, callback) end
+function ServerClient.Unequip(slot, callback) return ServerClient.Send("Game.Unequip", { slot = slot }, callback) end
 function ServerClient.AutoEquip(callback) return ServerClient.Send("Game.AutoEquip", {}, callback) end
 function ServerClient.Decompose(maxRank, callback) return ServerClient.Send("Game.Decompose", { maxRank = maxRank }, callback) end
 function ServerClient.Strengthen(slot, callback) return ServerClient.Send("Game.Strengthen", { slot = slot }, callback) end

@@ -95,6 +95,7 @@ local function SendSnapshot(userId)
         isAdmin = adminPolicy_:IsAdmin(userId),
         stats = state.stats,
         itemPower = GameEngine.GetItemPower,
+        playerNickname = entry.nickname,
     })
     snapshot.inventoryCapacity = ServerConfig.INVENTORY_CAP
     snapshot.logs = snapshot.logs or {
@@ -148,8 +149,42 @@ local function SendAdminResult(userId, result)
     })
 end
 
-local function FinalizeReady(entry)
+local FinalizeReady
+
+local function ResolvePlayerNickname(entry)
+    entry.metadata = entry.metadata or {}
+    entry.metadata.nicknameResolved = false
+    GetUserNickname {
+        userIds = { entry.uid },
+        onSuccess = function(nicknames)
+            if not registry_:IsCurrent(entry) then return end
+            local result = nicknames and nicknames[1]
+            local nickname = result and result.nickname
+            if type(nickname) ~= "string" or nickname == "" then
+                SendStatus(entry.connection, "error", ErrorCodes.NOT_READY, "Tap nickname is empty")
+                entry.connection:Disconnect(100)
+                return
+            end
+            entry.nickname = nickname
+            entry.metadata.nicknameResolved = true
+            print("[Server] Tap nickname resolved uid=" .. tostring(entry.uid) .. " name=" .. nickname)
+            if entry.ready then FinalizeReady(entry) end
+        end,
+        onError = function(errorCode)
+            if not registry_:IsCurrent(entry) then return end
+            print("[Server] Tap nickname query failed uid=" .. tostring(entry.uid) .. " code=" .. tostring(errorCode))
+            SendStatus(entry.connection, "error", ErrorCodes.NOT_READY, "Tap nickname query failed")
+            entry.connection:Disconnect(100)
+        end,
+    }
+end
+
+FinalizeReady = function(entry)
     if not entry or not registry_:IsCurrent(entry) then return end
+    if not entry.metadata or entry.metadata.nicknameResolved ~= true then
+        SendStatus(entry.connection, "syncing", ErrorCodes.NOT_READY, "loading Tap nickname")
+        return
+    end
     local session = profileService_:GetSession(entry.uid)
     if not session or session.generation ~= entry.generation then
         SendStatus(entry.connection, "syncing", ErrorCodes.NOT_READY, "profile is loading")
@@ -203,6 +238,7 @@ local function HandleClientIdentity(eventType, eventData)
         return
     end
     print("[Server] ClientIdentity uid=" .. tostring(userId) .. " generation=" .. tostring(entry.generation))
+    ResolvePlayerNickname(entry)
 
     local existingSession = profileService_:GetSession(userId)
     if existingSession then

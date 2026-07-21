@@ -61,6 +61,8 @@ local function EventText(value)
         return string.format("领取离线收益：金币%d、经验%d、碎片%d。", value.gold or 0, value.exp or 0, value.fragments or 0)
     elseif kind == "equipment_equipped" then
         return "装备已穿戴至" .. tostring(value.slot or "目标槽位") .. "。"
+    elseif kind == "equipment_unequipped" then
+        return "已卸下" .. tostring(value.slot or "目标槽位") .. "装备。"
     elseif kind == "equipment_decomposed" then
         return string.format("分解%d件装备，获得碎片%d。", value.count or 0, value.fragments or 0)
     elseif kind == "equipment_strengthened" then
@@ -123,6 +125,7 @@ local function EmptyView()
         logs = { "正在连接权威服务器..." },
         currentEvent = "monster",
         recentDamage = "等待服务端同步",
+        playerNickname = nil,
         page = page_,
         isAdmin = false,
         readOnly = true,

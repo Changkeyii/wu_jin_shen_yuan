@@ -596,6 +596,24 @@ end
 
 GameEngine.EquipItem = GameEngine.Equip
 
+function GameEngine.Unequip(inputState, slotId, now)
+    if not Catalog.SLOT_BY_ID[slotId] then
+        return failure(inputState, now, "INVALID_SLOT", "unknown equipment slot")
+    end
+    local working = stateCopy(inputState, now)
+    local item = findItem(working, working.equipped[slotId])
+    if not item then
+        return noCommit(inputState, now, "already_unequipped")
+    end
+    working.equipped[slotId] = nil
+    refreshDerived(working)
+    return finalize(inputState, working, now, "equipment_changed", {
+        event("equipment_unequipped", { itemId = item.id, slot = slotId }),
+    }, false, true)
+end
+
+GameEngine.UnequipItem = GameEngine.Unequip
+
 function GameEngine.AutoEquip(inputState, now)
     local working = stateCopy(inputState, now)
     local changed = 0

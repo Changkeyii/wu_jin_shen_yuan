@@ -2,6 +2,8 @@ local UI = require("urhox-libs/UI")
 
 local CONFIG = {
     Title = "无尽深渊挂机录",
+    designWidth = 1080,
+    designHeight = 1920,
     DesignW = 1080,
     DesignH = 1920,
     StepSeconds = 3.0,

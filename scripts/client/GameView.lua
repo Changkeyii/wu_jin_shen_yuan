@@ -24,6 +24,8 @@ local safeAreaInstalled_ = false
 local selectedInventoryId_ = nil
 local selectedSlot_ = "weapon"
 local selectedCategory_ = "weapon"
+local equipmentScrollY_ = 0
+local equipmentPageScrollY_ = 0
 local topRefs_ = {}
 local navRefs_ = {}
 ---@type table<string, any>
@@ -31,21 +33,41 @@ local playRefs_ = {}
 local loadingDots_ = {}
 local loadingPercentLabel_ = nil
 local loadingMessageLabel_ = nil
-local loadingProgressBar_ = nil
+local loadingProgressFill_ = nil
 local loadingActive_ = false
 local loadingOverlay_ = nil
 local playAssetsReady_ = false
 local playAssetLoading_ = false
 local textureCache_ = {}
 local pendingAutoRun_ = nil
+local requestedAutoRun_ = nil
+local sessionAutoStartAttempted_ = false
 local dwpObserverId_ = nil
 local loadingHideDelay_ = nil
+local initialSnapshotReceived_ = false
+local initialDwpFinished_ = false
 local loadingProgress_ = 0
 local loadingMessage_ = "正在加载像素字体"
 local loadingTimer_ = 0
 local SetLoading = nil
 local ShowLoadingOverlay = nil
 local EnsurePlayAssetsReady = nil
+local LAYOUT_CHECK_INTERVAL = 0.25
+local layoutState_ = {
+    timer = 0,
+    metrics = {
+        physicalWidth = 0,
+        physicalHeight = 0,
+        safeLeft = 0,
+        safeTop = 0,
+        safeRight = 0,
+        safeBottom = 0,
+        safeWidth = 1,
+        safeHeight = 1,
+        scale = 1,
+        key = "",
+    },
+}
 ---@type number
 local animationTime_ = 0
 ---@type number
@@ -91,10 +113,10 @@ local function BuildFrames(path, count)
 end
 
 local ASSETS = {
-    bg = "image/brawlforge_play_battle_bg_20260716014006.png",
-    bgMirror = "image/brawlforge_play_battle_bg_20260716014006_mirror.png",
+    bg = "image/brawlforge_side_scroller_route_bg_clean_20260718113310.png",
+    bgMirror = "image/brawlforge_side_scroller_route_bg_clean_20260718113310.png",
     player = {
-        icon = "image/brawlforge_job_spear_from_sprites_transparent_20260716102831.png",
+        icon = "image/brawlforge_punk_hero_fullbody_v2_20260720090901.png",
         sprite = "image/endless_corridor/runner/frames/player_run/01.png",
         attack = "image/endless_corridor/runner/frames/player_attack/01.png",
         idle = { "image/endless_corridor/runner/frames/player_run/01.png" },
@@ -107,7 +129,7 @@ local ASSETS = {
     },
     ui = {
         bg = "image/ui/brawlforge_bg_abyss_corridor.png",
-        topFrame = "image/ui/brawlforge_v7_top_refstyle_clean.png",
+        topFrame = "image/ui/brawlforge_v4_top_full_bar_clean.png",
         heroPanel = "image/ui/brawlforge_home_hero_panel.png",
         statCard = "image/ui/brawlforge_stat_card_frame.png",
         button = "image/ui/brawlforge_v3_action_button.png",
@@ -119,12 +141,75 @@ local ASSETS = {
         statSpeed = "image/ui/brawlforge_stat_speed.png",
         statHp = "image/ui/brawlforge_stat_hp.png",
         statPower = "image/ui/brawlforge_stat_power.png",
+        inventoryTitle = "image/ui/inventory/title_panel.png",
+        inventoryDetail = "image/ui/inventory/detail_panel_tall.png",
+        inventorySlotEmpty = "image/ui/inventory/slot_empty.png",
+        inventorySlotCommon = "image/ui/inventory/slot_common.png",
+        inventorySlotRare = "image/ui/inventory/slot_rare.png",
+        inventorySlotEpic = "image/ui/inventory/slot_epic.png",
+        inventorySlotLegend = "image/ui/inventory/slot_legend.png",
+        inventorySlotMyth = "image/ui/inventory/slot_myth.png",
+        inventorySlotSelected = "image/ui/inventory/slot_selected.png",
+        inventoryTabOn = "image/ui/inventory/tab_on.png",
+        inventoryTabOff = "image/ui/inventory/tab_off.png",
+        inventoryActionBlue = "image/ui/inventory/action_blue.png",
+        inventoryActionRed = "image/ui/inventory/action_red.png",
+        inventoryActionGold = "image/ui/inventory/action_gold.png",
+        inventoryItemCard = "image/ui/inventory/item_card.png",
+        inventoryEmptyState = "image/inventory_empty_state_20260720075957.png",
+        inventoryItemCardSelected = "image/ui/inventory/item_card_selected.png",
+        playHpFrame = "image/brawlforge_play_hp_frame_cropped.png",
+        panelLarge = "image/ui/generated/panel_940x320.png",
+        panelCompact = "image/ui/generated/panel_940x180.png",
+        infoBarBlue = "image/ui/generated/info_bar_blue_520x76.png",
+        infoBarGold = "image/ui/generated/info_bar_gold_520x76.png",
+        lootBarGold = "image/ui/generated/loot_bar_gold_520x60.png",
+        detailRow = "image/ui/generated/detail_row_520x38.png",
+        statusBar = "image/ui/generated/status_bar_448x60.png",
+        floorBadge = "image/ui/generated/floor_badge_150x60.png",
+        equipSlot = "image/ui/generated/equip_slot_compact.png",
+        equipSlotSelected = "image/ui/generated/equip_slot_compact_selected.png",
+        equipmentSlotIcons = {
+            weapon = "image/ui/equipment_slots/weapon.png",
+            shoulder = "image/ui/equipment_slots/shoulder.png",
+            coat = "image/ui/equipment_slots/coat.png",
+            pants = "image/ui/equipment_slots/pants.png",
+            belt = "image/ui/equipment_slots/belt.png",
+            shoes = "image/ui/equipment_slots/shoes.png",
+            bracelet = "image/ui/equipment_slots/bracelet.png",
+            necklace = "image/ui/equipment_slots/necklace.png",
+            ring = "image/ui/equipment_slots/ring.png",
+            support = "image/ui/equipment_slots/support.png",
+            magicstone = "image/ui/equipment_slots/magicstone.png",
+            earring = "image/ui/equipment_slots/earring.png",
+        },
+        editorTabOn = "image/ui/generated/tab_on_170x62.png",
+        editorTabOff = "image/ui/generated/tab_off_170x62.png",
+        editorToggleOn = "image/ui/generated/toggle_on_170x58.png",
+        editorToggleOff = "image/ui/generated/toggle_off_170x58.png",
+        buttonBlue = "image/ui/generated/button_blue_150x46.png",
+        buttonBlueWide = "image/ui/generated/button_blue_190x50.png",
+        buttonGreen = "image/ui/generated/button_green_150x50.png",
+        buttonPurple = "image/ui/generated/button_purple_150x50.png",
+        buttonRed = "image/ui/generated/button_red_150x50.png",
+        selectionFrame = "image/ui/generated/selection_frame_180x180.png",
+        referenceFrame = "image/ui/generated/reference_frame_420x210.png",
+        progressTrackLoad = "image/ui/generated/progress_track_720x30.png",
+        progressFillLoad = "image/ui/generated/progress_fill_blue_720x30.png",
+        progressTrackHp = "image/ui/generated/progress_track_310x24.png",
+        progressFillHp = "image/ui/generated/progress_fill_red_310x24.png",
+        progressTrackSet = "image/ui/generated/progress_track_560x22.png",
+        progressFillSet = "image/ui/generated/progress_fill_blue_560x22.png",
+        characterShadow = "image/ui/generated/character_shadow_118x14.png",
+        pickupSpark = "image/ui/generated/pickup_spark_82x82.png",
+        loadingDot = "image/ui/generated/loading_dot_24x24.png",
+        screenOverlay = "image/ui/generated/screen_overlay_1080x1920.png",
     },
     enemies = {
-        slime = "image/brawlforge_enemy_slime_20260716014018.png",
-        goblin = "image/brawlforge_enemy_goblin_20260716014019.png",
-        skeleton = "image/brawlforge_enemy_skeleton_20260716014006.png",
-        boss = "image/brawlforge_enemy_boss_20260716014007.png",
+        slime = "image/punk_mech_enemy_grunt_alt_20260718113945.png",
+        goblin = "image/punk_mech_enemy_grunt_alt_20260718113945.png",
+        skeleton = "image/punk_mech_enemy_elite_alt_20260718113641.png",
+        boss = "image/punk_mech_enemy_boss_alt_20260718113640.png",
     },
     items = {
         sword = "image/pixel_item_sword_20260713175812.png",
@@ -148,13 +233,16 @@ local ATTACK_DURATION = 3.0
 local ATTACK_HIT_TIMINGS = {0.18, 0.38, 0.58, 0.78, 0.93}
 local ATTACK_W = RUN_W
 local ATTACK_H = RUN_H
-local ENEMY_SIZE = 150
+local ENEMY_SIZE = 190
 local LOOT_SIZE = 96
-local PLAYER_SCREEN_X = 260
-local BG_TILE_W = 980
-local BG_TILE_TOP = 150
-local ROAD_Y = 790
-local PLATFORM_PLAYER_Y = ROAD_Y - PLAYER_SIZE + 20
+local PLAYER_SCREEN_X = 180
+local BG_TILE_W = 1080
+local BG_TILE_TOP = 0
+local BG_TILE_H = 1580
+local ROAD_Y = 1220
+local PLAYER_FOOT_OFFSET = 21
+local LOOT_FOOT_OFFSET = 8
+local PLATFORM_PLAYER_Y = ROAD_Y - RUN_H + PLAYER_FOOT_OFFSET
 local EVENT_SPACING = 420
 local EVENT_TRIGGER_DISTANCE = 120
 local EVENT_VIEW_COUNT = 8
@@ -191,6 +279,125 @@ local function Clamp(v, lo, hi)
     return v
 end
 
+local function QuantizeLayoutValue(value, step)
+    return math.floor((value or 0) / (step or 1) + 0.5) * (step or 1)
+end
+
+local function ReadLayoutMetrics()
+    local physicalWidth = graphics:GetWidth()
+    local physicalHeight = graphics:GetHeight()
+    local safeLeft = 0
+    local safeTop = 0
+    local safeRight = 0
+    local safeBottom = 0
+    local safeRect = GetSafeAreaInsets(false)
+    if safeRect then
+        safeLeft = math.max(0, safeRect.min.x or 0)
+        safeTop = math.max(0, safeRect.min.y or 0)
+        safeRight = math.max(0, safeRect.max.x or 0)
+        safeBottom = math.max(0, safeRect.max.y or 0)
+    end
+
+    local nativeSdk = rawget(_G, "sdk")
+    if nativeSdk and nativeSdk.GetNativeExitMenuRect then
+        local menuRect = nativeSdk:GetNativeExitMenuRect()
+        if menuRect then
+            local menuLeft = (menuRect.left or 0) * physicalWidth
+            local menuTop = (menuRect.top or 0) * physicalHeight
+            local menuRight = (menuRect.right or 0) * physicalWidth
+            local menuBottom = (menuRect.bottom or 0) * physicalHeight
+            if menuRect.left <= 0.25 then
+                safeLeft = math.max(safeLeft, menuRight)
+            else
+                safeRight = math.max(safeRight, physicalWidth - menuLeft)
+            end
+            if menuRect.top <= 0.25 then
+                safeTop = math.max(safeTop, menuBottom)
+            else
+                safeBottom = math.max(safeBottom, physicalHeight - menuTop)
+            end
+        end
+    end
+
+    safeLeft = Clamp(safeLeft, 0, physicalWidth)
+    safeTop = Clamp(safeTop, 0, physicalHeight)
+    safeRight = Clamp(safeRight, 0, physicalWidth - safeLeft)
+    safeBottom = Clamp(safeBottom, 0, physicalHeight - safeTop)
+    local safeWidth = math.max(1, physicalWidth - safeLeft - safeRight)
+    local safeHeight = math.max(1, physicalHeight - safeTop - safeBottom)
+    local scale = math.min(safeWidth / CONFIG.designWidth, safeHeight / CONFIG.designHeight)
+    scale = math.max(0.1, scale)
+
+    local key = table.concat({
+        math.floor(physicalWidth + 0.5),
+        math.floor(physicalHeight + 0.5),
+        math.floor(scale * 1000 + 0.5),
+        math.floor(safeLeft + 0.5),
+        math.floor(safeTop + 0.5),
+        math.floor(safeRight + 0.5),
+        math.floor(safeBottom + 0.5),
+    }, ":")
+    local changed = key ~= layoutState_.metrics.key
+    layoutState_.metrics = {
+        physicalWidth = physicalWidth,
+        physicalHeight = physicalHeight,
+        safeLeft = safeLeft,
+        safeTop = safeTop,
+        safeRight = safeRight,
+        safeBottom = safeBottom,
+        safeWidth = safeWidth,
+        safeHeight = safeHeight,
+        scale = scale,
+        key = key,
+    }
+    return changed
+end
+
+local function CheckLayoutMetrics(dt)
+    local physicalWidth = graphics:GetWidth()
+    local physicalHeight = graphics:GetHeight()
+    layoutState_.timer = layoutState_.timer + (dt or 0)
+    local metrics = layoutState_.metrics
+    local sizeChanged = physicalWidth ~= metrics.physicalWidth or physicalHeight ~= metrics.physicalHeight
+    if not sizeChanged and layoutState_.timer < LAYOUT_CHECK_INTERVAL then return end
+    layoutState_.timer = 0
+    if ReadLayoutMetrics() and uiRoot_ then
+        UI.SetScale(layoutState_.metrics.scale)
+        needsFullRebuild_ = true
+    end
+end
+
+local function SafeAreaPadding()
+    local scale = math.max(0.1, layoutState_.metrics.scale)
+    return {
+        left = layoutState_.metrics.safeLeft / scale,
+        top = layoutState_.metrics.safeTop / scale,
+        right = layoutState_.metrics.safeRight / scale,
+        bottom = layoutState_.metrics.safeBottom / scale,
+    }
+end
+
+local function ShortenText(text, maxChars)
+    text = tostring(text or "")
+    maxChars = maxChars or 8
+    local count = 0
+    local pos = 1
+    while pos <= #text do
+        local b = string.byte(text, pos)
+        local step = 1
+        if b >= 240 then step = 4
+        elseif b >= 224 then step = 3
+        elseif b >= 192 then step = 2 end
+        if count + 1 > maxChars then break end
+        count = count + 1
+        pos = pos + step
+    end
+    if pos <= #text then
+        return string.sub(text, 1, pos - 1) .. "…"
+    end
+    return text
+end
+
 local function FontSize(size)
     return math.max(MIN_FONT_SIZE, size or MIN_FONT_SIZE)
 end
@@ -199,6 +406,16 @@ local function Txt(text, size, color, props)
     return UI.Label(CopyProps({
         text = text,
         fontSize = FontSize(size),
+        fontWeight = "bold",
+        fontColor = color or C.text,
+        whiteSpace = "nowrap",
+    }, props))
+end
+
+local function CompactTxt(text, size, color, props)
+    return UI.Label(CopyProps({
+        text = text,
+        fontSize = size or 16,
         fontWeight = "bold",
         fontColor = color or C.text,
         whiteSpace = "nowrap",
@@ -229,62 +446,81 @@ local function FormatPercent(v)
     return string.format("%.1f%%", (v or 0) * 100)
 end
 
+local function ImageProgress(width, height, value, maxValue, trackImage, fillImage)
+    local ratio = Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+    local fillClip = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        width = math.floor(width * ratio),
+        height = height,
+        overflow = "hidden",
+        pointerEvents = "none",
+        children = {
+            UI.Panel {
+                position = "absolute",
+                left = 0,
+                top = 0,
+                width = width,
+                height = height,
+                backgroundImage = fillImage,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            }
+        }
+    }
+    local root = UI.Panel {
+        width = width,
+        height = height,
+        position = "relative",
+        flexShrink = 0,
+        backgroundImage = trackImage,
+        backgroundFit = "contain",
+        children = { fillClip },
+    }
+    return root, fillClip
+end
+
+local function SetImageProgress(fillClip, width, value, maxValue)
+    if not fillClip then return end
+    local ratio = Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+    fillClip:SetStyle({ width = math.floor(width * ratio) })
+end
+
+local function ImageButton(text, width, height, image, onClick, disabled)
+    return UI.Panel {
+        width = width,
+        height = height,
+        clickable = not disabled,
+        opacity = disabled and 0.45 or 1.0,
+        alignItems = "center",
+        justifyContent = "center",
+        backgroundImage = image,
+        backgroundFit = "sliced",
+        backgroundSlice = { 8, 8, 8, 8 },
+        onClick = function()
+            if not disabled and onClick then onClick() end
+        end,
+        children = {
+            CompactTxt(text, 20, C.text, {
+                width = "100%",
+                height = height,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+            })
+        }
+    }
+end
+
 local function PixelPanel(props)
     return UI.Panel(CopyProps({
-        backgroundColor = C.surface,
-        borderWidth = 4,
-        borderColor = C.border,
+        backgroundImage = ASSETS.ui.panelLarge,
+        backgroundFit = "sliced",
+        backgroundSlice = { 8, 8, 8, 8 },
         padding = 20,
         gap = 12,
         overflow = "hidden",
     }, props))
-end
-
-local function PixelChip(label, value, color, valueRef)
-    local valueLabel = valueRef or Txt(value, 24, color or C.text, {})
-    return UI.Panel {
-        height = 68,
-        paddingLeft = 14,
-        paddingRight = 14,
-        flexDirection = "row",
-        alignItems = "center",
-        gap = 8,
-        backgroundColor = C.surfaceDark,
-        borderWidth = 3,
-        borderColor = color or C.border,
-        children = {
-            Txt(label, 24, C.textDim),
-            valueLabel,
-        }
-    }
-end
-
-local function StatBox(label, value, color, icon)
-    local children = {}
-    if icon then
-        children[#children + 1] = UI.Panel { width = 54, height = 54, backgroundImage = icon, backgroundFit = "contain", flexShrink = 0 }
-    end
-    children[#children + 1] = UI.Panel {
-        flexGrow = 1,
-        flexBasis = 0,
-        flexShrink = 1,
-        children = {
-            Txt(label, 24, C.textDim, { width = "100%" }),
-            Txt(value, 26, color or C.text, { width = "100%" }),
-        }
-    }
-    return UI.Panel {
-        width = 310,
-        height = 96,
-        flexDirection = "row",
-        alignItems = "center",
-        gap = 10,
-        padding = 12,
-        backgroundColor = C.surfaceDark,
-        borderWidth = 3,
-        borderColor = color or C.border,
-        children = children,
-    }
 end
 
 local function SectionTitle(title, sub)
@@ -363,6 +599,10 @@ local function ItemImage(item)
     return ASSETS.items.chest
 end
 
+local function EnemyFootOffset(eventType)
+    return eventType == "boss" and 7 or 12
+end
+
 local function EnemyImageForStep(step, eventType)
     if eventType == "boss" then return ASSETS.enemies.boss end
     if eventType == "elite" then return ASSETS.enemies.skeleton end
@@ -420,6 +660,20 @@ local function AdvanceRoadEvent()
     currentAttackFrames_ = nil
 end
 
+local function ClearCombatPresentation(advanceLockedEvent)
+    if advanceLockedEvent and currentEventLocked_ and roadEvents_[1] and roadEvents_[1].kind == "enemy" then
+        AdvanceRoadEvent()
+    else
+        currentEventLocked_ = false
+        currentAttackFrames_ = nil
+    end
+    combatTimer_ = 0
+    combatAnimationTime_ = 0
+    hitBurst_ = false
+    enemyDamageBursts_ = {}
+    floatingText_ = nil
+end
+
 local function RequestPageRefresh()
     needsPageRefresh_ = true
 end
@@ -434,28 +688,63 @@ local function ActionResult(response)
 end
 
 local function SetAutoRun(enabled)
+    requestedAutoRun_ = enabled
+    pendingAutoRun_ = true
     if enabled then
-        pendingAutoRun_ = true
         EnsurePlayAssetsReady(function()
-            pendingAutoRun_ = nil
-            ServerClient.AutoRun(true, ActionResult)
+            ServerClient.AutoRun(true, function(response)
+                pendingAutoRun_ = nil
+                if not response or not response.ok then
+                    requestedAutoRun_ = nil
+                    ActionResult(response)
+                    return
+                end
+                ServerClient.RequestSnapshot(function(snapshotResponse)
+                    if not snapshotResponse or not snapshotResponse.ok then
+                        print("[Play] auto-run enabled; waiting for authoritative delta")
+                    end
+                end)
+            end)
         end)
     else
-        pendingAutoRun_ = nil
-        ServerClient.AutoRun(false, ActionResult)
+        ClearCombatPresentation(false)
+        ServerClient.AutoRun(false, function(response)
+            pendingAutoRun_ = nil
+            if not response or not response.ok then
+                requestedAutoRun_ = nil
+                ActionResult(response)
+                return
+            end
+            requestedAutoRun_ = false
+            ServerClient.RequestSnapshot()
+        end)
     end
 end
-local function CollectOffline() ServerClient.CollectOffline(ActionResult) end
-local function EquipItem(item)
+local actionFns_ = {}
+actionFns_.CollectOffline = function() ServerClient.CollectOffline(ActionResult) end
+actionFns_.EquipItem = function(item)
     if item and item.id then
         selectedSlot_ = item.slot or selectedSlot_
         ServerClient.Equip(item.id, ActionResult)
     end
 end
-local function AutoEquipBest() ServerClient.AutoEquip(ActionResult) end
-local function DecomposeByRank(maxRank) ServerClient.Decompose(maxRank, ActionResult) end
-local function StrengthenSelected() ServerClient.Strengthen(selectedSlot_, ActionResult) end
-local function StarSelected() ServerClient.Star(selectedSlot_, ActionResult) end
+actionFns_.UnequipSlot = function(slotId)
+    if slotId then
+        selectedSlot_ = slotId
+        ServerClient.Unequip(slotId, ActionResult)
+    end
+end
+actionFns_.AutoEquipBest = function() ServerClient.AutoEquip(ActionResult) end
+actionFns_.DecomposeByRank = function(maxRank) ServerClient.Decompose(maxRank, ActionResult) end
+actionFns_.StrengthenSelected = function() ServerClient.Strengthen(selectedSlot_, ActionResult) end
+actionFns_.StarSelected = function() ServerClient.Star(selectedSlot_, ActionResult) end
+
+local CollectOffline = actionFns_.CollectOffline
+local EquipItem = actionFns_.EquipItem
+local AutoEquipBest = actionFns_.AutoEquipBest
+local DecomposeByRank = actionFns_.DecomposeByRank
+local StrengthenSelected = actionFns_.StrengthenSelected
+local StarSelected = actionFns_.StarSelected
 
 local function CurrentRunStatus()
     local status = game.autoRun and "刷宝中" or "暂停"
@@ -483,63 +772,63 @@ UpdateTopBar = function()
 end
 
 local function CreateTopBar()
-    topRefs_.floor = Txt("层  第" .. tostring(game.floor or 1) .. "层", 24, C.focus, { whiteSpace = "nowrap", width = 220, height = 56, minHeight = 45, left = -18, top = -13, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
-    topRefs_.power = Txt("战力  " .. FormatInt(game.stats.power), 24, C.gold, { whiteSpace = "nowrap", width = 235, height = 56, minHeight = 45, top = -15, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
-    topRefs_.gold = Txt("金币  " .. FormatInt(game.gold), 24, C.gold, { whiteSpace = "nowrap", width = 220, height = 56, minHeight = 45, left = -2, top = -15, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
-    topRefs_.fragments = Txt("碎片  " .. FormatInt(game.fragments), 24, C.secondary, { whiteSpace = "nowrap", width = 220, height = 56, minHeight = 45, left = 15, top = -13, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    topRefs_.floor = Txt("层  第" .. tostring(game.floor or 1) .. "层", 22, C.focus, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    topRefs_.power = Txt("战力  " .. FormatInt(game.stats.power), 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    topRefs_.gold = Txt("金币  " .. FormatInt(game.gold), 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    topRefs_.fragments = Txt("碎片  " .. FormatInt(game.fragments), 22, C.secondary, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     local function ResourceText(x, valueRef)
         return UI.Panel {
             position = "absolute",
             left = x,
-            top = 232,
-            width = 230,
-            height = 60,
+            top = 222,
+            width = 210,
+            height = 42,
             alignItems = "center",
             justifyContent = "center",
-            overflow = "visible",
+            overflow = "hidden",
             children = { valueRef }
         }
     end
 
     return UI.Panel {
         width = "100%",
-        height = 330,
+        height = 310,
         flexShrink = 0,
         position = "relative",
         children = {
             UI.Panel {
                 position = "absolute",
                 left = 0,
-                top = 14,
+                top = 0,
                 width = 1080,
-                height = 300,
+                height = 288,
                 backgroundImage = ASSETS.ui.topFrame,
                 backgroundFit = "contain",
             },
-            Txt("无尽深渊", 30, C.text, {
+            Txt("无尽深渊", 28, C.text, {
                 position = "absolute",
-                left = 96,
-                top = 90,
-                width = 220,
-                height = 56,
+                left = 80,
+                top = 58,
+                width = 270,
+                height = 72,
                 whiteSpace = "nowrap",
                 textAlign = "center",
                 textStroke = { width = 3, color = "#000000" },
             }),
             Txt("解放双手，自动推进探索", 21, C.textSecondary, {
                 position = "absolute",
-                left = 412,
-                top = 104,
-                width = 550,
+                left = 458,
+                top = 74,
+                width = 520,
                 height = 48,
                 whiteSpace = "nowrap",
                 textAlign = "center",
                 textStroke = { width = 1, color = "#000000" },
             }),
-            ResourceText(76, topRefs_.floor),
-            ResourceText(300, topRefs_.power),
-            ResourceText(540, topRefs_.gold),
-            ResourceText(780, topRefs_.fragments),
+            ResourceText(86, topRefs_.floor),
+            ResourceText(316, topRefs_.power),
+            ResourceText(546, topRefs_.gold),
+            ResourceText(776, topRefs_.fragments),
         }
     }
 end
@@ -578,7 +867,13 @@ local function CollectPlayAssetPaths()
     local paths = { ASSETS.bg, ASSETS.bgMirror }
     local player = CurrentPlayer()
     local function Add(path)
-        if path then paths[#paths + 1] = path end
+        if type(path) == "string" then
+            paths[#paths + 1] = path
+        elseif type(path) == "table" then
+            for _, nestedPath in pairs(path) do
+                Add(nestedPath)
+            end
+        end
     end
     Add(player.icon)
     Add(player.sprite)
@@ -617,7 +912,9 @@ EnsurePlayAssetsReady = function(onReady)
         playAssetsReady_ = true
         playAssetLoading_ = false
         SetLoading(100, "战斗资源已就绪")
-        loadingHideDelay_ = 0.2
+        if initialSnapshotReceived_ and initialDwpFinished_ then
+            loadingHideDelay_ = 0.2
+        end
         if onReady then onReady() end
         return
     end
@@ -629,7 +926,9 @@ EnsurePlayAssetsReady = function(onReady)
                 playAssetsReady_ = true
                 playAssetLoading_ = false
                 SetLoading(100, "战斗资源已就绪")
-                loadingHideDelay_ = 0.2
+                if initialSnapshotReceived_ and initialDwpFinished_ then
+                    loadingHideDelay_ = 0.2
+                end
                 if onReady then onReady() end
             end
         else
@@ -641,7 +940,9 @@ EnsurePlayAssetsReady = function(onReady)
                     playAssetsReady_ = true
                     playAssetLoading_ = false
                     SetLoading(100, "战斗资源已就绪")
-                    loadingHideDelay_ = 0.2
+                    if initialSnapshotReceived_ and initialDwpFinished_ then
+                        loadingHideDelay_ = 0.2
+                    end
                     if onReady then onReady() end
                 end
             end)
@@ -653,26 +954,6 @@ local function PreloadAssets()
     -- DWP 策略：不在启动阶段主动 GetResource 全量媒体资源。
     -- UI 中的 backgroundImage 会触发引擎占位和后台下载，下载完成后热替换。
     print("[DWP] media resources use download-while-playing; startup will not block on textures or frames.")
-end
-
-local function FormalButton(text, width, onClick, disabled, height)
-    local buttonHeight = height or 92
-    return UI.Panel {
-        width = width or 300,
-        height = buttonHeight,
-        clickable = not disabled,
-        alignItems = "center",
-        justifyContent = "center",
-        opacity = disabled and 0.45 or 1.0,
-        backgroundImage = ASSETS.ui.button,
-        backgroundFit = "contain",
-        onClick = function()
-            if not disabled and onClick then onClick() end
-        end,
-        children = {
-            Txt(text, buttonHeight < 90 and 24 or 28, C.text, { width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }),
-        }
-    }
 end
 
 local function FormalStatCard(label, value, color, icon, width, height)
@@ -690,7 +971,7 @@ local function FormalStatCard(label, value, color, icon, width, height)
         height = cardH,
         position = "relative",
         backgroundImage = ASSETS.ui.statCard,
-        backgroundFit = "fill",
+        backgroundFit = "contain",
         children = {
             UI.Panel {
                 position = "absolute",
@@ -731,44 +1012,6 @@ local function CreateBackground()
         backgroundImage = ASSETS.ui.bg,
         backgroundFit = "cover",
         pointerEvents = "none",
-        children = {
-            UI.Panel {
-                position = "absolute",
-                left = 0,
-                top = 0,
-                right = 0,
-                bottom = 0,
-                backgroundColor = {5, 12, 32, 92},
-            },
-            UI.Panel {
-                position = "absolute",
-                left = 0,
-                top = 0,
-                right = 0,
-                height = 520,
-                backgroundColor = {90, 20, 20, 52},
-            },
-        }
-    }
-end
-
-local function CreateCharacterPortrait()
-    return UI.Panel {
-        width = "100%",
-        alignItems = "center",
-        children = {
-            UI.Panel {
-                width = 300,
-                height = 300,
-                padding = 12,
-                backgroundColor = C.surfaceDark,
-                borderWidth = 4,
-                borderColor = C.primary,
-                children = {
-                    UI.Panel { width = "100%", height = "100%", backgroundImage = CurrentPlayer().icon, backgroundFit = "contain" },
-                }
-            },
-        }
     }
 end
 
@@ -786,16 +1029,6 @@ local function CreateHomePage()
         height = "100%",
         position = "relative",
         children = {
-            UI.Panel {
-                position = "absolute",
-                left = 16,
-                top = 0,
-                width = 1048,
-                height = 620,
-                backgroundColor = {6, 8, 20, 70},
-                borderWidth = 2,
-                borderColor = {255, 210, 120, 28},
-            },
             UI.Panel {
                 position = "absolute",
                 left = 16,
@@ -845,7 +1078,7 @@ local function CreateHomePage()
                 children = {
                     UI.Panel { position = "absolute", left = 0, top = 0, width = 300, height = 44, clickable = true, alignItems = "center", justifyContent = "center", onClick = function() SwitchPage("play") end, children = { Txt("进入刷宝", 23, C.text, { position = "absolute", left = -2, top = 15, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
                     UI.Panel { position = "absolute", left = 0, top = 62, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then SetAutoRun(not game.autoRun) end end, children = { Txt(game.autoRun and "暂停挂机" or "开始挂机", 23, C.text, { position = "absolute", left = -2, top = 11, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
-                    UI.Panel { position = "absolute", left = 0, top = 124, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then CollectOffline() end end, children = { Txt("领取离线", 23, C.text, { position = "absolute", left = -4, top = 9, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
+                    UI.Panel { position = "absolute", left = 0, top = 124, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then actionFns_.CollectOffline() end end, children = { Txt("领取离线", 23, C.text, { position = "absolute", left = -4, top = 9, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
                 }
             },
 
@@ -868,301 +1101,65 @@ local function CreateHomePage()
     }
 end
 
-local function FilteredInventory()
-    local list = {}
-    for _, item in ipairs(game.inventory or {}) do
-        if item.category == selectedCategory_ then list[#list + 1] = item end
-    end
-    table.sort(list, function(a, b)
-        local ra = RARITIES[a.rarity] and RARITIES[a.rarity].rank or 0
-        local rb = RARITIES[b.rarity] and RARITIES[b.rarity].rank or 0
-        if ra ~= rb then return ra > rb end
-        return ItemPower(a) > ItemPower(b)
-    end)
-    return list
-end
+local InventoryView = require("client.InventoryView")
 
-local function CreateItemIconCard(item, width, height)
-    local selected = selectedInventoryId_ == item.id
-    local rarityColor = RarityColor(item.rarity)
-    local equipped = IsEquipped(item)
-    return UI.Panel {
-        width = width or 214,
-        height = height or 236,
-        clickable = true,
-        padding = 12,
-        gap = 8,
-        backgroundColor = selected and C.surfaceHover or C.surface,
-        borderWidth = 4,
-        borderColor = selected and C.primary or rarityColor,
-        onClick = function()
-            selectedInventoryId_ = item.id
-            RequestPageRefresh()
-        end,
-        children = {
-            UI.Panel {
-                width = "100%",
-                height = 96,
-                alignItems = "center",
-                justifyContent = "center",
-                backgroundColor = C.surfaceDark,
-                borderWidth = 2,
-                borderColor = rarityColor,
-                children = {
-                    UI.Panel { width = 88, height = 88, backgroundImage = ItemImage(item), backgroundFit = "contain" },
-                }
-            },
-            Txt(RarityName(item.rarity), 24, rarityColor, { width = "100%", textAlign = "center" }),
-            MultiTxt(item.name or "未知装备", 24, C.text, { height = 58, maxLines = 2, textAlign = "center" }),
-            Txt(equipped and "已穿戴" or ("战力 " .. FormatInt(ItemPower(item))), 24, equipped and C.success or C.gold, { width = "100%", textAlign = "center" }),
-        }
+local function BuildInventoryContext()
+    return {
+        UI = UI,
+        ui = ui,
+        C = C,
+        ASSETS = ASSETS,
+        RARITIES = RARITIES,
+        SET_ORDER = SET_ORDER,
+        SETS = SETS,
+        SLOTS = SLOTS,
+        CATEGORIES = CATEGORIES,
+        inventoryEmptyState = ASSETS.ui.inventoryEmptyState,
+        characterPortrait = ASSETS.player.icon,
+        playerNickname = game.playerNickname,
+        game = game,
+        getSelectedInventoryId = function() return selectedInventoryId_ end,
+        getSelectedSlot = function() return selectedSlot_ end,
+        getSelectedCategory = function() return selectedCategory_ end,
+        setSelectedInventoryId = function(value) selectedInventoryId_ = value end,
+        setSelectedSlot = function(value) selectedSlot_ = value end,
+        setSelectedCategory = function(value) selectedCategory_ = value end,
+        getEquipmentScrollY = function() return equipmentScrollY_ end,
+        setEquipmentScrollY = function(value) equipmentScrollY_ = value or 0 end,
+        getEquipmentPageScrollY = function() return equipmentPageScrollY_ end,
+        setEquipmentPageScrollY = function(value) equipmentPageScrollY_ = value or 0 end,
+        requestPageRefresh = RequestPageRefresh,
+        equipItem = actionFns_.EquipItem,
+        unequipSlot = actionFns_.UnequipSlot,
+        decomposeByRank = actionFns_.DecomposeByRank,
+        autoEquipBest = actionFns_.AutoEquipBest,
+        strengthenSelected = actionFns_.StrengthenSelected,
+        starSelected = actionFns_.StarSelected,
+        readOnly = game.readOnly,
+        rarityColor = RarityColor,
+        rarityName = RarityName,
+        slotName = SlotName,
+        itemPower = ItemPower,
+        itemImage = ItemImage,
+        isEquipped = IsEquipped,
+        getItemById = GetItemById,
+        shortenText = ShortenText,
+        compactTxt = CompactTxt,
+        txt = Txt,
+        imageProgress = ImageProgress,
+        imageButton = ImageButton,
+        pixelPanel = PixelPanel,
+        sectionTitle = SectionTitle,
+        formatInt = FormatInt,
     }
 end
 
-local function CreateInventoryTabs()
-    local children = {}
-    for _, cat in ipairs(CATEGORIES) do
-        children[#children + 1] = UI.Button {
-            text = cat.name,
-            variant = selectedCategory_ == cat.id and "primary" or "secondary",
-            width = 150,
-            onClick = function()
-                selectedCategory_ = cat.id
-                selectedInventoryId_ = nil
-                RequestPageRefresh()
-            end,
-        }
-    end
-    return UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", gap = 10, children = children }
+local function BuildInventoryPage()
+    return InventoryView.BuildInventoryPage(BuildInventoryContext())
 end
 
-local function CreateSelectedItemDetail()
-    local item = GetItemById(selectedInventoryId_)
-    if not item then
-        return PixelPanel {
-            width = "100%",
-            height = 220,
-            children = {
-                SectionTitle("装备详情", "点选图片卡查看装备，装备和道具都使用像素图标"),
-                UI.Panel { width = 96, height = 96, backgroundImage = ASSETS.items.chest, backgroundFit = "contain", alignSelf = "center" },
-            }
-        }
-    end
-    local slotText = item.slot and SlotName(item.slot) or (item.category or "物品")
-    local setText = item.setId and (SETS[item.setId].short .. "套") or "散件"
-    return PixelPanel {
-        width = "100%",
-        flexDirection = "row",
-        gap = 18,
-        children = {
-            UI.Panel {
-                width = 154,
-                height = 154,
-                flexShrink = 0,
-                padding = 10,
-                backgroundColor = C.surfaceDark,
-                borderWidth = 4,
-                borderColor = RarityColor(item.rarity),
-                children = {
-                    UI.Panel { width = "100%", height = "100%", backgroundImage = ItemImage(item), backgroundFit = "contain" },
-                }
-            },
-            UI.Panel {
-                flexGrow = 1,
-                flexBasis = 0,
-                flexShrink = 1,
-                gap = 10,
-                children = {
-                    SectionTitle(item.name or "未知装备", RarityName(item.rarity) .. " / " .. slotText .. " / " .. setText),
-                    UI.Panel {
-                        width = "100%",
-                        flexDirection = "row",
-                        gap = 12,
-                        children = {
-                            StatBox("战力", FormatInt(ItemPower(item)), C.gold, ItemImage(item)),
-                            StatBox("数量", FormatInt(item.quantity or 1), C.textSecondary, ASSETS.items.crystal),
-                        }
-                    },
-                    item.slot and UI.Panel {
-                        width = "100%",
-                        flexDirection = "row",
-                        gap = 12,
-                        children = {
-                            UI.Button { text = "穿戴", variant = "primary", width = 170, disabled = game.readOnly, onClick = function() EquipItem(item) end },
-                            UI.Button { text = "查看", variant = "secondary", width = 150, onClick = function() UI.Toast.Show(item.name or "装备", { duration = 2, variant = "info" }) end },
-                        }
-                    } or nil,
-                }
-            }
-        }
-    }
-end
-
-local function CreateInventoryPage()
-    local cards = {}
-    for _, item in ipairs(FilteredInventory()) do cards[#cards + 1] = CreateItemIconCard(item) end
-    if #cards == 0 then
-        cards[#cards + 1] = UI.Panel { width = 214, height = 236, alignItems = "center", justifyContent = "center", backgroundColor = C.surfaceDark, borderWidth = 4, borderColor = C.border, children = { UI.Panel { width = 96, height = 96, backgroundImage = ASSETS.items.chest, backgroundFit = "contain" } } }
-    end
-    return UI.Panel {
-        width = "100%",
-        height = "100%",
-        padding = 24,
-        gap = 14,
-        children = {
-            PixelPanel {
-                width = "100%",
-                children = {
-                    SectionTitle("像素背包", string.format("装备 %d/%d，按图片分类管理", game.equipmentInventoryCount or 0, game.inventoryCapacity or 300)),
-                    CreateInventoryTabs(),
-                    UI.Panel {
-                        width = "100%",
-                        flexDirection = "row",
-                        flexWrap = "wrap",
-                        gap = 10,
-                        children = {
-                            UI.Button { text = "分解白", variant = "secondary", width = 150, disabled = game.readOnly, onClick = function() DecomposeByRank(1) end },
-                            UI.Button { text = "分解蓝", variant = "secondary", width = 150, disabled = game.readOnly, onClick = function() DecomposeByRank(2) end },
-                            UI.Button { text = "分解紫", variant = "danger", width = 150, disabled = game.readOnly, onClick = function() DecomposeByRank(3) end },
-                            UI.Button { text = "分解橙", variant = "danger", width = 150, disabled = game.readOnly, onClick = function() DecomposeByRank(4) end },
-                        }
-                    },
-                }
-            },
-            CreateSelectedItemDetail(),
-            UI.ScrollView {
-                width = "100%",
-                flexGrow = 1,
-                flexBasis = 0,
-                scrollY = true,
-                showScrollbar = true,
-                children = {
-                    UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", justifyContent = "center", gap = 14, paddingBottom = 28, children = cards }
-                }
-            }
-        }
-    }
-end
-
-local function CreateEquipSlot(slot)
-    local item = game.equipped and game.equipped[slot.id]
-    local selected = selectedSlot_ == slot.id
-    local color = item and RarityColor(item.rarity) or C.border
-    return UI.Panel {
-        width = 214,
-        height = 212,
-        clickable = true,
-        padding = 10,
-        backgroundColor = selected and C.surfaceHover or C.surface,
-        borderWidth = 4,
-        borderColor = selected and C.primary or color,
-        onClick = function()
-            selectedSlot_ = slot.id
-            RequestPageRefresh()
-        end,
-        children = {
-            UI.Panel {
-                width = "100%",
-                height = 98,
-                backgroundColor = C.surfaceDark,
-                borderWidth = 2,
-                borderColor = color,
-                alignItems = "center",
-                justifyContent = "center",
-                children = {
-                    UI.Panel { width = 86, height = 86, backgroundImage = item and ItemImage(item) or ASSETS.items.chest, backgroundFit = "contain", opacity = item and 1 or 0.42 },
-                }
-            },
-            Txt(slot.name, 24, selected and C.primary or C.textSecondary, { width = "100%", textAlign = "center" }),
-            Txt(item and ("+" .. tostring(item.enhance or 0) .. " / " .. tostring(item.star or 0) .. "★") or "空槽", 24, item and C.gold or C.textDim, { width = "100%", textAlign = "center" }),
-        }
-    }
-end
-
-local function CreateSetOverview()
-    local counts = {}
-    for _, item in pairs(game.equipped or {}) do
-        if item and item.setId then counts[item.setId] = (counts[item.setId] or 0) + (item.rarity == "myth" and 2 or 1) end
-    end
-    local children = { SectionTitle("套装图鉴", "以像素卡片显示套装进度") }
-    for _, setId in ipairs(SET_ORDER) do
-        local set = SETS[setId]
-        local count = counts[setId] or 0
-        children[#children + 1] = UI.Panel {
-            width = "100%",
-            height = 76,
-            flexDirection = "row",
-            alignItems = "center",
-            padding = 10,
-            gap = 12,
-            backgroundColor = C.surfaceDark,
-            borderWidth = 3,
-            borderColor = set.color,
-            children = {
-                UI.Panel { width = 54, height = 54, backgroundImage = ASSETS.items.crystal, backgroundFit = "contain", imageTint = set.color },
-                Txt(set.short, 24, set.color, { width = 92 }),
-                UI.ProgressBar { flexGrow = 1, flexBasis = 0, height = 22, value = count, max = 12, fillColor = set.color },
-                Txt(tostring(count) .. "/12", 24, C.text, { width = 80, textAlign = "right" }),
-            }
-        }
-    end
-    return PixelPanel { width = "100%", children = children }
-end
-
-local function CreateEquipmentPage()
-    local slots = {}
-    for _, slot in ipairs(SLOTS) do slots[#slots + 1] = CreateEquipSlot(slot) end
-    local selectedItem = game.equipped and game.equipped[selectedSlot_]
-    return UI.ScrollView {
-        width = "100%",
-        height = "100%",
-        scrollY = true,
-        showScrollbar = false,
-        children = {
-            UI.Panel {
-                width = "100%",
-                padding = 24,
-                gap = 16,
-                children = {
-                    PixelPanel {
-                        width = "100%",
-                        children = {
-                            SectionTitle("像素装备盘", "12槽装备全部用图片格展示"),
-                            UI.Panel {
-                                width = "100%",
-                                flexDirection = "row",
-                                gap = 12,
-                                children = {
-                                    UI.Button { text = "一键最优", variant = "primary", width = 190, disabled = game.readOnly, onClick = function() AutoEquipBest() end },
-                                    UI.Button { text = "强化", variant = "success", width = 150, disabled = game.readOnly, onClick = function() StrengthenSelected() end },
-                                    UI.Button { text = "升星", variant = "secondary", width = 150, disabled = game.readOnly, onClick = function() StarSelected() end },
-                                }
-                            },
-                        }
-                    },
-                    PixelPanel {
-                        width = "100%",
-                        flexDirection = "row",
-                        gap = 18,
-                        children = {
-                            UI.Panel { width = 124, height = 124, backgroundImage = selectedItem and ItemImage(selectedItem) or ASSETS.items.chest, backgroundFit = "contain", flexShrink = 0 },
-                            UI.Panel {
-                                flexGrow = 1,
-                                flexBasis = 0,
-                                flexShrink = 1,
-                                children = {
-                                    SectionTitle("当前槽位：" .. SlotName(selectedSlot_), selectedItem and (selectedItem.name .. " / " .. RarityName(selectedItem.rarity)) or "未穿戴装备"),
-                                    selectedItem and Txt("战力 " .. FormatInt(ItemPower(selectedItem)), 26, C.gold, {}) or Txt("空槽", 26, C.textDim, {}),
-                                }
-                            }
-                        }
-                    },
-                    UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", justifyContent = "center", gap = 14, children = slots },
-                    CreateSetOverview(),
-                }
-            }
-        }
-    }
+local function BuildEquipmentPage()
+    return InventoryView.BuildEquipmentPage(BuildInventoryContext())
 end
 
 ---@return string, string[], FrameEditorParam
@@ -1207,7 +1204,13 @@ local function ParamsForAttackFrames(frames)
 end
 
 local function CreateEditorButton(text, onClick, props)
-    return UI.Button(CopyProps({ text = text, width = 118, height = 58, onClick = onClick }, props))
+    props = props or {}
+    local variant = props.variant or "primary"
+    local image = ASSETS.ui.buttonBlue
+    if variant == "secondary" then image = ASSETS.ui.buttonPurple
+    elseif variant == "success" then image = ASSETS.ui.buttonGreen
+    elseif variant == "danger" then image = ASSETS.ui.buttonRed end
+    return ImageButton(text, props.width or 118, props.height or 58, image, onClick, props.disabled == true)
 end
 
 local function CreateEditorAdjustRow(label, key, step)
@@ -1258,9 +1261,8 @@ local function CreateFrameEditorToggle(item)
         clickable = true,
         alignItems = "center",
         justifyContent = "center",
-        backgroundColor = visible and C.secondary or C.surfaceDark,
-        borderWidth = 3,
-        borderColor = visible and C.secondaryPressed or C.border,
+        backgroundImage = visible and ASSETS.ui.editorToggleOn or ASSETS.ui.editorToggleOff,
+        backgroundFit = "contain",
         onClick = function()
             frameEditorVisible_[item.id] = not frameEditorVisible_[item.id]
             local anyVisible = false
@@ -1292,9 +1294,8 @@ local function CreateFrameEditorPage()
             clickable = true,
             alignItems = "center",
             justifyContent = "center",
-            backgroundColor = active and C.primary or C.surfaceDark,
-            borderWidth = 3,
-            borderColor = active and C.primaryPressed or C.border,
+            backgroundImage = active and ASSETS.ui.editorTabOn or ASSETS.ui.editorTabOff,
+            backgroundFit = "contain",
             onClick = function()
                 frameEditorSelected_ = item.id
                 frameEditorVisible_[item.id] = true
@@ -1322,7 +1323,7 @@ local function CreateFrameEditorPage()
         frameEditorRefs_.previews[id] = preview
     end
     frameEditorRefs_.preview = frameEditorRefs_.previews[frameEditorSelected_]
-    frameEditorRefs_.reference = UI.Panel { position = "absolute", left = 330, top = 390, width = RUN_W, height = RUN_H, borderWidth = 3, borderColor = {255, 217, 61, 180}, backgroundColor = {255, 217, 61, 28} }
+    frameEditorRefs_.reference = UI.Panel { position = "absolute", left = 330, top = 390, width = RUN_W, height = RUN_H, backgroundImage = ASSETS.ui.referenceFrame, backgroundFit = "contain" }
     frameEditorRefs_.info = Txt("", 24, C.textSecondary, { width = "100%" })
     frameEditorRefs_.title = Txt(title, 32, C.primary, { width = "100%", textStroke = { width = 2, color = "#000000" } })
 
@@ -1383,9 +1384,8 @@ local function CreateFrameEditorPage()
         flexBasis = 0,
         position = "relative",
         overflow = "hidden",
-        backgroundColor = {9, 9, 25, 255},
-        borderWidth = 4,
-        borderColor = C.border,
+        backgroundImage = ASSETS.bg,
+        backgroundFit = "cover",
         children = sceneChildren,
     }
 
@@ -1434,10 +1434,10 @@ local function CreatePlayPage()
     EnsureRoadEvents()
     playRefs_ = { objects = {}, bgTiles = {} }
     currentPlayerImage_ = nil
-    playRefs_.bgTiles[1] = UI.Panel { position = "absolute", left = 0, top = BG_TILE_TOP, width = BG_TILE_W, bottom = -BG_TILE_TOP, backgroundImage = ASSETS.bg, backgroundFit = "cover" }
-    playRefs_.bgTiles[2] = UI.Panel { position = "absolute", left = BG_TILE_W, top = BG_TILE_TOP, width = BG_TILE_W, bottom = -BG_TILE_TOP, backgroundImage = ASSETS.bgMirror, backgroundFit = "cover" }
-    playRefs_.bgTiles[3] = UI.Panel { position = "absolute", left = BG_TILE_W * 2, top = BG_TILE_TOP, width = BG_TILE_W, bottom = -BG_TILE_TOP, backgroundImage = ASSETS.bg, backgroundFit = "cover" }
-    playRefs_.playerShadow = UI.Panel { position = "absolute", left = PLAYER_SCREEN_X + 42, top = ROAD_Y - 8, width = 132, height = 18, backgroundColor = {0, 0, 0, 96} }
+    playRefs_.bgTiles[1] = UI.Panel { position = "absolute", left = 0, top = BG_TILE_TOP, width = BG_TILE_W, height = BG_TILE_H, backgroundImage = ASSETS.bg, backgroundFit = "cover" }
+    playRefs_.bgTiles[2] = UI.Panel { position = "absolute", left = BG_TILE_W, top = BG_TILE_TOP, width = BG_TILE_W, height = BG_TILE_H, backgroundImage = ASSETS.bgMirror, backgroundFit = "cover" }
+    playRefs_.bgTiles[3] = UI.Panel { position = "absolute", left = BG_TILE_W * 2, top = BG_TILE_TOP, width = BG_TILE_W, height = BG_TILE_H, backgroundImage = ASSETS.bg, backgroundFit = "cover" }
+    playRefs_.playerShadow = UI.Panel { position = "absolute", left = PLAYER_SCREEN_X + 168, top = ROAD_Y - 12, width = 118, height = 14, backgroundImage = ASSETS.ui.characterShadow, backgroundFit = "contain" }
     playRefs_.player = UI.Panel { position = "absolute", left = PLAYER_SCREEN_X, top = PLATFORM_PLAYER_Y, width = RUN_W, height = RUN_H, backgroundImage = CurrentPlayer().sprite or CurrentPlayer().icon, backgroundFit = "contain" }
 
     for i = 1, EVENT_VIEW_COUNT do
@@ -1446,17 +1446,19 @@ local function CreatePlayPage()
     end
 
     playRefs_.pickup = UI.Panel { position = "absolute", left = 0, top = 0, width = LOOT_SIZE, height = LOOT_SIZE, backgroundImage = ASSETS.items.crystal, backgroundFit = "contain", visible = false }
-    playRefs_.pickupSpark = UI.Panel { position = "absolute", left = 0, top = 0, width = 82, height = 82, backgroundColor = {255, 217, 61, 80}, borderWidth = 4, borderColor = {255, 255, 255, 210}, visible = false }
+    playRefs_.pickupSpark = UI.Panel { position = "absolute", left = 0, top = 0, width = 82, height = 82, backgroundImage = ASSETS.ui.pickupSpark, backgroundFit = "contain", visible = false }
     playRefs_.floatLabel = Txt("", 30, C.gold, { position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = { width = 2, color = "#000000" } })
     playRefs_.enemyDamageLabels = {}
     for i = 1, #ATTACK_HIT_TIMINGS do
         playRefs_.enemyDamageLabels[i] = Txt("", 34, C.hp, { position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = { width = 3, color = "#000000" } })
     end
-    playRefs_.event = Txt("向右移动", 28, C.primary, { width = "100%" })
-    playRefs_.progress = Txt("第1层", 28, C.focus, {})
-    playRefs_.lootLabel = Txt(lastLootText_, 26, C.gold, { width = "100%" })
-    playRefs_.hpBar = UI.ProgressBar { width = "100%", height = 24, value = game.hp or 1, max = game.stats.hp or 1, fillColor = C.hp }
-    playRefs_.runButtonLabel = Txt(game.autoRun and "刷宝中" or "开始刷宝", 28, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    playRefs_.event = CompactTxt("向右移动", 20, C.primary, { width = "100%" })
+    playRefs_.progress = CompactTxt("第1层", 20, C.focus, {})
+    playRefs_.lootLabel = CompactTxt(lastLootText_, 18, C.gold, { width = "100%" })
+    local hpProgress
+    hpProgress, playRefs_.hpFill = ImageProgress(310, 24, game.hp or 1, game.stats.hp or 1, ASSETS.ui.progressTrackHp, ASSETS.ui.progressFillHp)
+    playRefs_.hpBar = hpProgress
+    playRefs_.runButtonLabel = CompactTxt(game.autoRun and "刷宝中" or "开始刷宝", 20, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } })
 
     ---@type table
     local sceneChildren = { playRefs_.bgTiles[1], playRefs_.bgTiles[2], playRefs_.bgTiles[3] }
@@ -1469,16 +1471,22 @@ local function CreatePlayPage()
     for i = 1, #playRefs_.enemyDamageLabels do sceneChildren[#sceneChildren + 1] = playRefs_.enemyDamageLabels[i] end
 
     local runButton = UI.Panel {
-        width = 236,
-        height = 86,
+        position = "absolute",
+        right = 26,
+        top = 42,
+        width = 230,
+        height = 72,
         clickable = true,
         alignItems = "center",
         justifyContent = "center",
-        backgroundColor = game.autoRun and C.primary or C.secondary,
-        borderWidth = 4,
-        borderColor = game.autoRun and C.primaryPressed or C.secondaryPressed,
+        backgroundImage = "image/brawlforge_play_autorun_button_flat_20260718124728.png",
+        backgroundFit = "contain",
         onClick = function()
-            if not game.readOnly and not playAssetLoading_ then SetAutoRun(not game.autoRun) end
+            if not game.readOnly and not playAssetLoading_ and not pendingAutoRun_ then
+                local currentAutoRun = game.autoRun
+                if requestedAutoRun_ ~= nil then currentAutoRun = requestedAutoRun_ end
+                SetAutoRun(not currentAutoRun)
+            end
         end,
         children = { playRefs_.runButtonLabel },
     }
@@ -1487,63 +1495,97 @@ local function CreatePlayPage()
     local root = UI.Panel {
         width = "100%",
         height = "100%",
-        padding = 24,
+        position = "relative",
+        overflow = "hidden",
+        backgroundImage = ASSETS.bg,
+        backgroundFit = "cover",
+        children = sceneChildren,
+    }
+
+    playRefs_.event:SetStyle({ position = "absolute", left = 22, top = 17, width = 406, textAlign = "center" })
+    local statusFrame = UI.Panel {
+        position = "absolute", left = 26, top = 42, width = 448, height = 60,
+        backgroundImage = ASSETS.ui.statusBar, backgroundFit = "contain",
+        children = { playRefs_.event },
+    }
+
+    playRefs_.progress:SetStyle({ position = "absolute", left = 0, top = 19, width = 150, textAlign = "center" })
+    local floorBadge = UI.Panel {
+        position = "absolute", left = 476, top = 42, width = 150, height = 60,
+        backgroundImage = ASSETS.ui.floorBadge, backgroundFit = "contain",
+        children = { playRefs_.progress },
+    }
+
+    playRefs_.lootLabel:SetStyle({ visible = false })
+
+    local hpFrame = UI.Panel {
+        position = "absolute", left = 30, top = 174, width = 545, height = 168,
+        backgroundImage = ASSETS.ui.playHpFrame, backgroundFit = "contain",
         children = {
-            PixelPanel {
-                width = "100%",
-                height = "100%",
-                padding = 18,
-                children = {
-                    UI.Panel {
-                        width = "100%",
-                        height = 92,
-                        flexDirection = "row",
-                        alignItems = "center",
-                        justifyContent = "space-between",
-                        gap = 14,
-                        children = {
-                            UI.Panel { flexGrow = 1, flexBasis = 0, flexShrink = 1, children = { playRefs_.event, playRefs_.lootLabel } },
-                            playRefs_.progress,
-                            runButton,
-                        }
-                    },
-                    UI.Panel { width = "100%", children = { Txt("生命", 24, C.textSecondary), playRefs_.hpBar } },
-                    UI.Panel {
-                        width = "100%",
-                        flexGrow = 1,
-                        flexBasis = 0,
-                        position = "relative",
-                        overflow = "hidden",
-                        backgroundColor = {9, 9, 25, 255},
-                        borderWidth = 4,
-                        borderColor = C.border,
-                        children = sceneChildren,
-                    },
-                    UI.Panel {
-                        width = "100%",
-                        height = 110,
-                        flexDirection = "row",
-                        alignItems = "center",
-                        gap = 16,
-                        children = {
-                            UI.Panel { width = 88, height = 88, backgroundImage = lastLootIcon_ or ASSETS.items.chest, backgroundFit = "contain" },
-                            UI.Panel { flexGrow = 1, flexBasis = 0, flexShrink = 1, children = { Txt("最近获得", 24, C.textDim), Txt(lastLootText_, 28, C.gold, { width = "100%" }) } },
-                            UI.Panel { width = 88, height = 88, backgroundImage = ASSETS.items.gold, backgroundFit = "contain" },
-                        }
-                    },
-                }
-            }
+            Txt("生命", 24, C.hp, { position = "absolute", left = 74, top = 55, width = 92, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
+            UI.Panel { position = "absolute", left = 176, top = 66, width = 310, height = 28, children = { playRefs_.hpBar } },
         }
     }
+
+    playRefs_.lootTrayIcon = UI.Panel { position = "absolute", left = 10, top = 8, width = 44, height = 44, backgroundImage = lastLootIcon_ or ASSETS.items.chest, backgroundFit = "contain" }
+    playRefs_.lootTrayLabel = CompactTxt(lastLootText_, 18, C.gold, { position = "absolute", left = 68, top = 18, width = 410, textStroke = { width = 2, color = "#000000" } })
+    local lootTray = UI.Panel {
+        position = "absolute", left = 26, bottom = 20, width = 520, height = 60,
+        backgroundImage = ASSETS.ui.lootBarGold, backgroundFit = "contain",
+        children = { playRefs_.lootTrayIcon, playRefs_.lootTrayLabel },
+    }
+
+    root:AddChild(statusFrame)
+    root:AddChild(floorBadge)
+    root:AddChild(hpFrame)
+    root:AddChild(runButton)
+    root:AddChild(lootTray)
     UpdatePlayVisuals(0)
     return root
 end
 
+local function CreateMarketPage()
+    return UI.Panel {
+        width = "100%",
+        height = "100%",
+        alignItems = "center",
+        justifyContent = "center",
+        children = {
+            UI.Panel {
+                width = 860,
+                height = 420,
+                backgroundImage = ASSETS.ui.panelLarge,
+                backgroundFit = "sliced",
+                backgroundSlice = { 12, 12, 12, 12 },
+                alignItems = "center",
+                justifyContent = "center",
+                gap = 18,
+                children = {
+                    Txt("市场", 36, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
+                    CompactTxt("市场功能暂未开放", 24, C.textSecondary, { width = "100%", textAlign = "center" }),
+                },
+            },
+        },
+    }
+end
+
 local function CreatePageContent()
     if game.page == "admin" and game.isAdmin then return AdminPanel.Build(UI, { onChanged = RequestPageRefresh, readOnly = game.readOnly }) end
-    if game.page == "bag" then return CreateInventoryPage() end
-    if game.page == "equip" then return CreateEquipmentPage() end
+    if game.page == "bag" then return BuildInventoryPage() end
+    if game.page == "equip" then
+        if type(game.playerNickname) ~= "string" or game.playerNickname == "" then
+            return UI.Panel {
+                width = "100%",
+                height = "100%",
+                alignItems = "center",
+                justifyContent = "center",
+                children = { CompactTxt("正在同步 Tap 昵称…", 24, C.textSecondary, { width = "100%", textAlign = "center" }) },
+            }
+        end
+        return BuildEquipmentPage()
+    end
     if game.page == "play" then return CreatePlayPage() end
+    if game.page == "market" then return CreateMarketPage() end
     if game.page == "frameEditor" then return CreateFrameEditorPage() end
     return CreateHomePage()
 end
@@ -1567,6 +1609,8 @@ RefreshCurrentPage = function()
 end
 
 SwitchPage = function(pageId)
+    local leavingPlay = game.page == "play" and pageId ~= "play"
+    if leavingPlay then ClearCombatPresentation(true) end
     if pageId == "play" then
         EnsurePlayAssetsReady(function()
             GameStateAdapter.SetPage(pageId)
@@ -1586,7 +1630,7 @@ local function CreateBottomNav()
         { id = "bag", name = "背包" },
         { id = "equip", name = "装备" },
         { id = "play", name = "刷宝" },
-        { id = "frameEditor", name = "调帧" },
+        { id = "market", name = "市场" },
     }
     if game.isAdmin then nav[#nav + 1] = { id = "admin", name = "管理" } end
     local navAreaX = 28
@@ -1627,9 +1671,9 @@ local function CreateBottomNav()
             width = buttonW,
             height = 126,
             visible = active,
-            backgroundColor = {31, 162, 255, 36},
-            borderWidth = 3,
-            borderColor = C.focus,
+            backgroundImage = ASSETS.ui.navSelected,
+            backgroundFit = "contain",
+            imageTint = C.focus,
         }
         local label = Txt(item.name, 29, active and C.text or C.textSecondary, {
             position = "absolute",
@@ -1671,10 +1715,11 @@ local function CreateLoadingOverlay()
     loadingDots_ = {}
     loadingPercentLabel_ = Txt(string.format("%d%%", math.floor(loadingProgress_)), 36, C.primary, { width = "100%", textAlign = "center" })
     loadingMessageLabel_ = MultiTxt(loadingMessage_, 28, C.textSecondary, { width = "100%", textAlign = "center", maxLines = 2 })
-    loadingProgressBar_ = UI.ProgressBar { width = 720, height = 30, value = loadingProgress_, max = 100, fillColor = C.primary }
+    local loadingProgress
+    loadingProgress, loadingProgressFill_ = ImageProgress(720, 30, loadingProgress_, 100, ASSETS.ui.progressTrackLoad, ASSETS.ui.progressFillLoad)
     local dotLayer = UI.Panel { width = 240, height = 240, position = "relative" }
     for i = 1, 12 do
-        local dot = UI.Panel { position = "absolute", left = 108, top = 108, width = 24, height = 24, backgroundColor = C.primary }
+        local dot = UI.Panel { position = "absolute", left = 108, top = 108, width = 24, height = 24, backgroundImage = ASSETS.ui.loadingDot, backgroundFit = "contain" }
         loadingDots_[i] = dot
         dotLayer:AddChild(dot)
     end
@@ -1685,15 +1730,18 @@ local function CreateLoadingOverlay()
         right = 0,
         bottom = 0,
         zIndex = 1000,
-        backgroundColor = {0, 0, 0, 178},
+        backgroundImage = ASSETS.ui.screenOverlay,
+        backgroundFit = "contain",
         alignItems = "center",
         justifyContent = "center",
         paddingLeft = 80,
         paddingRight = 80,
         children = {
             PixelPanel {
-                width = "100%",
+                width = 940,
+                height = 760,
                 alignItems = "center",
+                justifyContent = "center",
                 gap = 32,
                 children = {
                     Txt(CONFIG.Title, 34, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
@@ -1701,7 +1749,7 @@ local function CreateLoadingOverlay()
                     dotLayer,
                     loadingPercentLabel_,
                     loadingMessageLabel_,
-                    loadingProgressBar_,
+                    loadingProgress,
                 }
             }
         }
@@ -1746,8 +1794,11 @@ local function StartDwpLoadingOverlay()
             SetLoading(progress, string.format("正在加载资源 %d/%d", completedCount or 0, totalCount or 0))
         end,
         function(completedBytes)
+            initialDwpFinished_ = true
             SetLoading(100, "资源加载完成")
-            loadingHideDelay_ = 0.35
+            if initialSnapshotReceived_ then
+                loadingHideDelay_ = 0.35
+            end
             if dwpObserverId_ then
                 cache:StopObservingDownloads(dwpObserverId_)
                 dwpObserverId_ = nil
@@ -1761,7 +1812,7 @@ SetLoading = function(progress, message)
     loadingMessage_ = message or loadingMessage_
     if loadingPercentLabel_ then loadingPercentLabel_:SetText(string.format("%d%%", math.floor(loadingProgress_))) end
     if loadingMessageLabel_ then loadingMessageLabel_:SetText(loadingMessage_) end
-    if loadingProgressBar_ then loadingProgressBar_:SetValue(loadingProgress_) end
+    SetImageProgress(loadingProgressFill_, 720, loadingProgress_, 100)
 end
 
 local function UpdateLoadingSpinner(dt)
@@ -1774,7 +1825,8 @@ local function UpdateLoadingSpinner(dt)
         dot:SetStyle({
             left = 108 + math.cos(angle) * radius,
             top = 108 + math.sin(angle) * radius,
-            backgroundColor = {33, 189, 174, alpha},
+            opacity = alpha / 255,
+            scale = 0.7 + 0.3 * (i / 12),
         })
     end
 end
@@ -1860,6 +1912,10 @@ local function HandleDeltaVisual(payload)
     for _, value in ipairs((payload and payload.events) or {}) do
         if value.kind == "cell_entered" then
             lastEventType_ = value.eventType or lastEventType_
+        elseif value.kind == "auto_run_changed" then
+            requestedAutoRun_ = nil
+            pendingAutoRun_ = nil
+            if value.enabled == false then ClearCombatPresentation(false) end
         elseif value.kind == "battle" then
             local isBurst = value.lucky or value.critical
             local prefix = value.lucky and "幸运一击" or (value.critical and "暴击" or "命中")
@@ -1886,12 +1942,18 @@ UpdatePlayVisuals = function(dt)
     combatTimer_ = math.max(0, combatTimer_ - dt)
     combatAnimationTime_ = combatTimer_ > 0 and (combatAnimationTime_ + dt) or 0
     game = GameStateAdapter.GetViewState()
+    if requestedAutoRun_ ~= nil and game.autoRun == requestedAutoRun_ then
+        requestedAutoRun_ = nil
+        pendingAutoRun_ = nil
+    end
 
+    local visualAutoRun = game.autoRun
+    if requestedAutoRun_ ~= nil then visualAutoRun = requestedAutoRun_ end
     local current = roadEvents_[1]
     local currentDistance = current and (current.x - presentationX_ - PLAYER_SCREEN_X) or 9999
     local enemyInRange = current and current.kind == "enemy" and currentDistance <= EVENT_TRIGGER_DISTANCE
     local shouldStopForEvent = (currentEventLocked_ and current and current.kind == "enemy" and combatTimer_ > 0) or enemyInRange
-    local speed = (game.autoRun and not shouldStopForEvent) and PRESENTATION_SPEED or 0
+    local speed = (visualAutoRun and not shouldStopForEvent) and PRESENTATION_SPEED or 0
     presentationX_ = presentationX_ + speed * dt
     currentDistance = current and (current.x - presentationX_ - PLAYER_SCREEN_X) or 9999
     local inTriggerRange = current and currentDistance <= EVENT_TRIGGER_DISTANCE
@@ -1919,23 +1981,23 @@ UpdatePlayVisuals = function(dt)
 
     local currentEvent = roadEvents_[1]
     local distance = currentEvent and (currentEvent.x - presentationX_ - PLAYER_SCREEN_X) or 9999
-    local isAttacking = currentEvent and currentEvent.kind == "enemy" and distance <= EVENT_TRIGGER_DISTANCE
+    local isAttacking = currentEventLocked_ and combatTimer_ > 0 and currentEvent and currentEvent.kind == "enemy" and distance <= EVENT_TRIGGER_DISTANCE
     local isPicking = currentEvent and currentEvent.kind == "loot" and distance <= EVENT_TRIGGER_DISTANCE
 
     local job = CurrentPlayer()
     local attackFrames = currentAttackFrames_ or job.attackFrames or { job.attack or job.sprite or job.icon }
-    local movementFrames = game.autoRun and job.run or job.idle
+    local movementFrames = visualAutoRun and job.run or job.idle
     local activeParams = isAttacking and ParamsForAttackFrames(attackFrames) or frameEditorParams_.run
-    local activeFps = isAttacking and activeParams.fps or (game.autoRun and activeParams.fps or 8)
+    local activeFps = isAttacking and activeParams.fps or (visualAutoRun and activeParams.fps or 8)
     local playerImage = isAttacking and FrameAt(attackFrames, activeFps, combatAnimationTime_) or FrameAt(movementFrames, activeFps)
-    local walkBob = (game.autoRun and not isAttacking) and math.sin(animationTime_ * 6.0) * 3 or math.sin(animationTime_ * 2.0) * 2
-    local walkLean = (game.autoRun and not isAttacking) and math.sin(animationTime_ * 6.0) * 4 or 0
+    local walkBob = (visualAutoRun and not isAttacking) and math.sin(animationTime_ * 6.0) * 3 or math.sin(animationTime_ * 2.0) * 2
+    local walkLean = (visualAutoRun and not isAttacking) and math.sin(animationTime_ * 6.0) * 4 or 0
     local attackPulse = isAttacking and math.max(0, math.sin(combatAnimationTime_ * 11.0)) or 0
     local actionLeft = PLAYER_SCREEN_X - (RUN_W - PLAYER_SIZE) * 0.42
     local actionTop = ROAD_Y - RUN_H + 20
     local idleLeft = PLAYER_SCREEN_X
     local idleTop = PLATFORM_PLAYER_Y
-    local useActionBox = isAttacking or (game.autoRun and not isPicking)
+    local useActionBox = isAttacking or not isPicking
     local targetLeft = useActionBox and (actionLeft + activeParams.x) or idleLeft
     local targetTop = useActionBox and (actionTop + activeParams.y) or idleTop
     local targetW = useActionBox and activeParams.w or PLAYER_SIZE
@@ -1963,7 +2025,7 @@ UpdatePlayVisuals = function(dt)
             local x = event.x - presentationX_
             local w = event.kind == "enemy" and ENEMY_SIZE or LOOT_SIZE
             local h = event.kind == "enemy" and ENEMY_SIZE or LOOT_SIZE
-            local top = event.kind == "enemy" and (ROAD_Y - ENEMY_SIZE + 8) or (ROAD_Y - LOOT_SIZE + 4)
+            local top = event.kind == "enemy" and (ROAD_Y - ENEMY_SIZE + EnemyFootOffset(event.eventType)) or (ROAD_Y - LOOT_SIZE + LOOT_FOOT_OFFSET)
             local active = i == 1 and (isAttacking or isPicking)
             local pulse = active and math.sin(animationTime_ * 18) * 5 or 0
             node:SetStyle({
@@ -1989,13 +2051,14 @@ UpdatePlayVisuals = function(dt)
     end
     if playRefs_.progress then playRefs_.progress:SetText("第" .. tostring(game.floor or 1) .. "层  距离" .. tostring(math.floor(presentationX_ / 10))) end
     if playRefs_.lootLabel then playRefs_.lootLabel:SetText(lastLootText_) end
-    if playRefs_.hpBar then
-        playRefs_.hpBar:SetMax((game.stats and game.stats.hp) or 1)
-        playRefs_.hpBar:SetValue(game.hp or 1)
+    if playRefs_.lootTrayLabel then playRefs_.lootTrayLabel:SetText(lastLootText_) end
+    if playRefs_.lootTrayIcon and lastLootIcon_ then playRefs_.lootTrayIcon:SetStyle({ backgroundImage = lastLootIcon_ }) end
+    if playRefs_.hpFill then
+        SetImageProgress(playRefs_.hpFill, 310, game.hp or 1, (game.stats and game.stats.hp) or 1)
     end
-    if playRefs_.runButtonLabel then playRefs_.runButtonLabel:SetText(pendingAutoRun_ and "加载中" or (game.autoRun and "刷宝中" or "开始刷宝")) end
+    if playRefs_.runButtonLabel then playRefs_.runButtonLabel:SetText(pendingAutoRun_ and "同步中" or (visualAutoRun and "刷宝中" or "开始刷宝")) end
     if playRefs_.runButton then
-        playRefs_.runButton:SetStyle({ backgroundColor = game.autoRun and C.primary or C.secondary, borderColor = game.autoRun and C.primaryPressed or C.secondaryPressed, opacity = (game.readOnly or playAssetLoading_) and 0.45 or 1.0 })
+        playRefs_.runButton:SetStyle({ opacity = (game.readOnly or playAssetLoading_) and 0.45 or 1.0 })
     end
 
     if pickupFx_ and playRefs_.pickup then
@@ -2074,13 +2137,33 @@ local function InstallSafeAreaWrapper()
     local oldSetRoot = UI.SetRoot
     UI.SetRoot = function(widget, destroyOld)
         if widget then
-            oldSetRoot(UI.SafeAreaView {
+            local padding = SafeAreaPadding()
+            oldSetRoot(UI.Panel {
                 width = "100%",
                 height = "100%",
-                edges = "vertical",
-                nativeMenuInset = true,
+                position = "relative",
                 pointerEvents = "box-none",
-                children = { widget },
+                children = {
+                    UI.Panel {
+                        position = "absolute",
+                        left = padding.left,
+                        top = padding.top,
+                        right = padding.right,
+                        bottom = padding.bottom,
+                        alignItems = "center",
+                        justifyContent = "center",
+                        pointerEvents = "box-none",
+                        children = {
+                            UI.Panel {
+                                width = CONFIG.designWidth,
+                                height = CONFIG.designHeight,
+                                flexShrink = 0,
+                                pointerEvents = "box-none",
+                                children = { widget },
+                            },
+                        },
+                    },
+                },
             }, destroyOld)
         else
             oldSetRoot(nil, destroyOld)
@@ -2091,16 +2174,22 @@ end
 
 local function BuildRoot()
     game = GameStateAdapter.GetViewState()
-    pageContainer_ = UI.Panel { width = "100%", flexGrow = 1, flexBasis = 0, overflow = "hidden", children = { CreatePageContent() } }
+    local initialPageChildren = {}
+    if initialSnapshotReceived_ then
+        initialPageChildren[1] = CreatePageContent()
+    end
+    pageContainer_ = UI.Panel { width = "100%", height = "100%", flexGrow = 1, flexBasis = 0, alignSelf = "stretch", overflow = "hidden", children = initialPageChildren }
     uiRoot_ = UI.Panel {
         width = "100%",
         height = "100%",
+        alignItems = "stretch",
         pointerEvents = "box-none",
         children = {
             CreateBackground(),
             UI.Panel {
                 width = "100%",
                 height = "100%",
+                alignItems = "stretch",
                 flexDirection = "column",
                 children = { CreateTopBar(), pageContainer_, CreateBottomNav() },
             },
@@ -2113,7 +2202,8 @@ local function BuildRoot()
 end
 
 local function InitUI()
-    UI.Init({ theme = AppTheme, scale = UI.Scale.DESIGN_RESOLUTION(CONFIG.DesignW, CONFIG.DesignH) })
+    ReadLayoutMetrics()
+    UI.Init({ theme = AppTheme, scale = layoutState_.metrics.scale })
     InstallSafeAreaWrapper()
     UI.SetOverflowWarnings(false)
 end
@@ -2121,11 +2211,38 @@ end
 local function BindServerEvents()
     ServerClient.On("snapshot", function()
         game = GameStateAdapter.GetViewState()
+        if not sessionAutoStartAttempted_ then
+            sessionAutoStartAttempted_ = true
+            if not game.autoRun then
+                requestedAutoRun_ = true
+                pendingAutoRun_ = true
+                print("[Play] authoritative auto-run is off; requesting automatic start")
+                ServerClient.AutoRun(true, function(response)
+                    pendingAutoRun_ = nil
+                    if response and response.ok then
+                        ServerClient.RequestSnapshot()
+                    else
+                        requestedAutoRun_ = nil
+                        print("[Play] automatic start rejected: " .. tostring(response and response.reason or "unknown"))
+                    end
+                end)
+            end
+        end
+        if requestedAutoRun_ ~= nil and game.autoRun == requestedAutoRun_ then
+            requestedAutoRun_ = nil
+            pendingAutoRun_ = nil
+        end
         UpdateTopBar()
         if pageContainer_ then
             RefreshCurrentPage()
         else
             BuildRoot()
+        end
+        if not initialSnapshotReceived_ then
+            initialSnapshotReceived_ = true
+            if initialDwpFinished_ then
+                loadingHideDelay_ = 0.35
+            end
         end
         if loadingActive_ then
             SetLoading(math.max(loadingProgress_, 80), "常驻服状态已同步，继续加载资源")
@@ -2158,6 +2275,9 @@ end
 
 function GameView.Start()
     graphics.windowTitle = CONFIG.Title
+    initialSnapshotReceived_ = false
+    initialDwpFinished_ = false
+    loadingHideDelay_ = nil
     InitUI()
     ProbeOptionalFonts()
     game = GameStateAdapter.GetViewState()
@@ -2174,6 +2294,14 @@ end
 
 function GameView.Stop()
     UnsubscribeFromEvent("Update")
+    ClearCombatPresentation(false)
+    initialSnapshotReceived_ = false
+    initialDwpFinished_ = false
+    loadingHideDelay_ = nil
+    requestedAutoRun_ = nil
+    pendingAutoRun_ = nil
+    sessionAutoStartAttempted_ = false
+    pickupFx_ = nil
     if dwpObserverId_ then
         cache:StopObservingDownloads(dwpObserverId_)
         dwpObserverId_ = nil
@@ -2186,6 +2314,7 @@ end
 ---@param eventData VariantMap
 function GameView.HandleUpdate(eventType, eventData)
     local dt = eventData:GetFloat("TimeStep")
+    CheckLayoutMetrics(dt)
     if loadingActive_ then
         UpdateLoadingSpinner(dt)
         if loadingHideDelay_ then

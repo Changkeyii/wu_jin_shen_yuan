@@ -54,11 +54,11 @@ function IdleRuntimeService:Update(timeStep)
         local state = self.profileService:GetState(userId)
         if state and state.autoRun then
             local elapsed = (self.elapsed[userId] or 0) + timeStep
-            if elapsed >= Catalog.STEP_SECONDS then
+            while elapsed >= Catalog.STEP_SECONDS do
                 elapsed = elapsed - Catalog.STEP_SECONDS
                 self:_enqueueTick(userId)
             end
-            self.elapsed[userId] = math.min(elapsed, Catalog.STEP_SECONDS)
+            self.elapsed[userId] = elapsed
         else
             self.elapsed[userId] = 0
         end
