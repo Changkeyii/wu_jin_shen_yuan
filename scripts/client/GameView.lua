@@ -35,6 +35,7 @@ local selectedCategory_ = "weapon"
 local inventoryTabScrollX_ = 0
 local equipmentScrollY_ = 0
 local equipmentPageScrollY_ = 0
+local collectingOffline_ = false
 local topRefs_ = {}
 local navRefs_ = {}
 
@@ -94,6 +95,7 @@ local ASSETS = {
         inventoryEmptyState = "image/inventory_empty_state_20260720075957.png",
         inventoryItemCardSelected = "image/ui/inventory/item_card_selected.png",
         playHpFrame = "image/brawlforge_play_hp_frame_cropped.png",
+        playAutoRunButton = "image/brawlforge_play_autorun_button_cropped.png",
         panelLarge = "image/ui/generated/panel_940x320.png",
         panelCompact = "image/ui/generated/panel_940x180.png",
         infoBarBlue = "image/ui/generated/info_bar_blue_520x76.png",
@@ -446,9 +448,43 @@ local function RequestFullRebuild()
     needsFullRebuild_ = true
 end
 
-local function ActionResult(response)
-    if response and response.ok then return end
-    UI.Toast.Show((response and response.reason) or "服务器未接受本次操作", { duration = 2, variant = "error", position = "bottom" })
+local ACTION_ERROR_MESSAGES = {
+    NO_OFFLINE_REWARD = "暂无可领取的离线收益（离线满15秒后可领取）",
+    INVENTORY_FULL = "背包已满，请先清理装备后再操作",
+    NOT_READY = "正在连接服务器，请稍后再试",
+    RATE_LIMITED = "操作太频繁，请稍后再试",
+}
+
+local function ActionResult(response, successMessage)
+    if response and response.ok then
+        if successMessage then
+            UI.Toast.Show(successMessage, { duration = 2.4, variant = "success", position = "bottom" })
+        end
+        return true
+    end
+    local message = response and ACTION_ERROR_MESSAGES[response.code]
+        or (response and response.reason)
+        or "服务器未接受本次操作"
+    UI.Toast.Show(message, { duration = 2.4, variant = "error", position = "bottom" })
+    return false
+end
+
+local function OfflineRewardMessage(response)
+    local data = response and response.data
+    local delta = data and data.delta
+    for _, value in ipairs((delta and delta.events) or {}) do
+        if value.kind == "offline_collected" then
+            local equipmentText = (value.equipment or 0) > 0
+                and ("、装备" .. tostring(value.equipment) .. "件")
+                or ""
+            local remainingText = value.interrupted and "；背包已满，剩余收益已保留" or ""
+            return "离线收益已领取：金币" .. FormatInt(value.gold or 0)
+                .. "、经验" .. FormatInt(value.exp or 0)
+                .. "、碎片" .. FormatInt(value.fragments or 0)
+                .. equipmentText .. remainingText
+        end
+    end
+    return "离线收益领取成功"
 end
 
 local function DecomposeRankLabel(maxRank)
@@ -475,7 +511,21 @@ local function CollectDecomposeCandidates(maxRank)
 end
 
 local actionFns_ = {}
-actionFns_.CollectOffline = function() ServerClient.CollectOffline(ActionResult) end
+actionFns_.CollectOffline = function()
+    if collectingOffline_ then
+        UI.Toast.Show("正在领取离线收益，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
+        return
+    end
+    collectingOffline_ = true
+    ServerClient.CollectOffline(function(response)
+        collectingOffline_ = false
+        if ActionResult(response, response and response.ok and OfflineRewardMessage(response) or nil) then
+            -- Delta normally refreshes the page first; the snapshot is a safety net
+            -- for a temporarily dropped delta so the visible totals still converge.
+            ServerClient.RequestSnapshot()
+        end
+    end)
+end
 actionFns_.EquipItem = function(item)
     if item and item.id then
         selectedSlot_ = item.slot or selectedSlot_
@@ -1115,10 +1165,56 @@ local function CreateHomePage()
                 top = 316,
                 width = 300,
                 height = 168,
+                pointerEvents = "box-none",
                 children = {
-                    UI.Panel { position = "absolute", left = 0, top = 0, width = 300, height = 44, clickable = true, alignItems = "center", justifyContent = "center", onClick = function() SwitchPage("play") end, children = { Txt("进入刷宝", 23, C.text, { position = "absolute", left = -2, top = 15, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
-                    UI.Panel { position = "absolute", left = 0, top = 62, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then PlayPresentation.SetAutoRun(not game.autoRun) end end, children = { Txt(game.autoRun and "暂停挂机" or "开始挂机", 23, C.text, { position = "absolute", left = -2, top = 11, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
-                    UI.Panel { position = "absolute", left = 0, top = 124, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then actionFns_.CollectOffline() end end, children = { Txt("领取离线", 23, C.text, { position = "absolute", left = -4, top = 9, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
+                    UI.Panel {
+                        position = "absolute", left = 0, top = 0, width = 300, height = 44,
+                        clickable = true, alignItems = "center", justifyContent = "center",
+                        onClick = function() SwitchPage("play") end,
+                        children = {
+                            Txt("进入刷宝", 23, C.text, {
+                                position = "absolute", left = -2, top = 15, width = "100%",
+                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
+                    UI.Panel {
+                        position = "absolute", left = 0, top = 62, width = 300, height = 44,
+                        clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0,
+                        alignItems = "center", justifyContent = "center",
+                        onClick = function()
+                            if not game.readOnly and not PlayPresentation.SetAutoRun(not game.autoRun) then
+                                UI.Toast.Show("挂机状态正在同步，请稍候", {
+                                    duration = 1.5,
+                                    variant = "info",
+                                    position = "bottom",
+                                })
+                            end
+                        end,
+                        children = {
+                            Txt(game.autoRun and "暂停挂机" or "开始挂机", 23, C.text, {
+                                position = "absolute", left = -2, top = 11, width = "100%",
+                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
+                    UI.Panel {
+                        position = "absolute", left = 0, top = 124, width = 300, height = 44,
+                        clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0,
+                        alignItems = "center", justifyContent = "center",
+                        onClick = function()
+                            if not game.readOnly then actionFns_.CollectOffline() end
+                        end,
+                        children = {
+                            Txt("领取离线", 23, C.text, {
+                                position = "absolute", left = -4, top = 9, width = "100%",
+                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
                 }
             },
 
@@ -1590,9 +1686,24 @@ local function BindServerEvents()
     ServerClient.On("snapshotProgress", function(payload)
         LoadingController.MarkSnapshotProgress(payload and payload.received, payload and payload.total)
     end)
-    ServerClient.On("delta", function(payload) PlayPresentation.HandleDelta(payload) end)
+    ServerClient.On("delta", function(payload)
+        game = GameStateAdapter.GetViewState()
+        PlayPresentation.HandleDelta(payload)
+        UpdateTopBar()
+        if game.page == "play" then
+            PlayPresentation.Update(0)
+        elseif game.page == "home" then
+            -- The home page renders authoritative stats and button labels as
+            -- static nodes, so rebuild it after a server delta on the next frame.
+            RequestPageRefresh()
+        end
+    end)
     ServerClient.On("status", function(payload)
         local state = payload and payload.state or "syncing"
+        if state ~= "ready" then
+            collectingOffline_ = false
+            PlayPresentation.CancelPendingAutoRun()
+        end
         LoadingController.HandleStatus(state)
         if not LoadingController.IsActive() then
             game = GameStateAdapter.GetViewState()
@@ -1602,6 +1713,8 @@ local function BindServerEvents()
     end)
     ServerClient.On("adminResult", function(result) AdminPanel.HandleResult(result, RequestPageRefresh) end)
     ServerClient.On("disconnected", function()
+        collectingOffline_ = false
+        PlayPresentation.CancelPendingAutoRun()
         LoadingController.HandleDisconnected()
         if not LoadingController.IsActive() then
             game = GameStateAdapter.GetViewState()

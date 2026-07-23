@@ -51,19 +51,25 @@ local function extractConnection(eventData)
     if eventData == nil then
         return nil
     end
-    local okDirect, direct = pcall(function()
-        return eventData.Connection
+    local okField, field = pcall(function()
+        return eventData["Connection"]
     end)
-    if okDirect and direct ~= nil then
-        return direct
+    if okField and field ~= nil then
+        -- UrhoX exposes VariantMap fields as Variant values in production,
+        -- while unit tests and some hosts may provide the connection directly.
+        local okMethod, getPtr = pcall(function() return field.GetPtr end)
+        if okMethod and type(getPtr) == "function" then
+            local okVariant, connection = pcall(getPtr, field, "Connection")
+            if okVariant and connection ~= nil then
+                return connection
+            end
+        else
+            return field
+        end
     end
     local okGetter, connection = pcall(function()
         if type(eventData.GetPtr) == "function" then
-            return eventData:GetPtr("Connection", "Connection")
-        end
-        local variant = eventData["Connection"]
-        if variant and type(variant.GetPtr) == "function" then
-            return variant:GetPtr("Connection")
+            return eventData:GetPtr("Connection")
         end
         return nil
     end)

@@ -702,7 +702,8 @@ local function advanceOnlineCombatWorking(state, rng, now)
     state.hp = state.hp - damageToPlayer(state, monster)
     if state.hp <= 0 then
         state.hp = math.max(1, math.floor(state.stats.hp * 0.35))
-        monster.hp = monster.maxHp
+        -- Keep the damage already dealt. Otherwise a player who cannot defeat the
+        -- monster in one life is trapped in an endless full-heal loop.
         events[#events + 1] = event("battle_lost", {
             monster = monster.name,
             retainedHpRate = 0.35,

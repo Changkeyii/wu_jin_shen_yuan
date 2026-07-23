@@ -224,12 +224,12 @@ local function ClearCombatPresentation(advanceLockedEvent)
     floatingText_ = nil
 end
 
-local function ActionResult(response)
-    if response and response.ok then return end
-    context_.actionResult(response)
+local function ActionResult(response, successMessage)
+    return context_.actionResult(response, successMessage)
 end
 
 local function SetAutoRun(enabled)
+    if pendingAutoRun_ then return false end
     requestedAutoRun_ = enabled
     pendingAutoRun_ = true
     if enabled then
@@ -241,6 +241,7 @@ local function SetAutoRun(enabled)
                     ActionResult(response)
                     return
                 end
+                ActionResult(response, "挂机已开始")
                 context_.serverClient.RequestSnapshot(function(snapshotResponse)
                     if not snapshotResponse or not snapshotResponse.ok then
                         print("[Play] auto-run enabled; waiting for authoritative delta")
@@ -258,9 +259,11 @@ local function SetAutoRun(enabled)
                 return
             end
             requestedAutoRun_ = false
+            ActionResult(response, "挂机已暂停")
             context_.serverClient.RequestSnapshot()
         end)
     end
+    return true
 end
 
 local function TriggerPickupVisual(image, startX, startY, text)
@@ -397,7 +400,12 @@ local function CreatePage()
     local enemyHpProgress
     enemyHpProgress, refs_.enemyHpFill = context_.imageProgress(310, 24, currentMonsterHp_, currentMonsterMaxHp_, assets.ui.progressTrackHp, assets.ui.progressFillHp)
     refs_.enemyHpBar = enemyHpProgress
-    refs_.runButtonLabel = context_.compactTxt(game.autoRun and "刷宝中" or "开始刷宝", 20, C().text, {width = "100%", textAlign = "center", textStroke = {width = 2, color = "#000000"}})
+    refs_.runButtonLabel = context_.compactTxt(game.autoRun and "刷宝中" or "开始刷宝", 20, C().text, {
+        width = "100%",
+        textAlign = "center",
+        textStroke = {width = 2, color = "#000000"},
+        pointerEvents = "none",
+    })
 
     local sceneChildren = {refs_.bgTiles[1], refs_.bgTiles[2], refs_.bgTiles[3]}
     for index = 1, #refs_.objects do sceneChildren[#sceneChildren + 1] = refs_.objects[index] end
@@ -425,9 +433,20 @@ local function CreatePage()
         end,
     }
 
-    local runButton = context_.UI.Panel {
-        position = "absolute", right = 26, top = 42, width = 230, height = 72, clickable = true, alignItems = "center", justifyContent = "center",
-        backgroundImage = "image/brawlforge_play_autorun_button_flat_20260718124728.png", backgroundFit = "contain",
+    -- RunButton boundary contract:
+    -- assetRect=264x94, visualOuterRect=(4,4,256,86), contentRect=(50,22,164,50).
+    -- The full design-space target (x=824,y=42,w=230,h=72) remains interactive;
+    -- contain preserves the formal purple/cyan frame without stretching.
+    local runButtonDisabled = game.readOnly
+        or context_.loadingController.IsPlayAssetLoading()
+        or pendingAutoRun_
+    local runButton = context_.UI.Button {
+        position = "absolute", right = 26, top = 42, width = 230, height = 72,
+        disabled = runButtonDisabled,
+        alignItems = "center", justifyContent = "center",
+        padding = 0, paddingHorizontal = 0, paddingVertical = 0,
+        borderWidth = 0, boxShadow = {},
+        backgroundImage = assets.ui.playAutoRunButton, backgroundFit = "contain",
         onClick = function()
             local currentGame = Game()
             if not currentGame.readOnly and not context_.loadingController.IsPlayAssetLoading() and not pendingAutoRun_ then
@@ -590,7 +609,9 @@ local function Update(dt)
         refs_.enemyHpFrame:SetStyle({ visible = isAttacking and currentMonsterMaxHp_ > 0 })
     end
     if refs_.runButtonLabel then refs_.runButtonLabel:SetText(pendingAutoRun_ and "同步中" or (visualAutoRun and "刷宝中" or "开始刷宝")) end
-    refs_.runButton:SetStyle({opacity = (game.readOnly or context_.loadingController.IsPlayAssetLoading()) and 0.45 or 1.0})
+    local runButtonUnavailable = game.readOnly or context_.loadingController.IsPlayAssetLoading()
+    refs_.runButton:SetDisabled(runButtonUnavailable or pendingAutoRun_)
+    refs_.runButton:SetStyle({opacity = runButtonUnavailable and 0.45 or (pendingAutoRun_ and 0.72 or 1.0)})
 
     if pickupFx_ then
         pickupFx_.age = pickupFx_.age + dt
@@ -777,7 +798,12 @@ function PlayPresentation.HandleSnapshot()
 end
 
 function PlayPresentation.SetAutoRun(enabled)
-    SetAutoRun(enabled)
+    return SetAutoRun(enabled)
+end
+
+function PlayPresentation.CancelPendingAutoRun()
+    requestedAutoRun_ = nil
+    pendingAutoRun_ = nil
 end
 
 function PlayPresentation.ClearCombatPresentation(advanceLockedEvent)

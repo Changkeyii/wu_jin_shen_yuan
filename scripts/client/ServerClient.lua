@@ -374,7 +374,19 @@ function ServerClient.Send(command, payload, callback)
     data[Protocol.FIELDS.COMMAND] = Variant(command)
     data[Protocol.FIELDS.PAYLOAD_JSON] = Variant(payloadJson)
     if callback then pending_[requestId] = callback end
-    connection_:SendRemoteEvent(EVENTS.COMMAND, true, data)
+    local sent, sendReason = pcall(function()
+        connection_:SendRemoteEvent(EVENTS.COMMAND, true, data)
+    end)
+    if not sent then
+        pending_[requestId] = nil
+        local result = {
+            ok = false,
+            code = ErrorCodes.OPERATION_FAILED,
+            reason = "failed to send server command: " .. tostring(sendReason),
+        }
+        if callback then callback(result) end
+        return nil, result.reason
+    end
     return requestId
 end
 
