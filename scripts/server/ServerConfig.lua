@@ -3,6 +3,7 @@ local ServerConfig = {}
 ServerConfig.SCHEMA_VERSION = 1
 ServerConfig.LOGICAL_MAX_PLAYERS = 1
 ServerConfig.STEP_SECONDS = 3
+ServerConfig.COMBAT_TICK_SECONDS = 0.10
 ServerConfig.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 ServerConfig.INVENTORY_CAP = 300
 ServerConfig.MAX_PAYLOAD_BYTES = 16 * 1024

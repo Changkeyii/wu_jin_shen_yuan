@@ -1,5 +1,6 @@
 local Protocol = require("shared.NetworkProtocol")
 local ErrorCodes = require("shared.ErrorCodes")
+local GameStateSchema = require("shared.GameStateSchema")
 local GameStateAdapter = require("client.GameStateAdapter")
 
 local ServerClient = {}
@@ -11,9 +12,11 @@ local scene_ = nil
 local connection_ = nil
 local started_ = false
 local ready_ = false
+local syncingConnection_ = nil
 local requestCounter_ = 0
 local listeners_ = {}
 local pending_ = {}
+local snapshotAssembly_ = nil
 
 local function Emit(name, payload)
     local handlers = listeners_[name]
@@ -72,6 +75,38 @@ local function HandleResponse(eventType, eventData)
     Emit("response", payload)
 end
 
+local function ApplyCompleteSnapshot(snapshot, events)
+    local currentRevision = GameStateAdapter.GetRevision()
+    if snapshot.revision and snapshot.revision <= currentRevision and GameStateAdapter.GetViewState().connectionState == "ready" then
+        print("[ServerClient] ignored stale snapshot revision=" .. tostring(snapshot.revision)
+            .. " current=" .. tostring(currentRevision))
+        return false
+    end
+    if type(snapshot.kind) ~= "string" or snapshot.kind ~= "GameSnapshot"
+        or type(snapshot.inventory) ~= "table"
+        or type(snapshot.playerNickname) ~= "string"
+    then
+        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = "invalid assembled snapshot" })
+        return false
+    end
+    local ok, applyReason = GameStateAdapter.ApplySnapshot(snapshot)
+    if not ok then
+        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = applyReason })
+        return false
+    end
+    GameStateAdapter.ApplySnapshotEvents(events or {})
+    ready_ = true
+    syncingConnection_ = nil
+    snapshotAssembly_ = nil
+    GameStateAdapter.SetConnectionState("ready")
+    Emit("snapshot", GameStateAdapter.GetViewState())
+    if events and #events > 0 then
+        Emit("delta", { state = GameStateAdapter.GetViewState(), events = events })
+    end
+    Emit("ready", GameStateAdapter.GetViewState())
+    return true
+end
+
 local function HandleSnapshot(eventType, eventData)
     if not started_ or not connection_ then return end
     local payload, reason = DecodePayload(eventData)
@@ -79,16 +114,80 @@ local function HandleSnapshot(eventType, eventData)
         Emit("error", { code = ErrorCodes.INVALID_PAYLOAD, reason = reason })
         return
     end
-    local snapshot = payload.snapshot or payload
-    local ok, applyReason = GameStateAdapter.ApplySnapshot(snapshot)
-    if not ok then
-        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = applyReason })
+    if payload.chunkCount ~= nil then
+        local transferId = payload.transferId
+        local revision = payload.revision
+        local chunkIndex = payload.chunkIndex
+        local chunkCount = payload.chunkCount
+        if type(transferId) ~= "string"
+            or transferId == ""
+            or type(revision) ~= "number"
+            or revision < 0
+            or revision ~= math.floor(revision)
+            or type(chunkIndex) ~= "number"
+            or chunkIndex < 1
+            or chunkIndex ~= math.floor(chunkIndex)
+            or type(chunkCount) ~= "number"
+            or chunkCount < 1
+            or chunkCount ~= math.floor(chunkCount)
+            or chunkIndex > chunkCount
+            or type(payload.inventory) ~= "table"
+        then
+            Emit("error", { code = ErrorCodes.INVALID_PAYLOAD, reason = "invalid snapshot chunk metadata" })
+            return
+        end
+        if not snapshotAssembly_
+            or snapshotAssembly_.transferId ~= transferId
+            or snapshotAssembly_.revision ~= revision
+        then
+            snapshotAssembly_ = {
+                transferId = transferId,
+                revision = revision,
+                chunkCount = chunkCount,
+                received = {},
+                chunks = {},
+                snapshot = nil,
+                events = {},
+            }
+        end
+        local assembly = snapshotAssembly_
+        if assembly.chunkCount ~= chunkCount then
+            Emit("error", { code = ErrorCodes.INVALID_PAYLOAD, reason = "snapshot chunk count changed" })
+            snapshotAssembly_ = nil
+            return
+        end
+        if payload.snapshot then
+            if chunkIndex ~= 1 or assembly.snapshot then
+                Emit("error", { code = ErrorCodes.INVALID_PAYLOAD, reason = "invalid snapshot metadata chunk" })
+                return
+            end
+            if type(payload.events) ~= "table" then
+                Emit("error", { code = ErrorCodes.INVALID_PAYLOAD, reason = "invalid snapshot events" })
+                return
+            end
+            assembly.snapshot = payload.snapshot
+            assembly.events = payload.events
+        end
+        if not assembly.received[chunkIndex] then
+            assembly.received[chunkIndex] = true
+            assembly.chunks[chunkIndex] = payload.inventory
+        end
+        local receivedCount = 0
+        for index = 1, assembly.chunkCount do
+            if assembly.received[index] then receivedCount = receivedCount + 1 end
+        end
+        Emit("snapshotProgress", { received = receivedCount, total = assembly.chunkCount })
+        if receivedCount < assembly.chunkCount or not assembly.snapshot then return end
+        local inventory = {}
+        for index = 1, assembly.chunkCount do
+            if not assembly.received[index] then return end
+            for _, item in ipairs(assembly.chunks[index]) do inventory[#inventory + 1] = item end
+        end
+        assembly.snapshot.inventory = inventory
+        ApplyCompleteSnapshot(assembly.snapshot, assembly.events)
         return
     end
-    ready_ = true
-    GameStateAdapter.SetConnectionState("ready")
-    Emit("snapshot", GameStateAdapter.GetViewState())
-    Emit("ready", GameStateAdapter.GetViewState())
+    ApplyCompleteSnapshot(payload.snapshot or payload, payload.events or {})
 end
 
 local function HandleDelta(eventType, eventData)
@@ -124,10 +223,15 @@ end
 local function BeginSync(connection)
     if not started_ then return false, "client is stopped" end
     if not connection then return false, "server connection unavailable" end
+    if syncingConnection_ == connection and connection_ == connection then
+        return true
+    end
 
     ready_ = false
+    snapshotAssembly_ = nil
     pending_ = {}
     connection_ = connection
+    syncingConnection_ = connection
     connection_.scene = scene_
     GameStateAdapter.SetConnectionState("syncing")
     Emit("status", {
@@ -138,6 +242,7 @@ local function BeginSync(connection)
 
     local sent, reason = SendReady()
     if not sent then
+        if syncingConnection_ == connection then syncingConnection_ = nil end
         if connection_ == connection then connection_ = nil end
         GameStateAdapter.SetConnectionState("disconnected")
         Emit("error", { code = ErrorCodes.NOT_READY, reason = reason })
@@ -169,6 +274,8 @@ end
 local function HandleDisconnected(eventType, eventData)
     if not started_ then return end
     ready_ = false
+    snapshotAssembly_ = nil
+    syncingConnection_ = nil
     connection_ = nil
     pending_ = {}
     GameStateAdapter.SetConnectionState("disconnected")
@@ -185,6 +292,7 @@ function ServerClient.Start()
     end
     started_ = true
     ready_ = false
+    snapshotAssembly_ = nil
     pending_ = {}
     GameStateAdapter.Reset()
     GameStateAdapter.SetConnectionState("syncing")
@@ -199,6 +307,7 @@ function ServerClient.Start()
     SubscribeToEvent(EVENTS.SNAPSHOT, HandleSnapshot)
     SubscribeToEvent(EVENTS.DELTA, HandleDelta)
     SubscribeToEvent(EVENTS.STATUS, HandleStatus)
+    SubscribeToEvent("ServerReady", HandleConnected)
     SubscribeToEvent("ServerConnected", HandleConnected)
     SubscribeToEvent("ServerDisconnected", HandleDisconnected)
 
@@ -220,10 +329,13 @@ function ServerClient.Stop()
     UnsubscribeFromEvent(EVENTS.SNAPSHOT)
     UnsubscribeFromEvent(EVENTS.DELTA)
     UnsubscribeFromEvent(EVENTS.STATUS)
+    UnsubscribeFromEvent("ServerReady")
     UnsubscribeFromEvent("ServerConnected")
     UnsubscribeFromEvent("ServerDisconnected")
     pending_ = {}
+    snapshotAssembly_ = nil
     listeners_ = {}
+    syncingConnection_ = nil
     connection_ = nil
     if scene_ then scene_:Dispose(); scene_ = nil end
     ready_ = false
@@ -271,7 +383,15 @@ function ServerClient.AutoRun(enabled, callback) return ServerClient.Send("Game.
 function ServerClient.Equip(itemId, callback) return ServerClient.Send("Game.Equip", { itemId = itemId }, callback) end
 function ServerClient.Unequip(slot, callback) return ServerClient.Send("Game.Unequip", { slot = slot }, callback) end
 function ServerClient.AutoEquip(callback) return ServerClient.Send("Game.AutoEquip", {}, callback) end
-function ServerClient.Decompose(maxRank, callback) return ServerClient.Send("Game.Decompose", { maxRank = maxRank }, callback) end
+function ServerClient.Decompose(maxRank, candidateIds, callback)
+    return ServerClient.Send("Game.Decompose", { maxRank = maxRank, candidateIds = candidateIds }, callback)
+end
+function ServerClient.SetEquipmentLock(itemId, locked, callback)
+    return ServerClient.Send("Game.SetEquipmentLock", { itemId = itemId, locked = locked }, callback)
+end
+function ServerClient.SetInventoryPolicy(policy, callback)
+    return ServerClient.Send("Game.SetInventoryPolicy", policy, callback)
+end
 function ServerClient.Strengthen(slot, callback) return ServerClient.Send("Game.Strengthen", { slot = slot }, callback) end
 function ServerClient.Star(slot, callback) return ServerClient.Send("Game.Star", { slot = slot }, callback) end
 function ServerClient.CollectOffline(callback) return ServerClient.Send("Game.CollectOffline", {}, callback) end

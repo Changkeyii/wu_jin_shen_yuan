@@ -1,10 +1,18 @@
 local Catalog = {}
+local EquipmentCatalog = require("shared.EquipmentCatalog")
+local LargeNumber = require("shared.LargeNumber")
 
-Catalog.SCHEMA_VERSION = 1
+Catalog.SCHEMA_VERSION = 3
 Catalog.STEP_SECONDS = 3
+Catalog.COMBAT_TICK_SECONDS = 0.10
+Catalog.OFFLINE_REWARD_RATE = 0.20
+Catalog.OFFLINE_STEP_SECONDS = Catalog.STEP_SECONDS / Catalog.OFFLINE_REWARD_RATE
 Catalog.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 Catalog.INVENTORY_CAP = 300
 Catalog.MAX_LOG_EVENTS = 40
+Catalog.MAX_STAR = 5
+Catalog.MAX_ENHANCE = 1000
+Catalog.MAX_VALUE = 9007199254740991
 
 Catalog.RARITY_ORDER = { "common", "blue", "purple", "epic", "myth" }
 Catalog.RARITIES = {
@@ -69,14 +77,40 @@ Catalog.SETS = {
     },
 }
 
-Catalog.EVENTS = {
-    monster = { name = "普通怪物" },
-    elite = { name = "精英怪物" },
-    chest = { name = "宝箱" },
-    merchant = { name = "商人" },
-    random = { name = "随机事件" },
-    boss = { name = "Boss" },
-}
+Catalog.EQUIPMENT_DEFINITIONS = EquipmentCatalog.GetAll()
+Catalog.EQUIPMENT_BY_ID = {}
+for _, definition in ipairs(Catalog.EQUIPMENT_DEFINITIONS) do
+    Catalog.EQUIPMENT_BY_ID[definition.id] = definition
+end
+
+function Catalog.GetEquipmentDefinition(equipmentId)
+    return Catalog.EQUIPMENT_BY_ID[equipmentId]
+end
+
+function Catalog.ResolveEquipment(rawItem)
+    if type(rawItem) ~= "table" then return nil end
+    if rawItem.equipmentId then
+        return Catalog.GetEquipmentDefinition(rawItem.equipmentId)
+    end
+    return EquipmentCatalog.FindLegacy(rawItem)
+end
+
+function Catalog.ApplyEquipmentDefinition(item, definition)
+    if not item or not definition then return item end
+    item.equipmentId = definition.id
+    item.name = definition.name
+    item.slot = definition.slot
+    item.category = definition.category
+    item.rarity = definition.rarity
+    item.setId = definition.setId
+    item.atk = definition.atk
+    item.def = definition.def
+    item.hp = definition.hp
+    item.crit = definition.crit
+    item.critDmg = definition.critDmg
+    item.atkSpeed = definition.atkSpeed
+    return item
+end
 
 function Catalog.Clamp(value, minimum, maximum)
     if value < minimum then
@@ -105,19 +139,50 @@ function Catalog.GetCellType(position, floor)
 end
 
 function Catalog.GetItemEffectiveStats(item)
-    local factor = 1 + (item.enhance or 0) * 0.05 + (item.star or 0) * 0.10
+    local definition = item and Catalog.GetEquipmentDefinition(item.equipmentId)
+    local atk = definition and definition.atk or item.atk or 0
+    local def = definition and definition.def or item.def or 0
+    local hp = definition and definition.hp or item.hp or 0
+    local crit = definition and definition.crit or item.crit or 0
+    local critDmg = definition and definition.critDmg or item.critDmg or 0
+    local atkSpeed = definition and definition.atkSpeed or item.atkSpeed or 0
+    local level = Catalog.Clamp(math.floor(item.level or 1), 1, 1000000)
+    local enhance = Catalog.Clamp(math.floor(item.enhance or 0), 0, Catalog.MAX_ENHANCE)
+    local star = Catalog.Clamp(math.floor(item.star or 0), 0, Catalog.MAX_STAR)
+    local levelFactor = 1 + (level - 1) * 0.06
+    local progressionFactor = levelFactor + enhance * 0.05 + star * 0.10
     return {
-        atk = math.floor((item.atk or 0) * factor),
-        def = math.floor((item.def or 0) * factor),
-        hp = math.floor((item.hp or 0) * factor),
-        crit = item.crit or 0,
-        critDmg = item.critDmg or 0,
-        atkSpeed = item.atkSpeed or 0,
+        atk = math.floor(atk * progressionFactor),
+        def = math.floor(def * progressionFactor),
+        hp = math.floor(hp * progressionFactor),
+        crit = crit + star * 0.002,
+        critDmg = critDmg + star * 0.01,
+        atkSpeed = atkSpeed + enhance * 0.001,
+        levelFactor = levelFactor,
+        progressionFactor = progressionFactor,
     }
 end
 
+function Catalog.GetDecomposeRefund(item)
+    if not item then return { gold = 0, fragments = 0 } end
+    local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
+    return {
+        gold = math.max(0, math.floor(item.investedGold or 0)),
+        fragments = rarity.fragments + math.max(0, math.floor(item.investedFragments or 0)),
+    }
+end
+
+function Catalog.GetSellValue(item)
+    if not item then return 0 end
+    local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
+    local level = math.max(1, math.floor(item.level or 1))
+    return math.floor((50 + level * 15) * rarity.multiplier)
+        + math.max(0, math.floor(item.investedGold or 0))
+end
+
 function Catalog.GetItemPower(item)
-    if not item.slot then
+    if not item then return 0 end
+    if not item.equipmentId and not item.slot then
         return item.quantity or 1
     end
     local stats = Catalog.GetItemEffectiveStats(item)
@@ -131,23 +196,99 @@ function Catalog.GetItemPower(item)
     return math.floor(base * rarity.multiplier)
 end
 
-function Catalog.GetSetCounts(state)
+function Catalog.GetSetProgress(state)
     local byId = {}
-    for _, item in ipairs(state.inventory or {}) do
-        byId[item.id] = item
+    for _, item in ipairs(state.inventory or {}) do byId[item.id] = item end
+
+    local progress = {}
+    for _, setId in ipairs(Catalog.SET_ORDER) do
+        progress[setId] = {
+            count = 0,
+            regions = { weapon = 0, armor = 0, jewelry = 0, special = 0 },
+            activeTiers = {},
+            activeRegions = {},
+        }
     end
 
-    local counts = {}
-    for _, itemId in pairs(state.equipped or {}) do
+    for slotId, itemId in pairs(state.equipped or {}) do
         local item = byId[itemId]
-        if item and Catalog.SETS[item.setId] then
-            counts[item.setId] = (counts[item.setId] or 0) + 1
-            if item.rarity == "myth" then
-                counts[item.setId] = counts[item.setId] + 1
-            end
+        local definition = item and Catalog.GetEquipmentDefinition(item.equipmentId)
+        local setProgress = definition and progress[definition.setId]
+        if setProgress then
+            local region = EquipmentCatalog.REGION_BY_SLOT[slotId]
+            setProgress.count = setProgress.count + 1
+            if region then setProgress.regions[region] = setProgress.regions[region] + 1 end
         end
     end
+
+    for _, setProgress in pairs(progress) do
+        for _, tier in ipairs({ 3, 6, 9, 12 }) do
+            setProgress.activeTiers[tostring(tier)] = setProgress.count >= tier
+        end
+        setProgress.activeRegions.armor = setProgress.regions.armor >= 3
+        setProgress.activeRegions.jewelry = setProgress.regions.jewelry >= 3
+        setProgress.activeRegions.special = setProgress.regions.special >= 3
+    end
+    return progress
+end
+
+function Catalog.GetSetCounts(state)
+    local progress = Catalog.GetSetProgress(state)
+    local counts = {}
+    for setId, setProgress in pairs(progress) do counts[setId] = setProgress.count end
     return counts
+end
+
+local function applyRegionBonuses(stats, setId, setProgress)
+    local active = setProgress.activeRegions
+    if active.armor then
+        stats.def = stats.def * 1.12
+        stats.hp = stats.hp * 1.10
+        if setId == "nightmare" then stats.lowHealthGuard = 0.10 end
+        if setId == "voyage" then stats.damageReduction = stats.damageReduction + 0.05 end
+        if setId == "abyss" then stats.lifeSteal = stats.lifeSteal + 0.02 end
+    end
+    if active.jewelry then
+        stats.crit = stats.crit + 0.05
+        stats.critDmg = stats.critDmg + 0.12
+        if setId == "lucky" then stats.luckyChance = math.max(stats.luckyChance, 0.10) end
+        if setId == "prophecy" then stats.skillDamage = stats.skillDamage + 0.08 end
+    end
+    if active.special then
+        stats.atk = stats.atk * 1.10
+        stats.bossDamage = stats.bossDamage + 0.08
+        if setId == "abyss" then stats.damageOverTime = stats.damageOverTime + 0.10 end
+        if setId == "voyage" then stats.atkSpeed = stats.atkSpeed + 0.15 end
+    end
+end
+
+local function applySetTierBonuses(stats, state, setId, count)
+    if setId == "nightmare" then
+        if count >= 3 then stats.damageBonus = stats.damageBonus + 0.08 end
+        if count >= 6 then stats.critDmg = stats.critDmg + 0.20; stats.lifeSteal = stats.lifeSteal + 0.02 end
+        if count >= 9 then stats.atk = stats.atk * 1.15; stats.lowHealthDamage = 0.15 end
+        if count >= 12 then stats.damageBonus = stats.damageBonus + 0.35; stats.lowHealthGuard = math.max(stats.lowHealthGuard, 0.20) end
+    elseif setId == "lucky" then
+        if count >= 3 then stats.crit = stats.crit + 0.06 end
+        if count >= 6 then stats.luckyChance = math.max(stats.luckyChance, 0.20); stats.luckyMultiplier = math.max(stats.luckyMultiplier, 2.0) end
+        if count >= 9 then stats.luckyChance = math.max(stats.luckyChance, 0.28); stats.luckyMultiplier = math.max(stats.luckyMultiplier, 2.8) end
+        if count >= 12 then stats.critDmg = stats.critDmg + 0.25; stats.luckyPity = 2 end
+    elseif setId == "voyage" then
+        if count >= 3 then stats.atkSpeed = stats.atkSpeed + 0.15; stats.moveSpeed = stats.moveSpeed + 0.05 end
+        if count >= 6 then stats.atk = stats.atk * 1.12; stats.damageReduction = stats.damageReduction + 0.05 end
+        if count >= 9 then stats.damageBonus = stats.damageBonus + 0.18; stats.moveBurst = 0.10 end
+        if count >= 12 then stats.atkSpeed = stats.atkSpeed + 0.35; stats.damageBonus = stats.damageBonus + 0.15 end
+    elseif setId == "abyss" then
+        if count >= 3 then stats.damageOverTime = stats.damageOverTime + 0.08 end
+        if count >= 6 then stats.damageBonus = stats.damageBonus + 0.12; stats.lifeSteal = stats.lifeSteal + 0.03 end
+        if count >= 9 then stats.damageOverTime = stats.damageOverTime + 0.18; stats.enemyDamageReduction = 0.10 end
+        if count >= 12 then stats.damageBonus = stats.damageBonus + 0.25; stats.lifeSteal = stats.lifeSteal + 0.05 end
+    elseif setId == "prophecy" then
+        if count >= 3 then stats.skillDamage = stats.skillDamage + 0.10 end
+        if count >= 6 then stats.damageBonus = stats.damageBonus + (state.floorKillBonus or 0) end
+        if count >= 9 then stats.bossDamage = stats.bossDamage + 0.35; stats.skillDamage = stats.skillDamage + 0.15 end
+        if count >= 12 then stats.permanentGrowthActive = true; stats.damageBonus = stats.damageBonus + 0.20 end
+    end
 end
 
 function Catalog.CalculateStats(state)
@@ -166,6 +307,11 @@ function Catalog.CalculateStats(state)
         trueDamageRate = 0,
         luckyChance = 0,
         luckyMultiplier = 1,
+        moveSpeed = 0,
+        skillDamage = 0,
+        damageOverTime = 0,
+        damageReduction = 0,
+        lowHealthGuard = 0,
         permanentBonus = permanentBonus,
     }
 
@@ -186,57 +332,20 @@ function Catalog.CalculateStats(state)
         end
     end
 
-    local counts = Catalog.GetSetCounts(state)
-    local nightmare = counts.nightmare or 0
-    if nightmare >= 2 then stats.damageBonus = stats.damageBonus + 0.15 end
-    if nightmare >= 3 then stats.critDmg = stats.critDmg + 0.30 end
-    if nightmare >= 5 then stats.trueDamageRate = stats.trueDamageRate + 0.02 end
-    if nightmare >= 8 then
-        stats.atk = stats.atk * 1.25
-        stats.atkSpeed = stats.atkSpeed + 0.5
+    local progress = Catalog.GetSetProgress(state)
+    for setId, setProgress in pairs(progress) do
+        applyRegionBonuses(stats, setId, setProgress)
+        applySetTierBonuses(stats, state, setId, setProgress.count)
     end
 
-    local lucky = counts.lucky or 0
-    if lucky >= 2 then stats.crit = stats.crit + 0.10 end
-    if lucky >= 3 then
-        stats.luckyChance = 0.15
-        stats.luckyMultiplier = 3
-    end
-    if lucky >= 5 then
-        stats.luckyChance = 0.22
-        stats.luckyMultiplier = 4
-    end
-    if lucky >= 8 then
-        stats.crit = stats.crit + 0.15
-        stats.luckyMultiplier = 5
-    end
-
-    local voyage = counts.voyage or 0
-    if voyage >= 2 then stats.atkSpeed = stats.atkSpeed + 0.3 end
-    if voyage >= 3 then
-        stats.atk = stats.atk * (1 + math.floor(stats.atkSpeed * 10) * 0.03)
-    end
-    if voyage >= 5 then stats.atkSpeed = stats.atkSpeed + 0.5 end
-    if voyage >= 8 then stats.damageBonus = stats.damageBonus + 0.18 end
-
-    local abyss = counts.abyss or 0
-    if abyss >= 2 then stats.lifeSteal = stats.lifeSteal + 0.03 end
-    if abyss >= 3 then stats.damageBonus = stats.damageBonus + 0.25 end
-    if abyss >= 5 then stats.lifeSteal = stats.lifeSteal + 0.05 end
-    if abyss >= 8 then stats.damageBonus = stats.damageBonus + 0.20 end
-
-    local prophecy = counts.prophecy or 0
-    if prophecy >= 2 then stats.damageBonus = stats.damageBonus + (state.floorKillBonus or 0) end
-    if prophecy >= 3 then stats.bossDamage = stats.bossDamage + 0.40 end
-    if prophecy >= 5 then stats.damageBonus = stats.damageBonus + (state.floorKillBonus or 0) * 0.5 end
-    if prophecy >= 8 then stats.permanentGrowthActive = true end
+    stats.setProgress = progress
 
     stats.crit = Catalog.Clamp(stats.crit, 0, 0.80)
     stats.atkSpeed = Catalog.Clamp(stats.atkSpeed, 0.5, 3.0)
     stats.atk = math.floor(stats.atk)
     stats.def = math.floor(stats.def)
     stats.hp = math.floor(stats.hp)
-    stats.power = math.floor(
+    stats.power = LargeNumber.Clamp(
         stats.atk * 7
         + stats.def * 3
         + stats.hp * 0.55

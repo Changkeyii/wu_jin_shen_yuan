@@ -1,3 +1,6 @@
+local EquipmentCatalog = require("shared.EquipmentCatalog")
+local LargeNumber = require("shared.LargeNumber")
+
 local GameStateAdapter = {}
 
 local authoritative_ = nil
@@ -27,12 +30,16 @@ local function Merge(target, patch)
     end
 end
 
+local function FormatValue(value)
+    return LargeNumber.Format(value or 0)
+end
+
 local function EventText(value)
     local kind = value and value.kind
     if kind == "cell_entered" then
         return string.format("前进到第%d/100格。", value.position or 0)
     elseif kind == "battle_reward" then
-        return string.format("战斗胜利：金币%d、经验%d。", value.gold or 0, value.exp or 0)
+        return "战斗胜利：金币" .. FormatValue(value.gold) .. "、经验" .. FormatValue(value.exp) .. "。"
     elseif kind == "battle_lost" then
         return "挑战失败，已退回修整。"
     elseif kind == "equipment_drop" then
@@ -42,13 +49,13 @@ local function EventText(value)
     elseif kind == "floor_advanced" then
         return "进入第" .. tostring(value.floor or "?") .. "层。"
     elseif kind == "chest_reward" then
-        return string.format("开启宝箱：金币%d、碎片%d。", value.gold or 0, value.fragments or 0)
+        return "开启宝箱：金币" .. FormatValue(value.gold) .. "、碎片" .. FormatValue(value.fragments) .. "。"
     elseif kind == "merchant_trade" then
         return string.format("商人交易：消耗金币%d，获得碎片%d。", value.goldSpent or 0, value.fragments or 0)
     elseif kind == "merchant_skipped" then
         return "遇到商人，但金币不足。"
     elseif kind == "wish_pool" then
-        return "许愿池回应：获得金币" .. tostring(value.gold or 0) .. "。"
+        return "许愿池回应：获得金币" .. FormatValue(value.gold) .. "。"
     elseif kind == "teleport" then
         return "传送门启动：前进至第" .. tostring(value.position or 0) .. "格。"
     elseif kind == "altar_heal" then
@@ -57,14 +64,29 @@ local function EventText(value)
         return "深渊回声：获得碎片" .. tostring(value.fragments or 0) .. "。"
     elseif kind == "inventory_full" then
         return "背包已满，自动挂机已暂停。"
+    elseif kind == "inventory_drop_skipped" then
+        return "背包已满，本次无法处理的装备掉落已跳过，挂机继续。"
     elseif kind == "offline_collected" then
-        return string.format("领取离线收益：金币%d、经验%d、碎片%d。", value.gold or 0, value.exp or 0, value.fragments or 0)
+        local equipmentText = (value.equipment or 0) > 0 and ("、装备" .. tostring(value.equipment) .. "件") or ""
+        local remainingText = value.interrupted and "，背包已满，剩余离线收益保留" or ""
+        return "领取离线收益（在线1/5）：金币" .. FormatValue(value.gold) .. "、经验" .. FormatValue(value.exp) .. "、碎片" .. FormatValue(value.fragments) .. equipmentText .. remainingText .. "。"
     elseif kind == "equipment_equipped" then
         return "装备已穿戴至" .. tostring(value.slot or "目标槽位") .. "。"
     elseif kind == "equipment_unequipped" then
         return "已卸下" .. tostring(value.slot or "目标槽位") .. "装备。"
     elseif kind == "equipment_decomposed" then
-        return string.format("分解%d件装备，获得碎片%d。", value.count or 0, value.fragments or 0)
+        return "分解" .. tostring(value.count or 0) .. "件装备，返还金币" .. FormatValue(value.gold) .. "、碎片" .. FormatValue(value.fragments) .. "。"
+    elseif kind == "equipment_auto_disposed" then
+        return "背包自动" .. (value.mode == "sell" and "出售" or "分解") .. "装备，获得金币" .. FormatValue(value.gold) .. "、碎片" .. FormatValue(value.fragments) .. "。"
+    elseif kind == "equipment_lock_changed" then
+        return value.locked and "装备已锁定。" or "装备已解锁。"
+    elseif kind == "inventory_policy_changed" then
+        local policy = value.inventoryPolicy or {}
+        local parts = {}
+        if policy.pauseOnFull then parts[#parts + 1] = "满包暂停" end
+        if policy.autoDecompose then parts[#parts + 1] = "自动分解" end
+        if policy.autoSell then parts[#parts + 1] = "自动出售" end
+        return "背包规则已更新：" .. (#parts > 0 and table.concat(parts, "、") or "不自动处理") .. "。"
     elseif kind == "equipment_strengthened" then
         return "装备强化至 +" .. tostring(value.enhance or 0) .. "。"
     elseif kind == "equipment_starred" then
@@ -76,7 +98,13 @@ end
 local function ApplyEvents(state, events)
     state.logs = state.logs or {}
     for _, value in ipairs(events or {}) do
-        if value.kind == "battle" then
+        local kind = value.kind
+        if kind == "battle_won" then
+            state.currentMonster = nil
+        elseif kind == "battle_hit" then
+            local prefix = value.lucky and "触发777" or (value.critical and "暴击" or "命中")
+            state.recentDamage = prefix .. " " .. tostring(value.damage or 0) .. " 伤害，怪物剩余 " .. tostring(value.monsterHp or 0)
+        elseif kind == "battle" then
             local prefix = value.lucky and "触发777" or (value.critical and "暴击" or "造成")
             state.recentDamage = prefix .. " " .. tostring(value.lastDamage or 0) .. " 伤害"
         end
@@ -86,9 +114,33 @@ local function ApplyEvents(state, events)
     while #state.logs > 40 do table.remove(state.logs) end
 end
 
-local function NextExp(level)
-    return math.floor(100 * (1.15 ^ (math.max(1, level or 1) - 1)))
+local function ProjectEquipment(item)
+    if type(item) ~= "table" or not item.equipmentId then return item end
+    local definition = EquipmentCatalog.Get(item.equipmentId)
+    if not definition then return item end
+    local projected = DeepCopy(definition)
+    projected.id = item.id
+    projected.equipmentId = definition.id
+    projected.level = item.level or definition.level
+    projected.enhance = item.enhance or 0
+    projected.star = item.star or 0
+    projected.locked = item.locked == true
+    projected.acquiredAt = item.acquiredAt or 0
+    projected.source = item.source or "legacy"
+    projected.investedGold = item.investedGold or 0
+    projected.investedFragments = item.investedFragments or 0
+    projected.power = item.power
+    return projected
 end
+
+local function ProjectInventory(items)
+    local projected = {}
+    for _, item in ipairs(items or {}) do
+        projected[#projected + 1] = ProjectEquipment(item)
+    end
+    return projected
+end
+
 
 local function EmptyView()
     return {
@@ -101,9 +153,9 @@ local function EmptyView()
         level = 1,
         exp = 0,
         nextExp = 100,
-        gold = 0,
-        fragments = 0,
-        mythShards = 0,
+        gold = LargeNumber.Zero(),
+        fragments = LargeNumber.Zero(),
+        mythShards = LargeNumber.Zero(),
         autoRun = false,
         pendingOfflineSeconds = 0,
         offlineSeconds = 0,
@@ -143,12 +195,12 @@ local function RebuildView()
     nextView.page = page_
     nextView.connectionState = connectionState_
     nextView.readOnly = connectionState_ ~= "ready"
-    nextView.nextExp = nextView.nextExp or NextExp(nextView.level)
+    nextView.nextExp = nextView.nextExp or math.floor(100 * (1.15 ^ (math.max(1, nextView.level or 1) - 1)))
     nextView.pendingOfflineSeconds = nextView.pendingOfflineSeconds or 0
     nextView.offlineSeconds = nextView.pendingOfflineSeconds
     nextView.stepTimer = nextView.stepTimer or 0
     nextView.logs = nextView.logs or {}
-    nextView.inventory = nextView.inventory or {}
+    nextView.inventory = ProjectInventory(nextView.inventory or {})
     nextView.equipmentInventoryCount = #nextView.inventory
     nextView.inventoryCapacity = nextView.inventoryCapacity or 300
     nextView.equippedSlots = nextView.equippedSlots or nextView.equipped or {}
@@ -178,12 +230,19 @@ local function RebuildView()
         byId[tostring(item.id)] = item
     end
     local equippedObjects = {}
+    local equippedSlotByItemId = {}
     for slot, itemId in pairs(nextView.equippedSlots) do
         if type(itemId) == "table" then
             equippedObjects[slot] = itemId
+            if itemId.id ~= nil then equippedSlotByItemId[tostring(itemId.id)] = slot end
         else
             equippedObjects[slot] = byId[tostring(itemId)]
+            equippedSlotByItemId[tostring(itemId)] = slot
         end
+    end
+    for _, item in ipairs(nextView.inventory) do
+        item.equippedSlot = equippedSlotByItemId[tostring(item.id)]
+        item.isEquipped = item.equippedSlot ~= nil
     end
     nextView.equipped = equippedObjects
     view_ = nextView
@@ -207,6 +266,13 @@ function GameStateAdapter.ApplySnapshot(snapshot)
     return true, view_
 end
 
+function GameStateAdapter.ApplySnapshotEvents(events)
+    if not authoritative_ then return false end
+    ApplyEvents(authoritative_, events)
+    RebuildView()
+    return true
+end
+
 function GameStateAdapter.ApplyDelta(delta)
     if type(delta) ~= "table" then
         return false, "delta must be a table"
@@ -222,11 +288,11 @@ function GameStateAdapter.ApplyDelta(delta)
     end
 
     local changes = DeepCopy(delta.changes or delta.changed or delta.state or {})
-    if changes.inventory ~= nil then authoritative_.inventory = changes.inventory; changes.inventory = nil end
+    if changes.inventory ~= nil then authoritative_.inventory = ProjectInventory(changes.inventory); changes.inventory = nil end
     if changes.equipped ~= nil then authoritative_.equipped = changes.equipped; changes.equipped = nil end
     if changes.consumables ~= nil then authoritative_.consumables = changes.consumables; changes.consumables = nil end
     Merge(authoritative_, changes)
-    if delta.inventory ~= nil then authoritative_.inventory = DeepCopy(delta.inventory) end
+    if delta.inventory ~= nil then authoritative_.inventory = ProjectInventory(delta.inventory) end
     if delta.consumables ~= nil then authoritative_.consumables = DeepCopy(delta.consumables) end
     if delta.logs ~= nil then authoritative_.logs = DeepCopy(delta.logs) end
     if delta.stats ~= nil then authoritative_.stats = DeepCopy(delta.stats) end

@@ -7,17 +7,19 @@
   "entry": "main.lua",
   "entry@client": "main.lua",
   "entry@server": "server/ServerMain.lua",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "taptap_publish": {
-    "title": "<game title, required>",
+    "title": "无尽深渊挂机录",
     "description": "<game description>",
-    "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
+    "category": "rpg",
     "screen_orientation": "portrait",
     "collection_type": "sce",
     "trial_note": "<developer's note>",
     "transparent": false,
     "app_platforms": "1,2",
-    "developer_id": 402032
+    "developer_id": 402032,
+    "app_id": 891058,
+    "miniapp_id": "tapmcdykvqhgy7glb9"
   },
   "assets": {
     "icon": "",
@@ -25,6 +27,10 @@
     "promotional_image": ""
   },
   "metadata": {
-    "updated_at": "2026-07-13T09:29:10.886Z"
+    "updated_at": "2026-07-22T01:14:34.404Z"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_4mzc_1784682874246.png",
+    "generated_at": "2026-07-22T01:14:34.404Z"
   }
 }

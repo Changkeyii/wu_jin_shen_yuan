@@ -1,6 +1,8 @@
 local Catalog = require("server.domain.Catalog")
 local StateNormalizer = require("server.domain.StateNormalizer")
 local TableUtils = require("server.domain.TableUtils")
+local CombatSequence = require("shared.CombatSequence")
+local LargeNumber = require("shared.LargeNumber")
 
 local GameEngine = {}
 
@@ -20,8 +22,25 @@ local SCALAR_DELTA_FIELDS = {
     "hp",
     "floorKillBonus",
     "permanentBonus",
+    "inventoryPolicy",
+    "currentMonster",
     "currentEvent",
 }
+
+local function addCurrency(state, currency, amount)
+    state[currency] = LargeNumber.Add(state[currency], amount)
+end
+
+local function spendCurrency(state, currency, amount)
+    local nextValue, ok = LargeNumber.Subtract(state[currency], amount)
+    if not ok then return false end
+    state[currency] = nextValue
+    return true
+end
+
+local function hasCurrency(state, currency, amount)
+    return LargeNumber.Compare(state[currency], amount) >= 0
+end
 
 local function nowInteger(now)
     return math.max(0, TableUtils.ToInteger(now, os.time()))
@@ -75,8 +94,13 @@ local function refreshDerived(state)
     end
     state.nextExp = Catalog.NextExp(state.level)
     state.stats = Catalog.CalculateStats(state)
+    state.setProgress = TableUtils.DeepCopy(state.stats.setProgress or {})
     state.hp = Catalog.Clamp(TableUtils.ToInteger(state.hp, state.stats.hp), 1, state.stats.hp)
-    state.currentEvent = Catalog.GetCellType(math.max(1, state.position), state.floor)
+    if state.currentMonster then
+        state.currentEvent = state.currentMonster.eventType
+    else
+        state.currentEvent = Catalog.GetCellType(math.max(1, state.position), state.floor)
+    end
 end
 
 local function buildCommit(previousRevision, state)
@@ -103,11 +127,7 @@ local function buildCommit(previousRevision, state)
             abyss_permanent_bonus = persisted.permanentBonus,
             abyss_next_item_id = persisted.nextItemId,
         },
-        money = {
-            abyss_gold = persisted.gold,
-            abyss_fragments = persisted.fragments,
-            abyss_myth_shards = persisted.mythShards,
-        },
+        money = {},
         lists = {
             abyss_inventory = persisted.inventory,
             abyss_equipped = persisted.equipped,
@@ -121,7 +141,7 @@ end
 local function buildDelta(previous, current, kind, events, inventoryChanged, equippedChanged)
     local changed = {}
     for _, field in ipairs(SCALAR_DELTA_FIELDS) do
-        if previous[field] ~= current[field] then
+        if not TableUtils.DeepEqual(previous[field], current[field]) then
             if field == "pauseReason" and current[field] == nil then
                 changed[field] = ""
             else
@@ -235,6 +255,19 @@ local function addExp(state, amount, events)
     return leveled
 end
 
+local function randomHex16()
+    return string.format("%04x", math.random(0, 65535))
+end
+
+local function makeInstanceUuid()
+    local first = randomHex16() .. randomHex16()
+    local second = randomHex16()
+    local third = string.format("4%03x", math.random(0, 4095))
+    local fourth = string.format("%04x", 0x8000 + math.random(0, 16383))
+    local fifth = randomHex16() .. randomHex16() .. randomHex16()
+    return string.format("%s-%s-%s-%s-%s", first, second, third, fourth, fifth)
+end
+
 local function allocateItemId(state)
     local used = {}
     for _, item in ipairs(state.inventory) do
@@ -242,78 +275,142 @@ local function allocateItemId(state)
     end
     local itemId
     repeat
-        itemId = string.format("eq-%06d", state.nextItemId)
-        state.nextItemId = state.nextItemId + 1
+        itemId = makeInstanceUuid()
     until not used[itemId]
+    state.nextItemId = state.nextItemId + 1
     return itemId
 end
 
-local function generatedEquipment(state, minimumRarity, isBoss, rng)
+local function generatedEquipment(state, minimumRarity, isBoss, rng, now, source)
     local floor = state.floor
     local roll = randomInt(rng, 1, 1000)
-    local rarity = "common"
-    local epicChance = math.min(650, 200 + math.floor(floor / 10) * 50)
+    local targetRarity = "epic"
     if minimumRarity == "myth" or (floor >= 100 and isBoss and roll <= 10) then
-        rarity = "myth"
-    elseif minimumRarity == "epic" or (isBoss and roll <= epicChance) or roll <= math.min(120, floor * 2) then
-        rarity = "epic"
-    elseif minimumRarity == "purple" or roll <= 360 then
-        rarity = "purple"
-    elseif roll <= 680 then
-        rarity = "blue"
-    end
-    if minimumRarity and Catalog.RARITIES[minimumRarity]
-        and Catalog.RARITIES[rarity].rank < Catalog.RARITIES[minimumRarity].rank then
-        rarity = minimumRarity
+        targetRarity = "myth"
     end
 
-    local slot = Catalog.SLOTS[randomInt(rng, 1, #Catalog.SLOTS)]
-    local setId = nil
-    if rarity == "epic" or rarity == "myth" then
-        setId = Catalog.SET_ORDER[randomInt(rng, 1, #Catalog.SET_ORDER)]
+    local candidates = {}
+    for _, definition in ipairs(Catalog.EQUIPMENT_DEFINITIONS) do
+        if definition.rarity == targetRarity then
+            candidates[#candidates + 1] = definition
+        end
     end
-    local base = floor * Catalog.RARITIES[rarity].multiplier
+    local definition = candidates[randomInt(rng, 1, #candidates)]
     local item = {
-        id = nil,
-        name = Catalog.RARITIES[rarity].name .. "·" .. (setId and Catalog.SETS[setId].shortName or "制式") .. "·" .. slot.name,
-        slot = slot.id,
-        category = slot.category,
-        rarity = rarity,
-        setId = setId,
+        id = allocateItemId(state),
+        equipmentId = definition.id,
         level = floor,
-        atk = math.floor((slot.category == "weapon" and 20 or 6) + base * 3.4 + randomInt(rng, 0, 18)),
-        def = math.floor((slot.category == "armor" and 18 or 5) + base * 2.4 + randomInt(rng, 0, 12)),
-        hp = math.floor(60 + base * 18 + randomInt(rng, 0, 50)),
-        crit = (slot.category == "jewelry" and 0.02 or 0) + (rarity == "epic" and 0.01 or 0) + (rarity == "myth" and 0.02 or 0),
-        critDmg = (slot.category == "special" and 0.08 or 0) + (rarity == "myth" and 0.12 or 0),
-        atkSpeed = (setId == "voyage" and 0.05 or 0) + (rarity == "myth" and 0.05 or 0),
         enhance = 0,
         star = 0,
+        locked = false,
+        acquiredAt = nowInteger(now),
+        source = source or (isBoss and "boss_drop" or "monster_drop"),
+        investedGold = 0,
+        investedFragments = 0,
     }
-    if rarity == "myth" and setId then
-        slot = Catalog.SLOT_BY_ID[Catalog.SETS[setId].mythSlot] or slot
-        item.name = Catalog.SETS[setId].mythName
-        item.slot = slot.id
-        item.category = slot.category
-    end
-    item.id = allocateItemId(state)
-    item.power = Catalog.GetItemPower(item)
     return item
 end
 
-local function addGeneratedDrop(state, minimumRarity, isBoss, rng, events)
-    local item = generatedEquipment(state, minimumRarity, isBoss, rng)
-    if #state.inventory >= Catalog.INVENTORY_CAP then
-        return false, item
+local function disposeEquipment(state, item, mode)
+    if mode == "sell" then
+        local gold = Catalog.GetSellValue(item)
+        addCurrency(state, "gold", gold)
+        return { gold = gold, fragments = 0 }
+    end
+    local refund = Catalog.GetDecomposeRefund(item)
+    addCurrency(state, "gold", refund.gold)
+    addCurrency(state, "fragments", refund.fragments)
+    return refund
+end
+
+local function autoDispositionEnabled(state, item)
+    local policy = state.inventoryPolicy or {}
+    if item.rarity == "myth" then return false end
+    if policy.autoDecompose and policy.decomposeRarities and policy.decomposeRarities[item.rarity] == true then
+        return "decompose"
+    end
+    if policy.autoSell and policy.sellRarities and policy.sellRarities[item.rarity] == true then
+        return "sell"
+    end
+    return false
+end
+
+local function hasAutoDispositionPolicy(state)
+    local policy = state.inventoryPolicy or {}
+    for _, enabled in pairs(policy.decomposeRarities or {}) do
+        if policy.autoDecompose and enabled then return true end
+    end
+    for _, enabled in pairs(policy.sellRarities or {}) do
+        if policy.autoSell and enabled then return true end
+    end
+    return false
+end
+
+local function makeRoomForDrop(state, incoming, events)
+    if #state.inventory < Catalog.INVENTORY_CAP then return true, false end
+    local policy = state.inventoryPolicy or {}
+    local mode = autoDispositionEnabled(state, incoming)
+    local equipped = equippedIdSet(state)
+    local disposalIndex = nil
+    if mode then
+        local reward = disposeEquipment(state, incoming, mode)
+        events[#events + 1] = event("equipment_auto_disposed", {
+            itemId = incoming.id,
+            equipmentId = incoming.equipmentId,
+            mode = mode,
+            gold = reward.gold,
+            fragments = reward.fragments,
+            incoming = true,
+        })
+        return false, "consumed"
+    end
+    for index, item in ipairs(state.inventory) do
+        if not item.locked and not equipped[item.id] and autoDispositionEnabled(state, item) then
+            disposalIndex = index
+            break
+        end
+    end
+    if not disposalIndex then
+        if policy.pauseOnFull == false then
+            events[#events + 1] = event("inventory_drop_skipped", {
+                itemId = incoming.id,
+                equipmentId = incoming.equipmentId,
+                capacity = Catalog.INVENTORY_CAP,
+            })
+            return false, "skipped"
+        end
+        return false, false
+    end
+    local removed = table.remove(state.inventory, disposalIndex)
+    local mode = autoDispositionEnabled(state, removed)
+    local reward = disposeEquipment(state, removed, mode)
+    events[#events + 1] = event("equipment_auto_disposed", {
+        itemId = removed.id,
+        equipmentId = removed.equipmentId,
+        mode = mode,
+        gold = reward.gold,
+        fragments = reward.fragments,
+        incoming = false,
+    })
+    return true, true
+end
+
+local function addGeneratedDrop(state, minimumRarity, isBoss, rng, now, source, events)
+    local item = generatedEquipment(state, minimumRarity, isBoss, rng, now, source)
+    local hasRoom, handled = makeRoomForDrop(state, item, events)
+    if not hasRoom then
+        return handled == "consumed" or handled == "skipped", nil, false
     end
     state.inventory[#state.inventory + 1] = item
+    local definition = Catalog.GetEquipmentDefinition(item.equipmentId)
     events[#events + 1] = event("equipment_drop", {
         itemId = item.id,
-        name = item.name,
-        rarity = item.rarity,
-        slot = item.slot,
+        equipmentId = item.equipmentId,
+        name = definition and definition.name or "未知装备",
+        rarity = definition and definition.rarity or "common",
+        slot = definition and definition.slot or "",
     })
-    return true, item
+    return true, item, true
 end
 
 local function monsterFor(state, eventType)
@@ -352,39 +449,24 @@ end
 local function damageToPlayer(state, monster)
     local mitigation = state.stats.def / (state.stats.def + 200 + state.floor * 5)
     local damage = monster.atk * (1 - mitigation)
-    if (Catalog.GetSetCounts(state).voyage or 0) >= 5 then
-        damage = damage * (1 - math.min(0.20, state.floor * 0.01))
-    end
+    damage = damage * (1 - (state.stats.damageReduction or 0))
     return math.max(1, math.floor(damage))
 end
 
-local function simulateBattle(state, eventType, rng, events)
+local function simulateOfflineBattle(state, eventType, rng)
     refreshDerived(state)
     local monster = monsterFor(state, eventType)
     local monsterHp = monster.hp
     local playerHp = state.hp
-    local hits = math.floor(1 + (state.stats.atkSpeed - 1.0) * 10 + 0.0001)
-    hits = Catalog.Clamp(hits, 1, 3)
     local rounds = 0
-    local lastDamage = 0
-    local lastCritical = false
-    local lastLucky = false
 
-    while monsterHp > 0 and playerHp > 0 and rounds < 40 do
+    while monsterHp > 0 and playerHp > 0 and rounds < 120 do
         rounds = rounds + 1
-        for _ = 1, hits do
-            state.hp = Catalog.Clamp(playerHp, 1, state.stats.hp)
-            local damage, critical, lucky = damageToMonster(state, monster, eventType == "boss", rng)
-            lastDamage = damage
-            lastCritical = critical
-            lastLucky = lucky
-            monsterHp = monsterHp - damage
-            if state.stats.lifeSteal > 0 then
-                playerHp = math.min(state.stats.hp, playerHp + math.floor(damage * state.stats.lifeSteal))
-            end
-            if monsterHp <= 0 then
-                break
-            end
+        state.hp = Catalog.Clamp(playerHp, 1, state.stats.hp)
+        local damage = damageToMonster(state, monster, eventType == "boss", rng)
+        monsterHp = monsterHp - damage
+        if state.stats.lifeSteal > 0 then
+            playerHp = math.min(state.stats.hp, playerHp + math.floor(damage * state.stats.lifeSteal))
         end
         if monsterHp > 0 then
             playerHp = playerHp - damageToPlayer(state, monster)
@@ -392,31 +474,15 @@ local function simulateBattle(state, eventType, rng, events)
     end
 
     state.hp = Catalog.Clamp(playerHp, 0, state.stats.hp)
-    events[#events + 1] = event("battle", {
-        eventType = eventType,
-        monster = monster.name,
-        won = monsterHp <= 0,
-        rounds = rounds,
-        lastDamage = lastDamage,
-        critical = lastCritical,
-        lucky = lastLucky,
-    })
     return monster, monsterHp <= 0
 end
 
-local function resolveMonster(state, eventType, rng, events)
-    local monster, won = simulateBattle(state, eventType, rng, events)
-    if not won then
-        state.hp = math.max(1, math.floor(state.stats.hp * 0.35))
-        events[#events + 1] = event("battle_lost", { monster = monster.name, retainedHpRate = 0.35 })
-        return true, false
-    end
-
+local function settleMonsterVictory(state, eventType, rng, now, events)
     local isBoss = eventType == "boss"
     local isElite = eventType == "elite"
     local exp = math.floor((state.floor * 5 + 10) * (isBoss and 10 or (isElite and 2.3 or 1)))
     local gold = math.floor((state.floor * 8 + 25) * (isBoss and 8 or (isElite and 2 or 1)))
-    state.gold = state.gold + gold
+    addCurrency(state, "gold", gold)
     addExp(state, exp, events)
     state.floorKillBonus = math.min(0.50, state.floorKillBonus + 0.01)
     events[#events + 1] = event("battle_reward", { gold = gold, exp = exp })
@@ -424,26 +490,26 @@ local function resolveMonster(state, eventType, rng, events)
     local inventoryChanged = false
     local dropRoll = randomInt(rng, 1, 100)
     if isBoss then
-        local added = addGeneratedDrop(state, "purple", true, rng, events)
+        local added, _, inventoryAdded = addGeneratedDrop(state, "purple", true, rng, now, "boss_drop", events)
         if not added then return false, inventoryChanged end
-        inventoryChanged = true
+        inventoryChanged = inventoryChanged or inventoryAdded
         if state.floor >= 100 and randomInt(rng, 1, 100) == 1 then
-            added = addGeneratedDrop(state, "myth", true, rng, events)
+            added, _, inventoryAdded = addGeneratedDrop(state, "myth", true, rng, now, "boss_drop", events)
             if not added then return false, inventoryChanged end
-            inventoryChanged = true
+            inventoryChanged = inventoryChanged or inventoryAdded
         end
     elseif isElite and dropRoll <= 48 then
-        local added = addGeneratedDrop(state, "blue", false, rng, events)
+        local added, _, inventoryAdded = addGeneratedDrop(state, "blue", false, rng, now, "elite_drop", events)
         if not added then return false, inventoryChanged end
-        inventoryChanged = true
+        inventoryChanged = inventoryChanged or inventoryAdded
     elseif dropRoll <= 22 then
-        local added = addGeneratedDrop(state, nil, false, rng, events)
+        local added, _, inventoryAdded = addGeneratedDrop(state, nil, false, rng, now, "monster_drop", events)
         if not added then return false, inventoryChanged end
-        inventoryChanged = true
+        inventoryChanged = inventoryChanged or inventoryAdded
     end
 
     if isBoss then
-        if (Catalog.GetSetCounts(state).prophecy or 0) >= 8 then
+        if (Catalog.GetSetCounts(state).prophecy or 0) >= 12 then
             state.permanentBonus = state.permanentBonus + 0.005
             events[#events + 1] = event("permanent_growth", { amount = 0.005 })
         end
@@ -458,35 +524,229 @@ local function resolveMonster(state, eventType, rng, events)
     return true, inventoryChanged
 end
 
-local function resolveChest(state, rng, events)
+local function resolveMonsterOffline(state, eventType, rng, now, events)
+    local monster, won = simulateOfflineBattle(state, eventType, rng)
+    if not won then
+        state.hp = math.max(1, math.floor(state.stats.hp * 0.35))
+        events[#events + 1] = event("battle_lost", { monster = monster.name, retainedHpRate = 0.35 })
+        return true, false
+    end
+    return settleMonsterVictory(state, eventType, rng, now, events)
+end
+
+local function randomAttack(state, monster, rng)
+    local attack = CombatSequence.RandomAttack(function(minimum, maximum)
+        return randomInt(rng, minimum, maximum)
+    end, monster.lastSequenceIndex, state.stats.atkSpeed)
+    monster.phase = "windup"
+    monster.phaseRemaining = attack.windupSeconds
+    monster.sequenceIndex = attack.sequenceIndex
+    monster.sequenceId = attack.sequenceId
+    monster.fps = attack.fps
+    monster.hitFrame = attack.hitFrame
+    monster.endFrame = attack.endFrame
+    monster.recoverySeconds = attack.recoverySeconds
+    monster.lastSequenceIndex = attack.sequenceIndex
+    return attack
+end
+
+local function attackStartedEvent(monster, attack)
+    return event("attack_started", {
+        monsterId = monster.id,
+        eventType = monster.eventType,
+        attackSerial = monster.attackSerial,
+        sequenceIndex = attack.sequenceIndex,
+        sequenceId = attack.sequenceId,
+        fps = attack.fps,
+        hitFrame = attack.hitFrame,
+        endFrame = attack.endFrame,
+        windupSeconds = attack.windupSeconds,
+        recoverySeconds = attack.recoverySeconds,
+    })
+end
+
+local function beginOnlineBattle(state, eventType, rng, events)
+    refreshDerived(state)
+    local generated = monsterFor(state, eventType)
+    local monster = {
+        id = string.format("floor:%d:position:%d", state.floor, state.position),
+        eventType = eventType,
+        name = generated.name,
+        hp = generated.hp,
+        maxHp = generated.hp,
+        atk = generated.atk,
+        def = generated.def,
+        phase = "windup",
+        phaseRemaining = 0,
+        attackSerial = 1,
+        lastSequenceIndex = 0,
+    }
+    state.currentMonster = monster
+    state.currentEvent = eventType
+    local attack = randomAttack(state, monster, rng)
+    events[#events + 1] = event("battle_started", {
+        monsterId = monster.id,
+        eventType = eventType,
+        monster = monster.name,
+        monsterHp = monster.hp,
+        monsterMaxHp = monster.maxHp,
+    })
+    events[#events + 1] = attackStartedEvent(monster, attack)
+end
+
+local resolveChest
+local resolveMerchant
+local resolveRandomEvent
+
+local function advanceOnlineCombatWorking(state, rng, now)
+    local events = {}
+    local inventoryChanged = false
+    local monster = state.currentMonster
+
+    if not monster then
+        if #state.inventory >= Catalog.INVENTORY_CAP
+            and state.inventoryPolicy.pauseOnFull
+            and not hasAutoDispositionPolicy(state)
+        then
+            state.autoRun = false
+            state.pauseReason = "inventory_full"
+            return state, "inventory_full", {
+                event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+            }, false
+        end
+        if state.hp <= 0 then
+            state.hp = math.max(1, math.floor(state.stats.hp * 0.50))
+        end
+        state.position = math.min(100, state.position + 1)
+        local eventType = Catalog.GetCellType(state.position, state.floor)
+        state.currentEvent = eventType
+        events[#events + 1] = event("cell_entered", {
+            position = state.position,
+            floor = state.floor,
+            eventType = eventType,
+        })
+        if eventType == "monster" or eventType == "elite" or eventType == "boss" then
+            beginOnlineBattle(state, eventType, rng, events)
+            return state, "battle_started", events, false
+        end
+        local completed = true
+        if eventType == "chest" then
+            completed, inventoryChanged = resolveChest(state, rng, now, events)
+        elseif eventType == "merchant" then
+            resolveMerchant(state, events)
+        else
+            resolveRandomEvent(state, rng, events)
+        end
+        if not completed then
+            state.autoRun = false
+            state.pauseReason = "inventory_full"
+            events[#events + 1] = event("inventory_full", { capacity = Catalog.INVENTORY_CAP })
+            return state, "inventory_full", events, false
+        end
+        refreshDerived(state)
+        return state, "cell_resolved", events, inventoryChanged
+    end
+
+    if monster.phase == "recovery" then
+        monster.attackSerial = monster.attackSerial + 1
+        local attack = randomAttack(state, monster, rng)
+        events[#events + 1] = attackStartedEvent(monster, attack)
+        return state, "attack_started", events, false
+    end
+
+    local damage, critical, lucky = damageToMonster(
+        state,
+        monster,
+        monster.eventType == "boss",
+        rng
+    )
+    monster.hp = math.max(0, monster.hp - damage)
+    if state.stats.lifeSteal > 0 then
+        state.hp = math.min(
+            state.stats.hp,
+            state.hp + math.floor(damage * state.stats.lifeSteal)
+        )
+    end
+    events[#events + 1] = event("battle_hit", {
+        monsterId = monster.id,
+        eventType = monster.eventType,
+        attackSerial = monster.attackSerial,
+        sequenceIndex = monster.sequenceIndex,
+        sequenceId = monster.sequenceId,
+        hitFrame = monster.hitFrame,
+        damage = damage,
+        monsterHp = monster.hp,
+        monsterMaxHp = monster.maxHp,
+        critical = critical,
+        lucky = lucky,
+    })
+
+    if monster.hp <= 0 then
+        local eventType = monster.eventType
+        events[#events + 1] = event("battle_won", {
+            monsterId = monster.id,
+            eventType = eventType,
+        })
+        state.currentMonster = nil
+        local completed
+        completed, inventoryChanged = settleMonsterVictory(state, eventType, rng, now, events)
+        if not completed then
+            state.autoRun = false
+            state.pauseReason = "inventory_full"
+            return state, "inventory_full", events, inventoryChanged
+        end
+        refreshDerived(state)
+        return state, "battle_won", events, inventoryChanged
+    end
+
+    state.hp = state.hp - damageToPlayer(state, monster)
+    if state.hp <= 0 then
+        state.hp = math.max(1, math.floor(state.stats.hp * 0.35))
+        monster.hp = monster.maxHp
+        events[#events + 1] = event("battle_lost", {
+            monster = monster.name,
+            retainedHpRate = 0.35,
+            monsterHp = monster.hp,
+            monsterMaxHp = monster.maxHp,
+        })
+    end
+    monster.phase = "recovery"
+    monster.phaseRemaining = math.max(
+        CombatSequence.MIN_PHASE_SECONDS,
+        monster.recoverySeconds or CombatSequence.MIN_PHASE_SECONDS
+    )
+    return state, "battle_hit", events, false
+end
+
+resolveChest = function(state, rng, now, events)
     local gold = math.floor(state.floor * 20 + randomInt(rng, 80, 260))
     local fragments = randomInt(rng, 3, 12)
-    state.gold = state.gold + gold
-    state.fragments = state.fragments + fragments
+    addCurrency(state, "gold", gold)
+    addCurrency(state, "fragments", fragments)
     events[#events + 1] = event("chest_reward", { gold = gold, fragments = fragments })
     if randomInt(rng, 1, 100) <= 35 then
-        local added = addGeneratedDrop(state, "blue", false, rng, events)
-        return added, added
+        local added, _, inventoryAdded = addGeneratedDrop(state, "blue", false, rng, now, "chest_drop", events)
+        return added, inventoryAdded
     end
     return true, false
 end
 
-local function resolveMerchant(state, events)
+resolveMerchant = function(state, events)
     local price = math.floor(700 + state.floor * 35)
-    if state.gold >= price then
-        state.gold = state.gold - price
-        state.fragments = state.fragments + 10
+    if hasCurrency(state, "gold", price) then
+        spendCurrency(state, "gold", price)
+        addCurrency(state, "fragments", 10)
         events[#events + 1] = event("merchant_trade", { goldSpent = price, fragments = 10 })
     else
         events[#events + 1] = event("merchant_skipped", { price = price, reason = "insufficient_gold" })
     end
 end
 
-local function resolveRandomEvent(state, rng, events)
+resolveRandomEvent = function(state, rng, events)
     local roll = randomInt(rng, 1, 4)
     if roll == 1 then
         local gold = 300 + state.floor * 15
-        state.gold = state.gold + gold
+        addCurrency(state, "gold", gold)
         events[#events + 1] = event("wish_pool", { gold = gold })
     elseif roll == 2 then
         local distance = randomInt(rng, 5, 10)
@@ -497,7 +757,7 @@ local function resolveRandomEvent(state, rng, events)
         state.hp = math.min(state.stats.hp, state.hp + healed)
         events[#events + 1] = event("altar_heal", { hp = healed })
     else
-        state.fragments = state.fragments + 18
+        addCurrency(state, "fragments", 18)
         events[#events + 1] = event("abyss_echo", { fragments = 18 })
     end
 end
@@ -507,7 +767,7 @@ function GameEngine.SetAutoRun(inputState, enabled, now)
         return failure(inputState, now, "INVALID_ARGUMENT", "enabled must be a boolean")
     end
     local working = stateCopy(inputState, now)
-    if enabled and #working.inventory >= Catalog.INVENTORY_CAP then
+    if enabled and #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not hasAutoDispositionPolicy(working) then
         return failure(inputState, now, "INVENTORY_FULL", "inventory is full", {
             event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
         })
@@ -522,14 +782,17 @@ function GameEngine.SetAutoRun(inputState, enabled, now)
     }, false, false)
 end
 
-function GameEngine.AdvanceOneCell(inputState, rng, now)
-    local working = stateCopy(inputState, now)
-    if #working.inventory >= Catalog.INVENTORY_CAP then
+local function advanceOneCellWorking(working, rng, now)
+    local before = TableUtils.DeepCopy(working)
+    if working.currentMonster then
+        return advanceOnlineCombatWorking(working, rng, now)
+    end
+    if #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not hasAutoDispositionPolicy(working) then
         working.autoRun = false
         working.pauseReason = "inventory_full"
-        return finalize(inputState, working, now, "inventory_full", {
+        return working, "inventory_full", {
             event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
-        }, false, false)
+        }, false
     end
 
     if working.hp <= 0 then
@@ -545,9 +808,9 @@ function GameEngine.AdvanceOneCell(inputState, rng, now)
     local inventoryChanged = false
 
     if eventType == "monster" or eventType == "elite" or eventType == "boss" then
-        completed, inventoryChanged = resolveMonster(working, eventType, rng, events)
+        completed, inventoryChanged = resolveMonsterOffline(working, eventType, rng, now, events)
     elseif eventType == "chest" then
-        completed, inventoryChanged = resolveChest(working, rng, events)
+        completed, inventoryChanged = resolveChest(working, rng, now, events)
     elseif eventType == "merchant" then
         resolveMerchant(working, events)
     else
@@ -555,24 +818,84 @@ function GameEngine.AdvanceOneCell(inputState, rng, now)
     end
 
     if not completed then
-        local paused = stateCopy(inputState, now)
-        paused.autoRun = false
-        paused.pauseReason = "inventory_full"
-        return finalize(inputState, paused, now, "inventory_full", {
-            event("inventory_full", {
-                capacity = Catalog.INVENTORY_CAP,
-                rollback = "cell_settlement",
-            }),
-        }, false, false)
+        if working.inventoryPolicy.pauseOnFull ~= false then
+            before.autoRun = false
+            before.pauseReason = "inventory_full"
+            return before, "inventory_full", {
+                event("inventory_full", {
+                    capacity = Catalog.INVENTORY_CAP,
+                    rollback = "cell_settlement",
+                }),
+            }, false
+        end
+        working = before
+        working.position = math.min(100, working.position + 1)
+        return working, "drop_skipped", {
+            event("inventory_drop_skipped", { capacity = Catalog.INVENTORY_CAP }),
+        }, false
     end
 
     refreshDerived(working)
-    if #working.inventory >= Catalog.INVENTORY_CAP then
+    if #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not hasAutoDispositionPolicy(working) then
         working.autoRun = false
         working.pauseReason = "inventory_full"
         events[#events + 1] = event("inventory_full", { capacity = Catalog.INVENTORY_CAP })
     end
-    return finalize(inputState, working, now, "cell_resolved", events, inventoryChanged, false)
+    return working, "cell_resolved", events, inventoryChanged
+end
+
+function GameEngine.AdvanceOneCell(inputState, rng, now)
+    local working = stateCopy(inputState, now)
+    local kind, events, inventoryChanged
+    working, kind, events, inventoryChanged = advanceOneCellWorking(working, rng, now)
+    return finalize(inputState, working, now, kind, events, inventoryChanged, false)
+end
+
+function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
+    timeStep = tonumber(timeStep) or 0
+    if timeStep <= 0 then
+        return noCommit(inputState, now, "combat_tick_ignored")
+    end
+    local working = stateCopy(inputState, now)
+    if not working.autoRun then
+        return noCommit(inputState, now, "combat_paused")
+    end
+    timeStep = math.min(timeStep, 60)
+    if not working.currentMonster then
+        local nextWorking, kind, events, inventoryChanged =
+            advanceOnlineCombatWorking(
+                working,
+                rng,
+                now
+            )
+        return finalize(
+            inputState,
+            nextWorking,
+            now,
+            kind,
+            events,
+            inventoryChanged,
+            false
+        )
+    end
+
+    local monster = working.currentMonster
+    if monster.phaseRemaining > 0 then
+        monster.phaseRemaining = math.max(0, monster.phaseRemaining - timeStep)
+        if monster.phaseRemaining > 0 then
+            return finalize(inputState, working, now, "combat_phase_waiting", {}, false, false)
+        end
+        if monster.phase == "recovery" then
+            local attack = randomAttack(working, monster, rng)
+            return finalize(inputState, working, now, "attack_started", {
+                attackStartedEvent(monster, attack),
+            }, false, false)
+        end
+    end
+
+    local kind, events, inventoryChanged
+    working, kind, events, inventoryChanged = advanceOnlineCombatWorking(working, rng, now)
+    return finalize(inputState, working, now, kind, events, inventoryChanged, false)
 end
 
 function GameEngine.Equip(inputState, itemId, now)
@@ -644,7 +967,7 @@ end
 
 GameEngine.AutoEquipBest = GameEngine.AutoEquip
 
-function GameEngine.Decompose(inputState, maximumRank, now)
+function GameEngine.Decompose(inputState, maximumRank, now, candidateIds)
     maximumRank = TableUtils.ToInteger(maximumRank, -1)
     if maximumRank < 1 or maximumRank > 4 then
         return failure(inputState, now, "INVALID_ARGUMENT", "maximumRank must be between 1 and 4")
@@ -652,14 +975,27 @@ function GameEngine.Decompose(inputState, maximumRank, now)
 
     local working = stateCopy(inputState, now)
     local equipped = equippedIdSet(working)
+    local selected = nil
+    if type(candidateIds) == "table" then
+        selected = {}
+        for _, itemId in ipairs(candidateIds) do
+            selected[itemId] = true
+        end
+    end
     local kept = {}
     local removed = 0
     local fragments = 0
+    local gold = 0
     for _, item in ipairs(working.inventory) do
         local rarity = Catalog.RARITIES[item.rarity]
-        if rarity and rarity.rank <= maximumRank and not equipped[item.id] then
+        local explicitlySelected = selected == nil or selected[item.id] == true
+        if explicitlySelected and rarity and rarity.rank <= maximumRank
+            and not equipped[item.id] and not item.locked then
             removed = removed + 1
-            fragments = fragments + rarity.fragments + (item.enhance or 0) * 2
+            local refund = Catalog.GetDecomposeRefund(item)
+            fragments = fragments + refund.fragments
+            gold = gold + refund.gold
+            addCurrency(working, "gold", refund.gold)
         else
             kept[#kept + 1] = item
         end
@@ -668,17 +1004,67 @@ function GameEngine.Decompose(inputState, maximumRank, now)
         return noCommit(inputState, now, "decompose_empty")
     end
     working.inventory = kept
-    working.fragments = working.fragments + fragments
+    addCurrency(working, "fragments", fragments)
     if working.pauseReason == "inventory_full" then
         working.pauseReason = nil
     end
     refreshDerived(working)
     return finalize(inputState, working, now, "equipment_decomposed", {
-        event("equipment_decomposed", { count = removed, fragments = fragments }),
+        event("equipment_decomposed", { count = removed, fragments = fragments, gold = gold }),
     }, true, false)
 end
 
 GameEngine.DecomposeByRank = GameEngine.Decompose
+
+function GameEngine.SetEquipmentLock(inputState, itemId, locked, now)
+    if type(locked) ~= "boolean" then
+        return failure(inputState, now, "INVALID_ARGUMENT", "locked must be a boolean")
+    end
+    local working = stateCopy(inputState, now)
+    local item = findItem(working, itemId)
+    if not item then return failure(inputState, now, "ITEM_NOT_FOUND", "equipment item was not found") end
+    if item.locked == locked then return noCommit(inputState, now, "equipment_lock_unchanged") end
+    item.locked = locked
+    return finalize(inputState, working, now, "equipment_lock_changed", {
+        event("equipment_lock_changed", { itemId = item.id, locked = locked }),
+    }, true, false)
+end
+
+function GameEngine.SetInventoryPolicy(inputState, policy, now)
+    if type(policy) ~= "table" then
+        return failure(inputState, now, "INVALID_ARGUMENT", "inventory policy is required")
+    end
+    local working = stateCopy(inputState, now)
+    local function copyRarities(source)
+        local values = {}
+        for _, rarityId in ipairs(Catalog.RARITY_ORDER) do
+            values[rarityId] = rarityId ~= "myth"
+                and type(source) == "table"
+                and source[rarityId] == true
+        end
+        return values
+    end
+    local decomposeRarities = copyRarities(policy.decomposeRarities)
+    local sellRarities = copyRarities(policy.sellRarities)
+    for _, rarityId in ipairs(Catalog.RARITY_ORDER) do
+        if decomposeRarities[rarityId] then sellRarities[rarityId] = false end
+    end
+    local autoDecompose = policy.autoDecompose == true
+    local autoSell = policy.autoSell == true and not autoDecompose
+    working.inventoryPolicy = {
+        pauseOnFull = policy.pauseOnFull == true,
+        autoDecompose = autoDecompose,
+        autoSell = autoSell,
+        decomposeRarities = decomposeRarities,
+        sellRarities = sellRarities,
+    }
+    if not working.inventoryPolicy.pauseOnFull or hasAutoDispositionPolicy(working) then
+        if working.pauseReason == "inventory_full" then working.pauseReason = nil end
+    end
+    return finalize(inputState, working, now, "inventory_policy_changed", {
+        event("inventory_policy_changed", { inventoryPolicy = TableUtils.DeepCopy(working.inventoryPolicy) }),
+    }, false, false)
+end
 
 function GameEngine.Strengthen(inputState, slotId, now)
     if not Catalog.SLOT_BY_ID[slotId] then
@@ -695,12 +1081,14 @@ function GameEngine.Strengthen(inputState, slotId, now)
     end
     local goldCost = 1200 + item.enhance * 900
     local fragmentCost = 8 + item.enhance * 5
-    if working.gold < goldCost or working.fragments < fragmentCost then
+    if not hasCurrency(working, "gold", goldCost) or not hasCurrency(working, "fragments", fragmentCost) then
         return failure(inputState, now, "INSUFFICIENT_RESOURCES", "not enough gold or fragments")
     end
-    working.gold = working.gold - goldCost
-    working.fragments = working.fragments - fragmentCost
+    spendCurrency(working, "gold", goldCost)
+    spendCurrency(working, "fragments", fragmentCost)
     item.enhance = item.enhance + 1
+    item.investedGold = math.min(Catalog.MAX_VALUE, (item.investedGold or 0) + goldCost)
+    item.investedFragments = math.min(Catalog.MAX_VALUE, (item.investedFragments or 0) + fragmentCost)
     refreshDerived(working)
     return finalize(inputState, working, now, "equipment_strengthened", {
         event("equipment_strengthened", {
@@ -730,7 +1118,10 @@ function GameEngine.Star(inputState, slotId, now)
     local equipped = equippedIdSet(working)
     local duplicateIndex = nil
     for index, candidate in ipairs(working.inventory) do
-        if candidate.id ~= item.id and candidate.name == item.name and not equipped[candidate.id] then
+        if candidate.id ~= item.id
+            and candidate.equipmentId == item.equipmentId
+            and not candidate.locked
+            and not equipped[candidate.id] then
             duplicateIndex = index
             break
         end
@@ -738,7 +1129,11 @@ function GameEngine.Star(inputState, slotId, now)
     if not duplicateIndex then
         return failure(inputState, now, "DUPLICATE_REQUIRED", "an unequipped item with the same name is required")
     end
-    local consumedId = working.inventory[duplicateIndex].id
+    local consumed = working.inventory[duplicateIndex]
+    local consumedId = consumed.id
+    local refund = Catalog.GetDecomposeRefund(consumed)
+    item.investedGold = math.min(Catalog.MAX_VALUE, (item.investedGold or 0) + refund.gold)
+    item.investedFragments = math.min(Catalog.MAX_VALUE, (item.investedFragments or 0) + refund.fragments)
     table.remove(working.inventory, duplicateIndex)
     item.star = item.star + 1
     if working.pauseReason == "inventory_full" then
@@ -783,30 +1178,76 @@ end
 
 GameEngine.PrepareLogin = GameEngine.AccrueOffline
 
+local function accumulateOfflineEvent(summary, value)
+    if value.kind == "battle_reward" then
+        summary.gold = summary.gold + (value.gold or 0)
+        summary.exp = summary.exp + (value.exp or 0)
+    elseif value.kind == "chest_reward" then
+        summary.gold = summary.gold + (value.gold or 0)
+        summary.fragments = summary.fragments + (value.fragments or 0)
+    elseif value.kind == "merchant_trade" or value.kind == "abyss_echo" then
+        summary.fragments = summary.fragments + (value.fragments or 0)
+    elseif value.kind == "wish_pool" then
+        summary.gold = summary.gold + (value.gold or 0)
+    elseif value.kind == "equipment_auto_disposed" then
+        summary.gold = summary.gold + (value.gold or 0)
+        summary.fragments = summary.fragments + (value.fragments or 0)
+    elseif value.kind == "equipment_drop" then
+        summary.equipment = summary.equipment + 1
+    end
+end
+
 function GameEngine.CollectOffline(inputState, now)
+    now = nowInteger(now)
     local working = stateCopy(inputState, now)
     local seconds = math.min(working.pendingOfflineSeconds, Catalog.OFFLINE_MAX_SECONDS)
-    if seconds <= 0 then
-        return failure(inputState, now, "NO_OFFLINE_REWARD", "there is no offline reward to collect")
+    local availableSteps = math.floor(seconds / Catalog.OFFLINE_STEP_SECONDS)
+    if availableSteps <= 0 then
+        return failure(inputState, now, "NO_OFFLINE_REWARD", "offline reward requires at least 15 seconds")
     end
-    local steps = math.floor(seconds / 5)
-    local gold = math.floor(steps * (working.floor * 5 + 20) * 0.6)
-    local exp = math.floor(steps * (working.floor * 5 + 10) * 0.6)
-    local fragments = math.floor(steps / 18)
-    working.gold = working.gold + gold
-    working.fragments = working.fragments + fragments
-    working.pendingOfflineSeconds = 0
-    local events = {
+
+    local summary = { gold = 0, exp = 0, fragments = 0, equipment = 0 }
+    local processedSteps = 0
+    local interrupted = false
+    local inventoryChanged = false
+    for _ = 1, availableSteps do
+        local nextWorking, kind, stepEvents, stepInventoryChanged = advanceOneCellWorking(working, nil, now)
+        if kind == "inventory_full" then
+            working = nextWorking
+            interrupted = true
+            break
+        end
+        working = nextWorking
+        processedSteps = processedSteps + 1
+        inventoryChanged = inventoryChanged or stepInventoryChanged
+        for _, value in ipairs(stepEvents or {}) do
+            accumulateOfflineEvent(summary, value)
+        end
+        if working.pauseReason == "inventory_full" then
+            interrupted = true
+            break
+        end
+    end
+
+    if processedSteps <= 0 then
+        return failure(inputState, now, "INVENTORY_FULL", "inventory is full; clear space before collecting offline rewards")
+    end
+
+    local processedSeconds = math.floor(processedSteps * Catalog.OFFLINE_STEP_SECONDS)
+    working.pendingOfflineSeconds = math.max(0, seconds - processedSeconds)
+    return finalize(inputState, working, now, "offline_collected", {
         event("offline_collected", {
             seconds = seconds,
-            gold = gold,
-            exp = exp,
-            fragments = fragments,
+            processedSeconds = processedSeconds,
+            remainingSeconds = working.pendingOfflineSeconds,
+            rewardRate = Catalog.OFFLINE_REWARD_RATE,
+            gold = summary.gold,
+            exp = summary.exp,
+            fragments = summary.fragments,
+            equipment = summary.equipment,
+            interrupted = interrupted,
         }),
-    }
-    addExp(working, exp, events)
-    refreshDerived(working)
-    return finalize(inputState, working, now, "offline_collected", events, false, false)
+    }, inventoryChanged, false)
 end
 
 function GameEngine.GrantCurrency(inputState, currency, amount, now)
@@ -818,7 +1259,7 @@ function GameEngine.GrantCurrency(inputState, currency, amount, now)
         return failure(inputState, now, "INVALID_AMOUNT", "amount must be positive and within the grant limit")
     end
     local working = stateCopy(inputState, now)
-    working[currency] = working[currency] + amount
+    addCurrency(working, currency, amount)
     return finalize(inputState, working, now, "currency_granted", {
         event("currency_granted", { currency = currency, amount = amount }),
     }, false, false)
@@ -828,53 +1269,53 @@ function GameEngine.GrantEquipment(inputState, specification, now)
     if type(specification) ~= "table" then
         return failure(inputState, now, "INVALID_ARGUMENT", "equipment specification is required")
     end
-    if not Catalog.SLOT_BY_ID[specification.slot] then
-        return failure(inputState, now, "INVALID_SLOT", "unknown equipment slot")
+    local definition = Catalog.GetEquipmentDefinition(specification.equipmentId)
+    if not definition then
+        return failure(inputState, now, "INVALID_EQUIPMENT", "unknown equipment definition")
     end
-    if not Catalog.RARITIES[specification.rarity] then
-        return failure(inputState, now, "INVALID_RARITY", "unknown equipment rarity")
+    if specification.slot ~= nil and specification.slot ~= definition.slot then
+        return failure(inputState, now, "INVALID_SLOT", "equipment slot does not match definition")
     end
-    if specification.setId ~= nil and not Catalog.SETS[specification.setId] then
-        return failure(inputState, now, "INVALID_SET", "unknown equipment set")
+    if specification.rarity ~= nil and specification.rarity ~= definition.rarity then
+        return failure(inputState, now, "INVALID_RARITY", "equipment rarity does not match definition")
     end
     local working = stateCopy(inputState, now)
-    if #working.inventory >= Catalog.INVENTORY_CAP then
+    local item = {
+        id = allocateItemId(working),
+        equipmentId = definition.id,
+        level = Catalog.Clamp(TableUtils.ToInteger(specification.level, working.floor), 1, 1000000),
+        enhance = Catalog.Clamp(TableUtils.ToInteger(specification.enhance, 0), 0, 1000),
+        star = Catalog.Clamp(TableUtils.ToInteger(specification.star, 0), 0, Catalog.MAX_STAR),
+        locked = specification.locked == true,
+        acquiredAt = nowInteger(now),
+        source = "admin_grant",
+        investedGold = 0,
+        investedFragments = 0,
+    }
+    local events = {}
+    local hasRoom, handled = makeRoomForDrop(working, item, events)
+    if not hasRoom then
+        if handled then
+            return finalize(inputState, working, now, "equipment_auto_disposed", events, false, false)
+        end
         return failure(inputState, now, "INVENTORY_FULL", "inventory is full", {
             event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
         })
     end
-    local slot = Catalog.SLOT_BY_ID[specification.slot]
-    local function boundedStat(name, maximum)
-        return Catalog.Clamp(TableUtils.ToInteger(specification[name], 0), 0, maximum)
-    end
-    local item = {
-        id = allocateItemId(working),
-        name = type(specification.name) == "string" and specification.name:sub(1, 80)
-            or (Catalog.RARITIES[specification.rarity].name .. "·GM·" .. slot.name),
-        slot = slot.id,
-        category = slot.category,
-        rarity = specification.rarity,
-        setId = specification.setId,
-        level = Catalog.Clamp(TableUtils.ToInteger(specification.level, working.floor), 1, 1000000),
-        atk = boundedStat("atk", 100000000),
-        def = boundedStat("def", 100000000),
-        hp = boundedStat("hp", 100000000),
-        crit = Catalog.Clamp(TableUtils.IsFiniteNumber(specification.crit) and specification.crit or 0, 0, 1),
-        critDmg = Catalog.Clamp(TableUtils.IsFiniteNumber(specification.critDmg) and specification.critDmg or 0, 0, 10),
-        atkSpeed = Catalog.Clamp(TableUtils.IsFiniteNumber(specification.atkSpeed) and specification.atkSpeed or 0, 0, 3),
-        enhance = Catalog.Clamp(TableUtils.ToInteger(specification.enhance, 0), 0, 1000),
-        star = Catalog.Clamp(TableUtils.ToInteger(specification.star, 0), 0, 5),
-    }
     item.power = Catalog.GetItemPower(item)
     working.inventory[#working.inventory + 1] = item
     refreshDerived(working)
-    if #working.inventory >= Catalog.INVENTORY_CAP then
+    if #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not hasAutoDispositionPolicy(working) then
         working.autoRun = false
         working.pauseReason = "inventory_full"
     end
-    return finalize(inputState, working, now, "equipment_granted", {
-        event("equipment_granted", { itemId = item.id, rarity = item.rarity, slot = item.slot }),
-    }, true, false)
+    events[#events + 1] = event("equipment_granted", {
+        itemId = item.id,
+        equipmentId = item.equipmentId,
+        rarity = definition.rarity,
+        slot = definition.slot,
+    })
+    return finalize(inputState, working, now, "equipment_granted", events, true, false)
 end
 
 function GameEngine.AdjustProgress(inputState, adjustment, now)

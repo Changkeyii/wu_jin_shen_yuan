@@ -1,0 +1,147 @@
+[2026-07-13 17_56_05_297][0] ERROR: Could not initialize audio output
+[2026-07-13 17_56_05_402][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_bc8ed3e2.vs is not a valid shader bytecode file
+[2026-07-13 17_56_05_402][1] ERROR: Failed to compile vertex shader UI(DIFFMAP GAMMA_IN_SHADERING MIXCOLOR VERTEXCOLOR):
+Could not create vertex shader, empty bytecode
+[2026-07-13 17_56_05_402][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_41aaa44d.fs is not a valid shader bytecode file
+[2026-07-13 17_56_05_402][1] ERROR: Failed to compile pixel shader UI(DIFFMAP GAMMA_IN_SHADERING MIXCOLOR OPACITY VERTEXCOLOR):
+Could not create pixel shader, empty bytecode
+[2026-07-13 17_56_05_402][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_a7b9ddd7.vs is not a valid shader bytecode file
+[2026-07-13 17_56_05_402][1] ERROR: Failed to compile vertex shader UI(DIFFMAP):
+Could not create vertex shader, empty bytecode
+[2026-07-13 17_56_05_403][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_7145e742.fs is not a valid shader bytecode file
+[2026-07-13 17_56_05_403][1] ERROR: Failed to compile pixel shader UI(DIFFMAP OPACITY):
+Could not create pixel shader, empty bytecode
+[2026-07-13 17_56_06_523][62] ERROR: [ShaderError] shadercache_runtime/dx9/NanoVGFill_00000000.vs is not a valid shader bytecode file
+[2026-07-13 17_56_06_523][62] ERROR: Failed to compile vertex shader NanoVGFill():
+Could not create vertex shader, empty bytecode
+[2026-07-13 17_56_06_523][62] ERROR: [ShaderError] shadercache_runtime/dx9/NanoVGFill_00000000.fs is not a valid shader bytecode file
+[2026-07-13 17_56_06_523][62] ERROR: Failed to compile pixel shader NanoVGFill():
+Could not create pixel shader, empty bytecode
+[2026-07-13 17_56_04_900][0] INFO: DownloadManager initialized
+[2026-07-13 17_56_04_946][0] INFO: a couple of Subsystems registered finish.
+[2026-07-13 17_56_04_964][0] INFO: Engine construct finish.
+[2026-07-13 17_56_05_262][0] WARNING: Graphics::SetMode called with zero dimensions: 0x0 (will maximize window)
+[2026-07-13 17_56_05_326][0] WARNING: Directory[/workspace/.cli/AgentProject] not exists.
+[2026-07-13 17_56_05_332][0] WARNING: Shader cache package not found: shadercache_glsl.pak
+[2026-07-13 17_56_05_364][0] WARNING: Localization::ReadUserPrefLanguage: userPrefPath_ is empty
+[2026-07-13 17_56_06_403][62] WARNING: RuntimeRetargeterCache: Cannot load mapping table: uuid://F4ItQUiV0gmvAelLXpk5yrTs
+[2026-07-13 17_56_06_405][62][Script] IsNetworkMode:    false
+[2026-07-13 17_56_06_411][62][Script] [InputAdaptor] Loading input event adaptor...
+[2026-07-13 17_56_06_411][62][Script] [InputAdaptor] Hooked SubscribeToEvent for event mapping.
+[2026-07-13 17_56_06_411][62][Script] [InputAdaptor] Platform: Linux, isTouchPlatform: false
+[2026-07-13 17_56_06_411][62][Script] [InputAdaptor] Hooked Input methods for touch emulation fallback.
+[2026-07-13 17_56_06_412][62][Script] Check Transition.lua SimpleGrid.lua
+[2026-07-13 17_56_06_514][62][Script] === 无尽回廊：深渊挂机录 client started ===
+[2026-07-13 17_56_07_844][142]INFO__VALIDATE_UPDATE__:false
+{
+    "version": 2,
+    "script": "main.lua",
+    "result": "FAIL",
+    "duration_ms": 2454,
+    "frames_completed": 80,
+    "phases": {
+        "load": {
+            "result": "FAIL",
+            "errors": [
+                {
+                    "category": "engine",
+                    "message": "[2026-07-13 17_56_05_402][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_bc8ed3e2.vs is not a valid shader bytecode file",
+                    "frame": 0
+                },
+                {
+                    "category": "engine",
+                    "message": "[2026-07-13 17_56_05_402][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_41aaa44d.fs is not a valid shader bytecode file",
+                    "frame": 0
+                },
+                {
+                    "category": "engine",
+                    "message": "[2026-07-13 17_56_05_402][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_a7b9ddd7.vs is not a valid shader bytecode file",
+                    "frame": 0
+                },
+                {
+                    "category": "engine",
+                    "message": "[2026-07-13 17_56_05_403][1] ERROR: [ShaderError] shadercache_runtime/dx9/UI_7145e742.fs is not a valid shader bytecode file",
+                    "frame": 0
+                }
+            ]
+        },
+        "init": {
+            "result": "FAIL",
+            "errors": [
+                {
+                    "category": "engine",
+                    "message": "[2026-07-13 17_56_06_523][62] ERROR: [ShaderError] shadercache_runtime/dx9/NanoVGFill_00000000.vs is not a valid shader bytecode file",
+                    "frame": 0
+                },
+                {
+                    "category": "engine",
+                    "message": "[2026-07-13 17_56_06_523][62] ERROR: [ShaderError] shadercache_runtime/dx9/NanoVGFill_00000000.fs is not a valid shader bytecode file",
+                    "frame": 0
+                }
+            ]
+        },
+        "run": {
+            "result": "PASS",
+            "errors": []
+        },
+        "scene": {
+            "result": "PASS",
+            "errors": [],
+            "node_count": 0,
+            "component_count": 0,
+            "scene_exists": false
+        }
+    },
+    "state_snapshots": [
+        {
+            "frame": 1,
+            "phase": "init",
+            "nodes": 0,
+            "components": 0,
+            "hash": 0,
+            "frame_time_ms": 131.75999450683595
+        },
+        {
+            "frame": 10,
+            "phase": "run",
+            "nodes": 0,
+            "components": 0,
+            "hash": 0,
+            "frame_time_ms": 16.608999252319337
+        },
+        {
+            "frame": 40,
+            "phase": "run",
+            "nodes": 0,
+            "components": 0,
+            "hash": 0,
+            "frame_time_ms": 16.615999221801759
+        },
+        {
+            "frame": 80,
+            "phase": "run",
+            "nodes": 0,
+            "components": 0,
+            "hash": 0,
+            "frame_time_ms": 16.60700035095215
+        }
+    ],
+    "scene_stalled": true,
+    "max_frame_time_ms": 16.746000289916993,
+    "update_defined": false,
+    "component_census": {},
+    "test_result": "NOT_RUN",
+    "test_assertions": {
+        "total": 0,
+        "passed": 0,
+        "failed": 0
+    },
+    "test_issues": [],
+    "missing_resources": [],
+    "summary": {
+        "lua_errors": 0,
+        "resource_errors": 0,
+        "engine_errors": 6,
+        "total_errors": 6
+    }
+}

@@ -1,4 +1,5 @@
 local ServerClient = require("client.ServerClient")
+local LargeNumber = require("shared.LargeNumber")
 
 local SECTION_BACKGROUND = "image/ui/generated/panel_940x320.png"
 
@@ -143,7 +144,7 @@ local function PlayerSummary()
         "玩家 %s | %s | %s\n等级%s  第%s层 %s格  战力%s\n金币%s  碎片%s  神话碎片%s  装备%s件  版本%s",
         tostring(player.targetUid), presence, ban,
         tostring(player.level or "-"), tostring(player.floor or "-"), tostring(player.position or "-"), tostring(player.power or "-"),
-        tostring(player.gold or "-"), tostring(player.fragments or "-"), tostring(player.mythShards or "-"), tostring(player.inventoryCount or "-"), tostring(player.revision or "-")
+        LargeNumber.Format(player.gold or 0), LargeNumber.Format(player.fragments or 0), LargeNumber.Format(player.mythShards or 0), tostring(player.inventoryCount or "-"), tostring(player.revision or "-")
     )
 end
 

@@ -1,3 +1,6 @@
+local EquipmentCatalog = require("shared.EquipmentCatalog")
+local EquipmentIcon = require("client.EquipmentIcon")
+
 local InventoryView = {}
 
 -- 装备页手动布局参数：坐标均相对于 860 x 720 的角色装备区。
@@ -39,6 +42,8 @@ local function CreateInventoryView(context)
     local SetSelectedInventoryId = context.setSelectedInventoryId
     local SetSelectedSlot = context.setSelectedSlot
     local SetSelectedCategory = context.setSelectedCategory
+    local GetInventoryTabScrollX = context.getInventoryTabScrollX
+    local SetInventoryTabScrollX = context.setInventoryTabScrollX
     local GetEquipmentScrollY = context.getEquipmentScrollY
     local SetEquipmentScrollY = context.setEquipmentScrollY
     local GetEquipmentPageScrollY = context.getEquipmentPageScrollY
@@ -47,6 +52,7 @@ local function CreateInventoryView(context)
     local EquipItem = context.equipItem
     local UnequipSlot = context.unequipSlot
     local DecomposeByRank = context.decomposeByRank
+    local SetEquipmentLock = context.setEquipmentLock
     local AutoEquipBest = context.autoEquipBest
     local StrengthenSelected = context.strengthenSelected
     local StarSelected = context.starSelected
@@ -66,6 +72,23 @@ local function CreateInventoryView(context)
     local SectionTitle = context.sectionTitle
     local FormatInt = context.formatInt
     local GetItemById = context.getItemById
+    local ShowItemTooltip = context.showItemTooltip
+    local HideItemTooltip = context.hideItemTooltip
+
+local function ItemIcon(item, props, fallbackImage)
+    props = props or {}
+    local definition = item and item.equipmentId and EquipmentCatalog.Get(item.equipmentId) or nil
+    if definition and definition.atlas and definition.atlasIndex ~= nil then
+        props.atlas = definition.atlas
+        props.atlasIndex = definition.atlasIndex
+        props.atlasColumns = EquipmentCatalog.ATLAS_COLUMNS
+        props.atlasCellSize = EquipmentCatalog.ATLAS_CELL_SIZE
+        return EquipmentIcon(props)
+    end
+    props.backgroundImage = fallbackImage or ItemImage(item)
+    props.backgroundFit = "contain"
+    return UI.Panel(props)
+end
 
 local function FilteredInventory()
     local list = {}
@@ -124,15 +147,13 @@ local function InventoryImageBox(item, selected, size)
         }
     }
     if item then
-        children[#children + 1] = UI.Panel {
+        children[#children + 1] = ItemIcon(item, {
             position = "absolute",
             left = S(29),
             top = S(29),
             width = S(86),
             height = S(86),
-            backgroundImage = ItemImage(item),
-            backgroundFit = "contain",
-        }
+        })
         children[#children + 1] = UI.Panel {
             position = "absolute",
             left = S(94),
@@ -227,6 +248,15 @@ local function CreateItemIconCard(item, width, height)
             SetSelectedInventoryId(item.id)
             RequestPageRefresh()
         end,
+        onPointerEnter = function(_, widget)
+            if ShowItemTooltip then
+                local bounds = widget and widget.GetAbsoluteLayoutForHitTest and widget:GetAbsoluteLayoutForHitTest() or nil
+                ShowItemTooltip(item, bounds)
+            end
+        end,
+        onPointerLeave = function()
+            if HideItemTooltip then HideItemTooltip() end
+        end,
         children = {
             UI.Panel {
                 position = "absolute",
@@ -236,11 +266,11 @@ local function CreateItemIconCard(item, width, height)
                 height = slotSize,
                 children = { InventoryImageBox(item, selected, slotSize) }
             },
-            CompactTxt(ShortenText(item.name or "未知装备", 4), 15, C.textSecondary, {
+            CompactTxt(item.name or "未知装备", 14, C.textSecondary, {
                 position = "absolute",
-                left = 15,
+                left = 8,
                 top = 150,
-                width = cardSize - 30,
+                width = cardSize - 16,
                 height = 22,
                 textAlign = "center",
                 whiteSpace = "nowrap",
@@ -251,12 +281,18 @@ local function CreateItemIconCard(item, width, height)
 end
 
 local function CreateInventoryTabs()
+    local tabWidth = 218
+    local tabGap = 12
+    local tabPadding = 6
+    local viewportWidth = 790
+    local arrowWidth = 64
+    local arrowStep = tabWidth + tabGap
     local tabChildren = {}
     for _, cat in ipairs(CATEGORIES) do
         local active = selectedCategory == cat.id
         tabChildren[#tabChildren + 1] = UI.Panel {
-            width = 220,
-            height = 58,
+            width = tabWidth,
+            height = 72,
             flexShrink = 0,
             clickable = true,
             backgroundImage = active and ASSETS.ui.inventoryTabOn or ASSETS.ui.inventoryTabOff,
@@ -273,34 +309,91 @@ local function CreateInventoryTabs()
             children = {
                 Txt(cat.name, active and 23 or 20, active and C.text or C.textDim, {
                     width = "100%",
-                    height = 58,
+                    height = 72,
                     textAlign = "center",
                     textStroke = { width = active and 2 or 1, color = "#000000" },
                 }),
             },
         }
     end
-    local tabWidth = 220
-    local tabGap = 12
-    local tabContentWidth = #CATEGORIES * tabWidth + math.max(0, #CATEGORIES - 1) * tabGap + 12
-    return UI.ScrollView {
-        width = "100%",
-        height = 70,
+    local tabContentWidth = #CATEGORIES * tabWidth
+        + math.max(0, #CATEGORIES - 1) * tabGap
+        + tabPadding * 2
+    local maxScrollX = math.max(0, tabContentWidth - viewportWidth)
+    local initialScrollX = math.max(0, math.min(GetInventoryTabScrollX(), maxScrollX))
+    local scrollView = UI.ScrollView {
+        position = "absolute",
+        left = 70,
+        top = 0,
+        width = viewportWidth,
+        height = 84,
         scrollX = true,
         scrollY = false,
         showScrollbar = false,
+        bounces = false,
         children = {
             UI.Panel {
                 width = tabContentWidth,
-                height = 70,
+                height = 84,
                 flexDirection = "row",
                 gap = tabGap,
-                paddingLeft = 6,
-                paddingRight = 6,
+                paddingLeft = tabPadding,
+                paddingRight = tabPadding,
                 alignItems = "center",
                 children = tabChildren,
             },
         },
+    }
+
+    local function ArrowButton(symbol, left, onClick)
+        return UI.Panel {
+            position = "absolute",
+            left = left,
+            top = 10,
+            width = arrowWidth,
+            height = 64,
+            flexShrink = 0,
+            clickable = true,
+            backgroundImage = ASSETS.ui.inventoryTabOff,
+            backgroundFit = "sliced",
+            backgroundSlice = { 12, 18, 12, 18 },
+            borderWidth = 2,
+            borderColor = C.border,
+            onClick = onClick,
+            children = {
+                Txt(symbol, 30, C.text, {
+                    width = "100%",
+                    height = 64,
+                    textAlign = "center",
+                    textStroke = { width = 2, color = "#000000" },
+                    pointerEvents = "none",
+                }),
+            },
+        }
+    end
+
+    local leftArrow = ArrowButton("◀", 0, function()
+        scrollView:ScrollBy(-arrowStep, 0)
+    end)
+    local rightArrow = ArrowButton("▶", 866, function()
+        scrollView:ScrollBy(arrowStep, 0)
+    end)
+
+    local function UpdateArrowVisibility(scrollX)
+        leftArrow:SetVisible(scrollX > 1)
+        rightArrow:SetVisible(scrollX < maxScrollX - 1)
+    end
+    scrollView.props.onScroll = function(_, scrollX)
+        SetInventoryTabScrollX(scrollX)
+        UpdateArrowVisibility(scrollX)
+    end
+    scrollView:SetScrollDirect(initialScrollX, 0)
+
+    return UI.Panel {
+        position = "relative",
+        width = 930,
+        height = 84,
+        children = { scrollView, leftArrow, rightArrow },
     }
 end
 
@@ -333,7 +426,11 @@ local function CreateSelectedItemDetail()
         { "星级", ItemStarText(item) ~= "" and ItemStarText(item) or "无", C.gold },
         { "战力", FormatInt(ItemPower(item)), C.gold },
         { "数量", FormatInt(item.quantity or 1), C.textSecondary },
-        { "状态", IsEquipped(item) and "已穿戴" or "未穿戴", IsEquipped(item) and C.success or C.textDim },
+        { "状态", item.isEquipped and "已穿戴" or "未穿戴", item.isEquipped and C.success or C.textDim },
+        { "保护", item.locked and "已锁定" or "未锁定", item.locked and C.gold or C.textDim },
+        { "来源", item.source or "legacy", C.textSecondary },
+        { "获取", item.acquiredAt and item.acquiredAt > 0 and os.date("%Y-%m-%d %H:%M", item.acquiredAt) or "旧存档", C.textSecondary },
+        { "返还", "金币" .. FormatInt(item.investedGold or 0) .. " / 碎片" .. FormatInt(item.investedFragments or 0), C.textSecondary },
     }
     local rows = {}
     for _, row in ipairs(detailRows) do
@@ -406,7 +503,7 @@ local function CreateSelectedItemDetail()
                 width = 520,
                 height = 260,
                 scrollY = true,
-                showScrollbar = true,
+                showScrollbar = false,
                 children = {
                     UI.Panel { width = "100%", gap = 6, paddingLeft = 0, paddingRight = 8, children = rows }
                 }
@@ -427,7 +524,9 @@ local function CreateSelectedItemDetail()
                 width = 150,
                 height = 46,
                 alignItems = "center",
-                children = { ImageButton("查看", 150, 46, ASSETS.ui.buttonBlue, function() UI.Toast.Show(item.name or "装备", { duration = 2, variant = "info" }) end, false) }
+                children = { ImageButton(item.locked and "解锁" or "锁定", 150, 46, item.locked and ASSETS.ui.buttonBlue or ASSETS.ui.inventoryActionGold, function()
+                    if not readOnly then SetEquipmentLock(item) end
+                end, readOnly) }
             },
         }
     }
@@ -558,7 +657,7 @@ local function CreateInventoryPage()
                     flexGrow = 1,
                     flexBasis = 0,
                     scrollY = true,
-                    showScrollbar = true,
+                    showScrollbar = false,
                     children = {
                         UI.Panel {
                             width = "100%",
@@ -614,7 +713,7 @@ local function CreateEquipSlot(slot)
                 alignItems = "center",
                 justifyContent = "center",
                 children = {
-                    UI.Panel { width = 86, height = 86, backgroundImage = item and ItemImage(item) or ASSETS.items.chest, backgroundFit = "contain", opacity = item and 1 or 0.42 },
+                    ItemIcon(item, { width = 86, height = 86, opacity = item and 1 or 0.42 }),
                 }
             },
             Txt(slot.name, 26, selected and C.primary or C.textSecondary, { width = "100%", height = 34, textAlign = "center", textStroke = { width = 1, color = "#000000" } }),
@@ -624,19 +723,24 @@ local function CreateEquipSlot(slot)
 end
 
 local function CreateSetOverview()
-    local counts = {}
-    for _, item in pairs(game.equipped or {}) do
-        if item and item.setId then
-            counts[item.setId] = (counts[item.setId] or 0) + (item.rarity == "myth" and 2 or 1)
-        end
-    end
+    local serverProgress = game.setProgress or (game.stats and game.stats.setProgress) or {}
 
     local children = {
-        SectionTitle("套装图鉴", "已穿戴套装进度 · 神话部位按 2 件计入"),
+        SectionTitle("套装图鉴", "同套装累计激活 3 / 6 / 9 / 12；防具、首饰、特殊装备各自满 3 件激活区域效果"),
     }
     for _, setId in ipairs(SET_ORDER) do
         local set = SETS[setId]
-        local count = counts[setId] or 0
+        local progressData = serverProgress[setId] or {}
+        local count = progressData.count or 0
+        local regions = progressData.regions or {}
+        local activeTiers = progressData.activeTiers or {}
+        local tierText = table.concat({
+            activeTiers["3"] and "3激活" or "3未激活",
+            activeTiers["6"] and "6激活" or "6未激活",
+            activeTiers["9"] and "9激活" or "9未激活",
+            activeTiers["12"] and "12激活" or "12未激活",
+        }, " · ")
+        local regionText = string.format("防具%d/3  首饰%d/3  特殊%d/3", regions.armor or 0, regions.jewelry or 0, regions.special or 0)
         local progress = ImageProgress(720, 22, count, 12, ASSETS.ui.progressTrackSet, ASSETS.ui.progressFillSet)
         local progressLabel = CompactTxt(
             string.format("%d / 12", count),
@@ -680,7 +784,7 @@ local function CreateSetOverview()
                             textAlign = "left",
                             textStroke = { width = 1, color = "#000000" },
                         }),
-                        CompactTxt("效果：" .. tostring(set.style or "未知效果"), 19, C.textSecondary, {
+                        CompactTxt(tierText .. "  |  " .. regionText, 16, C.textSecondary, {
                             width = "100%",
                             height = 24,
                             textAlign = "left",
@@ -872,7 +976,6 @@ local function CreateEquipmentPage()
     local function CreateSlot(slot, left, top, animationIndex)
         local item = game.equipped and game.equipped[slot.id]
         local active = selectedSlot == slot.id
-        local displayIcon = item and ItemImage(item) or slotIcons[slot.id]
         local slotWidget = UI.Panel {
             position = "absolute",
             left = left,
@@ -912,10 +1015,7 @@ local function CreateEquipmentPage()
                     top = 14,
                     width = 72,
                     height = 72,
-                    backgroundImage = displayIcon,
-                    backgroundFit = "contain",
-                    opacity = item and 1.0 or 0.66,
-                    pointerEvents = "none",
+                    children = { ItemIcon(item, { width = 72, height = 72, opacity = item and 1.0 or 0.66 }, slotIcons[slot.id]) },
                 },
                 CompactTxt(slot.name, 15, active and C.focus or C.textSecondary, {
                     position = "absolute",
@@ -1161,6 +1261,15 @@ local function CreateEquipmentPage()
                 SetSelectedInventoryId(item.id)
                 RequestPageRefresh()
             end,
+            onPointerEnter = function(_, widget)
+                if ShowItemTooltip then
+                    local bounds = widget and widget.GetAbsoluteLayoutForHitTest and widget:GetAbsoluteLayoutForHitTest() or nil
+                    ShowItemTooltip(item, bounds)
+                end
+            end,
+            onPointerLeave = function()
+                if HideItemTooltip then HideItemTooltip() end
+            end,
             children = {
                 UI.Panel {
                     position = "absolute",
@@ -1170,11 +1279,11 @@ local function CreateEquipmentPage()
                     height = 128,
                     children = { InventoryImageBox(item, active, 128) },
                 },
-                CompactTxt(ShortenText(item.name or "未知装备", 7), 17, RarityColor(item.rarity), {
+                CompactTxt(item.name or "未知装备", 15, C.text, {
                     position = "absolute",
-                    left = 10,
+                    left = 8,
                     top = 135,
-                    width = 160,
+                    width = 164,
                     height = 22,
                     textAlign = "center",
                     textStroke = { width = 1, color = "#000000" },
@@ -1219,12 +1328,12 @@ local function CreateEquipmentPage()
         width = 824,
         height = 438,
         scrollY = true,
-        showScrollbar = true,
+        showScrollbar = false,
         onScroll = function(_, _, scrollY)
             SetEquipmentScrollY(scrollY)
         end,
         children = {
-            UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", justifyContent = "flex-start", gap = 10, padding = 8, children = cardChildren },
+            UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", justifyContent = "center", gap = 10, padding = 8, children = cardChildren },
         },
     }
     equipmentListScrollView.state.scrollY = math.max(0, GetEquipmentScrollY() or 0)
@@ -1232,7 +1341,7 @@ local function CreateEquipmentPage()
     local detailChildren = {}
     if selectedCandidate then
         detailChildren = {
-            UI.Panel { width = 64, height = 64, backgroundImage = ItemImage(selectedCandidate), backgroundFit = "contain", flexShrink = 0 },
+                UI.Panel { width = 64, height = 64, children = { ItemIcon(selectedCandidate, { width = 64, height = 64 }) }, flexShrink = 0 },
             UI.Panel {
                 flexGrow = 1,
                 flexBasis = 0,
@@ -1240,7 +1349,7 @@ local function CreateEquipmentPage()
                 justifyContent = "center",
                 children = {
                     CompactTxt(ShortenText(selectedCandidate.name, 14), 21, RarityColor(selectedCandidate.rarity), { width = "100%", height = 28, textStroke = { width = 1, color = "#000000" } }),
-                    CompactTxt("战力 " .. FormatInt(ItemPower(selectedCandidate)) .. " · " .. RarityName(selectedCandidate.rarity), 17, C.textSecondary, { width = "100%", height = 24, textStroke = { width = 1, color = "#000000" } }),
+                    CompactTxt(RarityName(selectedCandidate.rarity) .. " · " .. SlotName(selectedCandidate.slot), 17, C.textSecondary, { width = "100%", height = 24, textStroke = { width = 1, color = "#000000" } }),
                 },
             },
             ImageButton("快捷穿戴", 170, 50, ASSETS.ui.buttonBlue, function() EquipItem(selectedCandidate) end, readOnly),

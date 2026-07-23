@@ -1,0 +1,10 @@
+{
+  "videos": {
+    "run": "/workspace/assets/video/cgt-20260714210027-tk4n4_video.mp4"
+  },
+  "output_dir": "/workspace/assets/spritesheets/flame_runner_16",
+  "character_name": "flame_runner",
+  "fps": 3.2,
+  "frame_width": 256,
+  "frame_height": 256
+}

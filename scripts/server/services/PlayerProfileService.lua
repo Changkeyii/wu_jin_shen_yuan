@@ -11,6 +11,15 @@ local function Result(ok, data, code, reason)
     return { ok = ok == true, data = data or {}, code = code or (ok and 0 or -1), reason = tostring(reason or "") }
 end
 
+local function PrintValidationFailure(userId, stage, validationError)
+    local details = validationError and validationError.details or nil
+    print("[ProfileDiag] uid=" .. tostring(userId)
+        .. " validationStage=" .. tostring(stage)
+        .. " code=" .. tostring(validationError and validationError.code or nil)
+        .. " reason=" .. tostring(validationError and validationError.reason or nil)
+        .. " path=" .. tostring(details and details.path or nil))
+end
+
 function PlayerProfileService.New(options)
     options = options or {}
     assert(options.repository, "PlayerProfileService requires repository")
@@ -26,6 +35,7 @@ PlayerProfileService.new = PlayerProfileService.New
 function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplete)
     local valid, validationError = GameStateSchema.ValidateState(state)
     if not valid then
+        PrintValidationFailure(userId, "loaded_state", validationError)
         onComplete(Result(false, {}, validationError.code, validationError.reason))
         return
     end
@@ -33,6 +43,7 @@ function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplet
     if proposal.ok then
         local proposalValid, proposalError = GameStateSchema.ValidateState(proposal.state)
         if not proposalValid then
+            PrintValidationFailure(userId, "offline_accrual", proposalError)
             onComplete(Result(false, {}, proposalError.code, proposalError.reason))
             return
         end
@@ -52,8 +63,15 @@ function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplet
 end
 
 function PlayerProfileService:Load(userId, onComplete)
+    print("[ProfileDiag] uid=" .. tostring(userId) .. " loadBegin")
     self.repository:Load(userId, function(loadResult)
-        if not loadResult.ok then onComplete(loadResult); return end
+        if not loadResult.ok then
+            print("[ProfileDiag] uid=" .. tostring(userId)
+                .. " repositoryFailure code=" .. tostring(loadResult.code)
+                .. " reason=" .. tostring(loadResult.reason))
+            onComplete(loadResult)
+            return
+        end
         if loadResult.data.missing then
             local initial = StateFactory.Create(self.clock())
             self.repository:Create(userId, initial, function(createResult)

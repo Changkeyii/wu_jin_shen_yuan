@@ -1,9 +1,12 @@
 local ErrorCodes = require("shared.ErrorCodes")
 local NetworkProtocol = require("shared.NetworkProtocol")
+local EquipmentCatalog = require("shared.EquipmentCatalog")
+
+local LargeNumber = require("shared.LargeNumber")
 
 local GameStateSchema = {}
 
-GameStateSchema.VERSION = 1
+GameStateSchema.VERSION = 3
 GameStateSchema.INVENTORY_CAP = 300
 GameStateSchema.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 GameStateSchema.MAX_LOGS = 40
@@ -57,6 +60,8 @@ local PERSISTED_FIELDS = {
     "hp",
     "floorKillBonus",
     "permanentBonus",
+    "inventoryPolicy",
+    "currentMonster",
     "appliedGmCommandIds",
 }
 
@@ -78,6 +83,9 @@ local SNAPSHOT_FIELDS = {
     "hp",
     "floorKillBonus",
     "permanentBonus",
+    "inventoryPolicy",
+    "currentMonster",
+    "setProgress",
     "logs",
     "currentEvent",
     "recentDamage",
@@ -88,6 +96,30 @@ local SNAPSHOT_FIELDS = {
 local DELTA_FIELD_SET = {}
 for _, fieldName in ipairs(SNAPSHOT_FIELDS) do
     DELTA_FIELD_SET[fieldName] = true
+end
+
+local function networkItem(item)
+    return {
+        id = item.id,
+        equipmentId = item.equipmentId,
+        level = item.level,
+        enhance = item.enhance or 0,
+        star = item.star or 0,
+        locked = item.locked == true,
+        acquiredAt = item.acquiredAt or 0,
+        source = item.source or "legacy",
+        investedGold = item.investedGold or 0,
+        investedFragments = item.investedFragments or 0,
+        power = item.power,
+    }
+end
+
+local function networkInventory(items)
+    local result = {}
+    for _, item in ipairs(items or {}) do
+        result[#result + 1] = networkItem(item)
+    end
+    return result
 end
 
 local function deepCopy(value, seen)
@@ -138,26 +170,110 @@ local function validateId(value)
     return false, "Equipment id must be a non-empty string or positive integer"
 end
 
+local function validateInstanceUuid(value)
+    if type(value) ~= "string" then return false, "Equipment instance id must be a UUID string" end
+    if not string.match(value, "^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$") then
+        return false, "Equipment instance id must be a UUID string"
+    end
+    return true
+end
+
+local CURRENCY_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "high", "mid", "low" },
+    fields = {
+        high = { type = "integer", min = 0, max = LargeNumber.SEGMENT_MAX },
+        mid = { type = "integer", min = 0, max = LargeNumber.SEGMENT_MAX },
+        low = { type = "integer", min = 0, max = LargeNumber.SEGMENT_MAX },
+    },
+}
+
 local ITEM_SCHEMA = {
     type = "object",
     allowUnknown = false,
-    required = { "id", "name", "slot", "category", "rarity", "level" },
+    required = { "id", "equipmentId", "level" },
     fields = {
-        id = { type = "any", validate = validateId },
-        name = { type = "string", minLength = 1, maxLength = 96 },
-        slot = { type = "string", enum = GameStateSchema.SLOTS },
-        category = { type = "string", enum = { "weapon", "armor", "jewelry", "special" } },
-        rarity = { type = "string", enum = GameStateSchema.RARITIES },
-        setId = { type = "string", enum = GameStateSchema.SET_IDS },
+        id = { type = "string", minLength = 36, maxLength = 36, validate = validateInstanceUuid },
+        equipmentId = { type = "string", minLength = 36, maxLength = 36 },
         level = { type = "integer", min = 1, max = 1000000 },
+        enhance = { type = "integer", min = 0, max = 1000 },
+        star = { type = "integer", min = 0, max = 5 },
+        locked = { type = "boolean" },
+        acquiredAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        source = { type = "string", minLength = 1, maxLength = 64, pattern = "^[%w%._:%-]+$" },
+        investedGold = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        investedFragments = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+    },
+}
+
+local INVENTORY_POLICY_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "pauseOnFull", "autoDecompose", "autoSell", "decomposeRarities", "sellRarities" },
+    fields = {
+        pauseOnFull = { type = "boolean" },
+        autoDecompose = { type = "boolean" },
+        autoSell = { type = "boolean" },
+        decomposeRarities = {
+            type = "object",
+            allowUnknown = false,
+            fields = {
+                common = { type = "boolean" },
+                blue = { type = "boolean" },
+                purple = { type = "boolean" },
+                epic = { type = "boolean" },
+                myth = { type = "boolean", enum = { false } },
+            },
+        },
+        sellRarities = {
+            type = "object",
+            allowUnknown = false,
+            fields = {
+                common = { type = "boolean" },
+                blue = { type = "boolean" },
+                purple = { type = "boolean" },
+                epic = { type = "boolean" },
+                myth = { type = "boolean", enum = { false } },
+            },
+        },
+    },
+}
+
+local CURRENT_MONSTER_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = {
+        "id",
+        "eventType",
+        "name",
+        "hp",
+        "maxHp",
+        "atk",
+        "def",
+        "phase",
+        "phaseRemaining",
+        "attackSerial",
+        "lastSequenceIndex",
+    },
+    fields = {
+        id = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+        eventType = { type = "string", enum = { "monster", "elite", "boss" } },
+        name = { type = "string", minLength = 1, maxLength = 128 },
+        hp = { type = "integer", min = 0, max = 1000000000 },
+        maxHp = { type = "integer", min = 1, max = 1000000000 },
         atk = { type = "integer", min = 0, max = 1000000000 },
         def = { type = "integer", min = 0, max = 1000000000 },
-        hp = { type = "integer", min = 0, max = 1000000000 },
-        crit = { type = "number", min = 0, max = 10 },
-        critDmg = { type = "number", min = 0, max = 100 },
-        atkSpeed = { type = "number", min = 0, max = 100 },
-        enhance = { type = "integer", min = 0, max = 1000000 },
-        star = { type = "integer", min = 0, max = 1000 },
+        phase = { type = "string", enum = { "windup", "recovery" } },
+        phaseRemaining = { type = "number", min = 0, max = 60 },
+        attackSerial = { type = "integer", min = 1, max = 1000000000 },
+        sequenceIndex = { type = "integer", min = 1, max = 3 },
+        sequenceId = { type = "string", enum = { "attackA", "attackB", "attackC" } },
+        fps = { type = "integer", min = 1, max = 120 },
+        hitFrame = { type = "integer", min = 1, max = 48 },
+        endFrame = { type = "integer", min = 1, max = 48 },
+        recoverySeconds = { type = "number", min = 0, max = 60 },
+        lastSequenceIndex = { type = "integer", min = 0, max = 3 },
     },
 }
 
@@ -245,6 +361,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "hp",
         "floorKillBonus",
         "permanentBonus",
+        "inventoryPolicy",
         "appliedGmCommandIds",
     },
     fields = {
@@ -258,9 +375,9 @@ GameStateSchema.PERSISTED_SCHEMA = {
         floor = { type = "integer", min = 1, max = 1000000000 },
         maxFloor = { type = "integer", min = 1, max = 1000000000 },
         position = { type = "integer", min = 0, max = 100 },
-        gold = { type = "integer", min = 0, max = 9007199254740991 },
-        fragments = { type = "integer", min = 0, max = 9007199254740991 },
-        mythShards = { type = "integer", min = 0, max = 9007199254740991 },
+        gold = CURRENCY_SCHEMA,
+        fragments = CURRENCY_SCHEMA,
+        mythShards = CURRENCY_SCHEMA,
         autoRun = { type = "boolean" },
         pauseReason = { type = "string", maxLength = 64 },
         nextItemId = { type = "integer", min = 1, max = 9007199254740991 },
@@ -274,6 +391,8 @@ GameStateSchema.PERSISTED_SCHEMA = {
         hp = { type = "integer", min = 0, max = 1000000000 },
         floorKillBonus = { type = "number", min = 0, max = 1 },
         permanentBonus = { type = "number", min = 0, max = 1000 },
+        inventoryPolicy = INVENTORY_POLICY_SCHEMA,
+        currentMonster = CURRENT_MONSTER_SCHEMA,
         appliedGmCommandIds = {
             type = "array",
             maxLength = GameStateSchema.MAX_APPLIED_GM_COMMANDS,
@@ -297,24 +416,32 @@ function GameStateSchema.NewInitialState(now)
         revision = 0,
         updatedAt = now,
         lastActiveAt = now,
-        pendingOfflineSeconds = 4 * 60 * 60 + 18 * 60,
-        level = 21,
-        exp = 464,
+        pendingOfflineSeconds = 0,
+        level = 1,
+        exp = 0,
         floor = 1,
         maxFloor = 1,
-        position = 87,
-        gold = 38600,
-        fragments = 520,
-        mythShards = 12,
-        autoRun = true,
+        position = 0,
+        gold = LargeNumber.Zero(),
+        fragments = LargeNumber.Zero(),
+        mythShards = LargeNumber.Zero(),
+        autoRun = false,
         nextItemId = 1,
         inventory = {},
         equipped = {},
-        consumables = { healthPotion = 12 },
+        consumables = { healthPotion = 0 },
         hp = 1,
-        floorKillBonus = 0.08,
-        permanentBonus = 0.035,
+        floorKillBonus = 0,
+        permanentBonus = 0,
+        inventoryPolicy = {
+            pauseOnFull = true,
+            autoDecompose = false,
+            autoSell = false,
+            decomposeRarities = { common = false, blue = false, purple = false, epic = false, myth = false },
+            sellRarities = { common = false, blue = false, purple = false, epic = false, myth = false },
+        },
         appliedGmCommandIds = {},
+        currentMonster = nil,
         logs = {},
         currentEvent = "monster",
         recentDamage = "",
@@ -324,10 +451,28 @@ end
 ---@param state table
 ---@return table
 function GameStateSchema.ToPersistedState(state)
+    ---@type table<string, any>
     local persisted = {}
     for _, fieldName in ipairs(PERSISTED_FIELDS) do
         local value = state[fieldName]
-        if value ~= nil then
+        if fieldName == "inventory" then
+            local items = {}
+            for _, item in ipairs(value or {}) do
+                items[#items + 1] = {
+                    id = item.id,
+                    equipmentId = item.equipmentId,
+                    level = item.level,
+                    enhance = item.enhance,
+                    star = item.star,
+                    locked = item.locked == true,
+                    acquiredAt = item.acquiredAt or 0,
+                    source = item.source or "legacy",
+                    investedGold = item.investedGold or 0,
+                    investedFragments = item.investedFragments or 0,
+                }
+            end
+            persisted[fieldName] = items
+        elseif value ~= nil then
             persisted[fieldName] = deepCopy(value)
         end
     end
@@ -407,6 +552,13 @@ function GameStateSchema.ValidateState(state)
         if inventoryById[idKey] ~= nil then
             return false, stateError("Equipment ids must be unique", "$state.inventory[" .. index .. "].id")
         end
+        local definition = EquipmentCatalog.Get(item.equipmentId)
+        if not definition then
+            return false, stateError("Unknown equipment definition", "$state.inventory[" .. index .. "].equipmentId")
+        end
+        if definition.id ~= item.equipmentId then
+            return false, stateError("Equipment definition id mismatch", "$state.inventory[" .. index .. "].equipmentId")
+        end
         inventoryById[idKey] = item
     end
 
@@ -417,7 +569,8 @@ function GameStateSchema.ValidateState(state)
         if item == nil then
             return false, stateError("Equipped item is missing from inventory", "$state.equipped." .. slot)
         end
-        if item.slot ~= slot then
+        local definition = EquipmentCatalog.Get(item.equipmentId)
+        if not definition or definition.slot ~= slot then
             return false, stateError("Equipped item does not match its slot", "$state.equipped." .. slot)
         end
         if equippedIds[idKey] then
@@ -473,6 +626,9 @@ function GameStateSchema.BuildSnapshot(state, options)
         end
     end
 
+    snapshot.inventory = networkInventory(state.inventory)
+    snapshot.equipped = deepCopy(state.equipped or {})
+    snapshot.consumables = deepCopy(state.consumables or {})
     snapshot.nextExp = options.nextExp or snapshot.nextExp or nextExp(snapshot.level or 1)
     if options.stats ~= nil then
         snapshot.stats = deepCopy(options.stats)
@@ -504,7 +660,7 @@ function GameStateSchema.BuildDelta(revision, changes, options)
         or changes.equipped ~= nil
         or changes.consumables ~= nil
     if inventoryChanged and options.state ~= nil then
-        deltaChanges.inventory = deepCopy(options.state.inventory or {})
+        deltaChanges.inventory = networkInventory(options.state.inventory or {})
         deltaChanges.equipped = deepCopy(options.state.equipped or {})
         deltaChanges.consumables = deepCopy(options.state.consumables or {})
     end

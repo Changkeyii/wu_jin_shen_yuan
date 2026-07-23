@@ -75,14 +75,77 @@ function GameCommands.Register(router, services)
         name = "Game.Decompose",
         schema = {
             type = "object",
-            required = { "maxRank" },
+            required = { "maxRank", "candidateIds" },
             allowUnknown = false,
-            fields = { maxRank = { type = "integer", min = 1, max = 4 } },
+            fields = {
+                maxRank = { type = "integer", min = 1, max = 4 },
+                candidateIds = {
+                    type = "array",
+                    minLength = 1,
+                    maxLength = ServerConfig.INVENTORY_CAP,
+                    items = { type = "string", minLength = 36, maxLength = 36 },
+                },
+            },
         },
         rate = ServerConfig.RATES.Equipment,
         async = true,
         handler = AsyncMutation(services, "decompose equipment", function(state, payload, now)
-            return GameEngine.Decompose(state, payload.maxRank, now)
+            return GameEngine.Decompose(state, payload.maxRank, now, payload.candidateIds)
+        end),
+    })
+
+    router:Register({
+        name = "Game.SetEquipmentLock",
+        schema = {
+            type = "object",
+            required = { "itemId", "locked" },
+            allowUnknown = false,
+            fields = {
+                itemId = { type = "string", minLength = 36, maxLength = 36 },
+                locked = { type = "boolean" },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "set equipment lock", function(state, payload, now)
+            return GameEngine.SetEquipmentLock(state, payload.itemId, payload.locked, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.SetInventoryPolicy",
+        schema = {
+            type = "object",
+            required = { "pauseOnFull", "autoDecompose", "autoSell", "decomposeRarities", "sellRarities" },
+            allowUnknown = false,
+            fields = {
+                pauseOnFull = { type = "boolean" },
+                autoDecompose = { type = "boolean" },
+                autoSell = { type = "boolean" },
+                decomposeRarities = {
+                    type = "object",
+                    allowUnknown = false,
+                    fields = {
+                        common = { type = "boolean" }, blue = { type = "boolean" },
+                        purple = { type = "boolean" }, epic = { type = "boolean" },
+                        myth = { type = "boolean", enum = { false } },
+                    },
+                },
+                sellRarities = {
+                    type = "object",
+                    allowUnknown = false,
+                    fields = {
+                        common = { type = "boolean" }, blue = { type = "boolean" },
+                        purple = { type = "boolean" }, epic = { type = "boolean" },
+                        myth = { type = "boolean", enum = { false } },
+                    },
+                },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "set inventory policy", function(state, payload, now)
+            return GameEngine.SetInventoryPolicy(state, payload, now)
         end),
     })
 
