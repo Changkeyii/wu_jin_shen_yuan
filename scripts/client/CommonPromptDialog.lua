@@ -179,9 +179,7 @@ function CommonPromptDialog.Show(options)
     if cancelButton then dialogChildren[#dialogChildren + 1] = cancelButton end
 
     local dialog = UI.Panel {
-        position = "absolute",
-        left = (1080 - dialogWidth) * 0.5,
-        top = (1920 - dialogHeight) * 0.5,
+        position = "relative",
         width = dialogWidth,
         height = dialogHeight,
         clickable = true,
@@ -196,20 +194,22 @@ function CommonPromptDialog.Show(options)
         position = "absolute",
         left = 0,
         top = 0,
-        width = 1080,
-        height = 1920,
+        right = 0,
+        bottom = 0,
         zIndex = options.zIndex or 2000,
         pointerEvents = "box-none",
+        alignItems = "center",
+        justifyContent = "center",
         children = {
             UI.Panel {
                 position = "absolute",
                 left = 0,
                 top = 0,
-                width = 1080,
-                height = 1920,
+                right = 0,
+                bottom = 0,
                 clickable = true,
                 backgroundImage = ASSETS.overlay,
-                backgroundFit = "contain",
+                backgroundFit = "cover",
                 onClick = function()
                     if closeOnOverlay then Cancel() end
                 end,

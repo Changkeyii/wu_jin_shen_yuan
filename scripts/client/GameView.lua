@@ -182,6 +182,15 @@ local EVENT_VIEW_COUNT = 8
 local PRESENTATION_SPEED = 96
 local MIN_FONT_SIZE = 24
 
+-- Vertical anchor contract (design pixels):
+--   Top    [0, 310)
+--   Middle [310, viewportHeight - 170)
+--   Bottom [viewportHeight - 170, viewportHeight)
+-- The design scale keeps the horizontal plane at 1080. Taller screens only
+-- extend the middle zone; the top and bottom zones remain edge-anchored.
+local TOP_ZONE_HEIGHT = 310
+local BOTTOM_ZONE_HEIGHT = 170
+
 local function CurrentPlayer()
     return ASSETS.player
 end
@@ -542,7 +551,7 @@ local function CreateTopBar()
 
     return UI.Panel {
         width = "100%",
-        height = 310,
+        height = TOP_ZONE_HEIGHT,
         flexShrink = 0,
         position = "relative",
         children = {
@@ -673,9 +682,7 @@ local function ShowIdleSettingTip(title, description)
     if not uiRoot_ then return end
     CloseIdleSettingTip()
     local tipPanel = UI.Panel {
-        position = "absolute",
-        left = 170,
-        top = 680,
+        position = "relative",
         width = 740,
         height = 360,
         zIndex = 2300,
@@ -704,20 +711,22 @@ local function ShowIdleSettingTip(title, description)
         position = "absolute",
         left = 0,
         top = 0,
-        width = 1080,
-        height = 1920,
+        right = 0,
+        bottom = 0,
         zIndex = 2200,
         pointerEvents = "box-none",
+        alignItems = "center",
+        justifyContent = "center",
         children = {
             UI.Panel {
                 position = "absolute",
                 left = 0,
                 top = 0,
-                width = 1080,
-                height = 1920,
+                right = 0,
+                bottom = 0,
                 clickable = true,
                 backgroundImage = ASSETS.ui.screenOverlay,
-                backgroundFit = "contain",
+                backgroundFit = "cover",
                 onClick = CloseIdleSettingTip,
             },
             tipPanel,
@@ -970,9 +979,7 @@ local function ShowIdleSettings()
         },
     }
     local panel = UI.Panel {
-        position = "absolute",
-        left = 42,
-        top = 130,
+        position = "relative",
         width = 996,
         height = 1660,
         zIndex = 2100,
@@ -1001,20 +1008,22 @@ local function ShowIdleSettings()
         position = "absolute",
         left = 0,
         top = 0,
-        width = 1080,
-        height = 1920,
+        right = 0,
+        bottom = 0,
         zIndex = 2000,
         pointerEvents = "box-none",
+        alignItems = "center",
+        justifyContent = "center",
         children = {
             UI.Panel {
                 position = "absolute",
                 left = 0,
                 top = 0,
-                width = 1080,
-                height = 1920,
+                right = 0,
+                bottom = 0,
                 clickable = true,
                 backgroundImage = ASSETS.ui.screenOverlay,
-                backgroundFit = "contain",
+                backgroundFit = "cover",
                 onClick = CloseIdleSettings,
             },
             panel,
@@ -1440,7 +1449,7 @@ local function CreateBottomNav()
     end
     return UI.Panel {
         width = "100%",
-        height = 170,
+        height = BOTTOM_ZONE_HEIGHT,
         flexShrink = 0,
         position = "relative",
         children = children,
@@ -1453,15 +1462,64 @@ local function BuildRoot()
     if game.connectionState == "ready" then
         initialPageChildren[1] = CreatePageContent()
     end
-    pageContainer_ = UI.Panel { width = "100%", height = "100%", flexGrow = 1, flexBasis = 0, alignSelf = "stretch", overflow = "hidden", children = initialPageChildren }
-    local interactiveContent = UI.Panel {
+    pageContainer_ = UI.Panel {
+        id = "middlePageContainer",
         width = "100%",
         height = "100%",
-        alignItems = "stretch",
-        flexDirection = "column",
-        pointerEvents = "box-none",
-        children = { CreateTopBar(), pageContainer_, CreateBottomNav() },
+        overflow = "hidden",
+        children = initialPageChildren,
     }
+
+    local topZone = UI.Panel {
+        id = "topZone",
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        height = TOP_ZONE_HEIGHT,
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { CreateTopBar() },
+    }
+
+    local middleZone = UI.Panel {
+        id = "middleZone",
+        position = "absolute",
+        left = 0,
+        top = TOP_ZONE_HEIGHT,
+        right = 0,
+        bottom = BOTTOM_ZONE_HEIGHT,
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { pageContainer_ },
+    }
+
+    local bottomZone = UI.Panel {
+        id = "bottomZone",
+        position = "absolute",
+        left = 0,
+        right = 0,
+        bottom = 0,
+        height = BOTTOM_ZONE_HEIGHT,
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { CreateBottomNav() },
+    }
+
+    uiRoot_ = UI.Panel {
+        id = "verticalAnchorPlane",
+        width = CONFIG.DesignW,
+        height = "100%",
+        flexShrink = 0,
+        position = "relative",
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { topZone, middleZone, bottomZone },
+    }
+
+    -- SafeAreaView must fill the physical viewport. Its normal-flow child is
+    -- the anchor plane, so absolute zone coordinates are relative to the safe
+    -- content box rather than to a vertically centered 1920px stage.
     local safeContent = UI.SafeAreaView {
         position = "absolute",
         left = 0,
@@ -1470,18 +1528,21 @@ local function BuildRoot()
         bottom = 0,
         edges = "all",
         nativeMenuInset = true,
+        alignItems = "center",
         pointerEvents = "box-none",
-        children = { interactiveContent },
+        children = {
+            UI.Panel {
+                width = "100%",
+                flexGrow = 1,
+                flexBasis = 0,
+                alignItems = "center",
+                position = "relative",
+                pointerEvents = "box-none",
+                children = { uiRoot_ },
+            },
+        },
     }
-    uiRoot_ = UI.Panel {
-        width = CONFIG.DesignW,
-        height = CONFIG.DesignH,
-        flexShrink = 0,
-        position = "relative",
-        overflow = "hidden",
-        pointerEvents = "box-none",
-        children = { safeContent },
-    }
+
     local screenRoot = UI.Panel {
         width = "100%",
         height = "100%",
@@ -1491,17 +1552,7 @@ local function BuildRoot()
         pointerEvents = "box-none",
         children = {
             CreateBackground(),
-            UI.Panel {
-                position = "absolute",
-                left = 0,
-                top = 0,
-                right = 0,
-                bottom = 0,
-                alignItems = "center",
-                justifyContent = "center",
-                pointerEvents = "box-none",
-                children = { uiRoot_ },
-            },
+            safeContent,
         }
     }
     UI.SetRoot(screenRoot, true)

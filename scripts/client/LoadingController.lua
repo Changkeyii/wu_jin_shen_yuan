@@ -73,7 +73,7 @@ local function createOverlay()
         bottom = 0,
         zIndex = 1000,
         backgroundImage = context_.assets.ui.screenOverlay,
-        backgroundFit = "contain",
+        backgroundFit = "cover",
         alignItems = "center",
         justifyContent = "center",
         paddingLeft = 80,
