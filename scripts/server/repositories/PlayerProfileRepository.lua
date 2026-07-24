@@ -2,6 +2,7 @@ local ServerCloudGateway = require("server.dao.ServerCloudGateway")
 local StateNormalizer = require("server.domain.StateNormalizer")
 local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
+local BigNumber = require("shared.BigNumber")
 local LargeNumber = require("shared.LargeNumber")
 
 local PlayerProfileRepository = {}
@@ -279,6 +280,16 @@ function PlayerProfileRepository:Load(userId, onComplete)
             if cloudItemId then itemMap[row.name or key or tostring(cloudItemId)] = cloudItemId end
         end
 
+        local rawValid, rawIssue = StateNormalizer.ValidateRawV5BigNumbers(raw)
+        if not rawValid then
+            local code = rawIssue and rawIssue.scope == "inventory"
+                and "CORRUPT_INVENTORY" or "CORRUPT_PROFILE"
+            local path = rawIssue and rawIssue.path or "$profile"
+            local reason = rawIssue and rawIssue.reason or "invalid V5 BigNumber state"
+            onComplete(Result(false, {}, code, path .. ": " .. tostring(reason)))
+            return
+        end
+
         local state = StateNormalizer.Normalize(raw, self.clock())
         local normalizedInventory = state.inventory or {}
         if #normalizedInventory ~= #inventoryRows then
@@ -306,6 +317,9 @@ end
 
 function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
     local operation = self.gateway.CommitOperation
+    local powerValue = newState.stats and (newState.stats.displayedPower or newState.stats.power) or 0
+    local powerBig = BigNumber.Normalize(powerValue)
+    local powerNumber = BigNumber.ToNumber(powerBig)
     local operations = {
         { kind = operation.SCORE_SET, userId = userId, key = self.Keys.PROFILE, value = ProfileCore(newState) },
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.SCHEMA_VERSION, value = newState.schemaVersion },
@@ -314,11 +328,13 @@ function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.FLOOR, value = newState.floor },
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.MAX_FLOOR, value = newState.maxFloor },
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.LEVEL, value = newState.level },
-        { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.POWER, value = LargeNumber.RankScore(newState.stats.power) },
+        { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.POWER, value = BigNumber.RankScore(powerBig, LargeNumber.MAX_CLOUD_INTEGER) },
         { kind = operation.SCORE_SET, userId = userId, key = self.Keys.POWER_VALUE, value = {
-            value = tostring(LargeNumber.Clamp(newState.stats.power)),
-            high = select(1, LargeNumber.Split(newState.stats.power)),
-            low = select(2, LargeNumber.Split(newState.stats.power)),
+            value = BigNumber.ToScientificString(powerBig, 12),
+            mantissa = powerBig.mantissa,
+            exponent = powerBig.exponent,
+            high = powerNumber and select(1, LargeNumber.Split(powerNumber)) or 0,
+            low = powerNumber and select(2, LargeNumber.Split(powerNumber)) or 0,
         } },
     }
     AppendLargeValueOperations(operations, operation, userId, self.Keys.GOLD_HIGH, self.Keys.GOLD_MID, self.Keys.GOLD_LOW, newState.gold)

@@ -2,7 +2,10 @@ local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
 local GameStateSchema = require("shared.GameStateSchema")
 local CombatSequence = require("shared.CombatSequence")
+local BigNumber = require("shared.BigNumber")
 local LargeNumber = require("shared.LargeNumber")
+local RarityCatalog = require("shared.RarityCatalog")
+local StoryCatalog = require("shared.StoryCatalog")
 
 local StateNormalizer = {}
 
@@ -47,23 +50,207 @@ local function normalizeItemId(rawId, usedIds, nextId)
     return nextEquipmentId(usedIds, nextId)
 end
 
-local function sanitizeEquipment(rawItem, itemId)
+local STAR_MULTIPLIERS = { 1.00, 1.03, 1.07, 1.12, 1.18, 1.25 }
+
+local function v4ProgressionMultiplier(enhance, star)
+    local enhanceMultiplier = 1 + 0.35 * (1 - math.exp(-math.max(0, enhance or 0) / 20))
+    return enhanceMultiplier * (STAR_MULTIPLIERS[math.max(0, math.min(5, star or 0)) + 1] or 1)
+end
+
+local function normalizeMagnitude(bigValue, numberValue, fallback)
+    if BigNumber.IsBigNumber(bigValue) then return BigNumber.Normalize(bigValue) end
+    if TableUtils.IsFiniteNumber(numberValue) and numberValue >= 0 then
+        return BigNumber.FromNumber(numberValue)
+    end
+    return BigNumber.Clone(fallback or BigNumber.Zero())
+end
+
+local function projectMagnitude(value)
+    return BigNumber.ToNumber(value)
+end
+
+local function rawBigNumberIssue(value, path, scope)
+    local valid, reason = BigNumber.ValidateCanonical(value)
+    if valid then return nil end
+    return {
+        scope = scope or "profile",
+        path = path,
+        reason = reason or "BigNumber is missing or invalid",
+    }
+end
+
+local function validateRawEquipmentBigNumbers(items, path, scope)
+    if type(items) ~= "table" then
+        return false, { scope = scope, path = path, reason = "equipment list must be a table" }
+    end
+    for index, item in ipairs(items) do
+        if type(item) ~= "table" then
+            return false, {
+                scope = scope,
+                path = string.format("%s[%d]", path, index),
+                reason = "equipment entry must be a table",
+            }
+        end
+        for _, fieldName in ipairs({ "budgetBig", "atkBig", "defBig", "hpBig" }) do
+            local itemPath = string.format("%s[%d].%s", path, index, fieldName)
+            local issue = rawBigNumberIssue(item[fieldName], itemPath, scope)
+            if issue then return false, issue end
+        end
+    end
+    return true, nil
+end
+
+function StateNormalizer.ValidateRawV5BigNumbers(rawState)
+    if type(rawState) ~= "table" then
+        return false, { scope = "profile", path = "$profile", reason = "profile must be a table" }
+    end
+    if rawState.schemaVersion == nil then return true, nil end
+
+    local sourceVersion = tonumber(rawState.schemaVersion)
+    if not TableUtils.IsFiniteNumber(sourceVersion)
+        or sourceVersion ~= math.floor(sourceVersion)
+        or sourceVersion < 1
+        or sourceVersion > GameStateSchema.VERSION
+    then
+        return false, {
+            scope = "profile",
+            path = "$profile.schemaVersion",
+            reason = "unsupported or invalid schema version",
+        }
+    end
+    if sourceVersion < 5 then return true, nil end
+
+    local issue = rawBigNumberIssue(rawState.hpBig, "$profile.hpBig", "profile")
+    if issue then return false, issue end
+
+    local inventoryOk, inventoryIssue = validateRawEquipmentBigNumbers(
+        rawState.inventory, "$profile.inventory", "inventory")
+    if not inventoryOk then return false, inventoryIssue end
+    local overflowOk, overflowIssue = validateRawEquipmentBigNumbers(
+        rawState.overflowLoot, "$profile.overflowLoot", "profile")
+    if not overflowOk then return false, overflowIssue end
+
+    if rawState.currentMonster ~= nil then
+        if type(rawState.currentMonster) ~= "table" then
+            return false, {
+                scope = "profile",
+                path = "$profile.currentMonster",
+                reason = "current monster must be a table",
+            }
+        end
+        for _, fieldName in ipairs({ "hpBig", "maxHpBig", "atkBig", "defBig" }) do
+            issue = rawBigNumberIssue(
+                rawState.currentMonster[fieldName],
+                "$profile.currentMonster." .. fieldName,
+                "profile")
+            if issue then return false, issue end
+        end
+    end
+
+    if rawState.pendingEquipDecision ~= nil then
+        if type(rawState.pendingEquipDecision) ~= "table" then
+            return false, {
+                scope = "profile",
+                path = "$profile.pendingEquipDecision",
+                reason = "pending equipment decision must be a table",
+            }
+        end
+        issue = rawBigNumberIssue(
+            rawState.pendingEquipDecision.displayedPowerDeltaBig,
+            "$profile.pendingEquipDecision.displayedPowerDeltaBig",
+            "profile")
+        if issue then return false, issue end
+    end
+
+    return true, nil
+end
+
+local function sanitizeAffixes(value)
+    local result = {}
+    for _, affix in ipairs(type(value) == "table" and value or {}) do
+        if type(affix) == "string" and #affix >= 1 and #affix <= 64 and affix:match("^[%w%._:%-]+$") then
+            result[#result + 1] = affix
+            if #result >= 4 then break end
+        end
+    end
+    return result
+end
+
+local function sanitizeEquipment(rawItem, itemId, sourceVersion)
     local definition = Catalog.ResolveEquipment(rawItem)
     if not definition then return nil end
+    local level = clampInteger(rawItem.level, 1, 1000000, definition.level or 1)
+    local enhance = clampInteger(rawItem.enhance, 0, Catalog.MAX_ENHANCE, 0)
+    local star = clampInteger(rawItem.star, 0, Catalog.MAX_STAR, 0)
+    local rarity = RarityCatalog.NormalizeId(rawItem.rarity or definition.rarity)
+    local setEnabled = rawItem.setEnabled
+    if type(setEnabled) ~= "boolean" then
+        setEnabled = RarityCatalog.Rank(rarity) >= RarityCatalog.Rank("epic")
+    end
+    local progression = v4ProgressionMultiplier(enhance, star)
+    local atk = tonumber(rawItem.atk)
+    local def = tonumber(rawItem.def)
+    local hp = tonumber(rawItem.hp)
+    local crit = tonumber(rawItem.crit)
+    local critDmg = tonumber(rawItem.critDmg)
+    local atkSpeed = tonumber(rawItem.atkSpeed)
+    if (sourceVersion or 3) < 4 then
+        local oldProgression = 1 + (level - 1) * 0.06 + enhance * 0.05 + star * 0.10
+        atk = math.floor((definition.atk or 0) * oldProgression) / progression
+        def = math.floor((definition.def or 0) * oldProgression) / progression
+        hp = math.floor((definition.hp or 0) * oldProgression) / progression
+        crit = (definition.crit or 0) + star * 0.002
+        critDmg = (definition.critDmg or 0) + star * 0.01
+        atkSpeed = (definition.atkSpeed or 0) + enhance * 0.001
+    end
+    local atkBig = normalizeMagnitude(rawItem.atkBig, atk, definition.atk or 0)
+    local defBig = normalizeMagnitude(rawItem.defBig, def, definition.def or 0)
+    local hpBig = normalizeMagnitude(rawItem.hpBig, hp, definition.hp or 0)
+    local budgetBig = normalizeMagnitude(rawItem.budgetBig, rawItem.budget, 0)
+    if BigNumber.IsZero(budgetBig) and (sourceVersion or 3) < 4 then
+        budgetBig = BigNumber.FromNumber(
+            math.max(0, atk or 0) * 7
+                + math.max(0, def or 0) * 3
+                + math.max(0, hp or 0) * 0.55
+                + math.max(0, crit or 0) * 2000
+                + math.max(0, critDmg or 0) * 900
+                + math.max(0, atkSpeed or 0) * 650)
+    end
     return {
         id = itemId,
         equipmentId = definition.id,
         name = definition.name,
         slot = definition.slot,
         category = definition.category,
-        rarity = definition.rarity,
-        setId = definition.setId,
-        level = clampInteger(rawItem.level, 1, 1000000, definition.level or 1),
-        enhance = clampInteger(rawItem.enhance, 0, Catalog.MAX_ENHANCE, 0),
-        star = clampInteger(rawItem.star, 0, Catalog.MAX_STAR, 0),
+        rarity = rarity,
+        setEnabled = setEnabled,
+        setId = setEnabled and (rawItem.setId or definition.setId) or nil,
+        roll = clampNumber(rawItem.roll, 0.90, 1.10, 1.0),
+        atk = projectMagnitude(atkBig),
+        def = projectMagnitude(defBig),
+        hp = projectMagnitude(hpBig),
+        atkBig = atkBig,
+        defBig = defBig,
+        hpBig = hpBig,
+        crit = clampNumber(crit, 0, 1, definition.crit or 0),
+        critDmg = clampNumber(critDmg, 0, 1000, definition.critDmg or 0),
+        atkSpeed = clampNumber(atkSpeed, 0, 100, definition.atkSpeed or 0),
+        lifeSteal = clampNumber(rawItem.lifeSteal, 0, 1, 0),
+        damageReduction = clampNumber(rawItem.damageReduction, 0, 0.70, 0),
+        bossDamage = clampNumber(rawItem.bossDamage, 0, 1000, 0),
+        coreAffixes = sanitizeAffixes(rawItem.coreAffixes),
+        uniqueEffect = type(rawItem.uniqueEffect) == "string" and rawItem.uniqueEffect:match("^[%w%._:%-]+$") and rawItem.uniqueEffect or nil,
+        aidLocked = rawItem.aidLocked == true,
+        aidFloor = rawItem.aidFloor and clampInteger(rawItem.aidFloor, 1, 1000000000, 1) or nil,
+        level = level,
+        enhance = enhance,
+        star = star,
         locked = rawItem.locked == true,
         acquiredAt = math.max(0, TableUtils.ToInteger(rawItem.acquiredAt, 0)),
         source = type(rawItem.source) == "string" and rawItem.source:match("^[%w%._:%-]+$") and rawItem.source or "legacy",
+        statVersion = 5,
+        budget = projectMagnitude(budgetBig),
+        budgetBig = budgetBig,
         investedGold = clampInteger(rawItem.investedGold, 0, Catalog.MAX_VALUE, 0),
         investedFragments = clampInteger(rawItem.investedFragments, 0, Catalog.MAX_VALUE, 0),
     }
@@ -80,9 +267,96 @@ local function materialKind(item)
     return nil
 end
 
+local function sanitizeAidFloors(value)
+    local result = {}
+    local seen = {}
+    for _, floor in ipairs(type(value) == "table" and value or {}) do
+        floor = clampInteger(floor, 1, 1000000000, 1)
+        if not seen[floor] then
+            seen[floor] = true
+            result[#result + 1] = floor
+            if #result >= 10000 then break end
+        end
+    end
+    return result
+end
+
+local function sanitizeRuleAcknowledgements(value)
+    local result = {}
+    for ruleId, acknowledged in pairs(type(value) == "table" and value or {}) do
+        if acknowledged == true
+            and type(ruleId) == "string"
+            and #ruleId >= 1
+            and #ruleId <= 96
+            and ruleId:match("^[%w%._:%-]+$")
+        then
+            result[StoryCatalog.NormalizeRuleId(ruleId)] = true
+        end
+    end
+    return result
+end
+
+local function sanitizeAutomationPolicy(value)
+    local supplied = type(value) == "table"
+    value = supplied and value or {}
+    return {
+        autoEquip = not supplied or value.autoEquip ~= false,
+        autoSkipStory = value.autoSkipStory == true,
+    }
+end
+
+local function sanitizeRewardPity(value)
+    value = type(value) == "table" and value or {}
+    return {
+        epicMisses = clampInteger(value.epicMisses or value.epicChapterMisses, 0, 20, 0),
+        mythMisses = clampInteger(value.mythMisses or value.mythChapterMisses, 0, 100, 0),
+    }
+end
+
+local function sanitizeStoryProgress(value, sourceVersion, maxFloor)
+    value = type(value) == "table" and value or {}
+    local migrated = sourceVersion < 4
+    return {
+        introCompleted = migrated or value.introCompleted == true,
+        highestCompletedChapter = migrated
+            and math.max(0, math.floor((math.max(1, maxFloor) - 1) / 10))
+            or clampInteger(value.highestCompletedChapter, 0, 100000000, 0),
+        contentVersion = clampInteger(value.contentVersion, 1, 1000000, StoryCatalog.VERSION),
+    }
+end
+
+local function sanitizeStoryGate(value)
+    if type(value) ~= "table" then return nil end
+    local phase = value.phase
+    if phase == "prologue" then
+        return {
+            storyId = StoryCatalog.PROLOGUE.id,
+            chapter = 0,
+            floor = 1,
+            phase = "prologue",
+            title = StoryCatalog.PROLOGUE.title,
+            lines = TableUtils.DeepCopy(StoryCatalog.PROLOGUE.lines),
+            lineIndex = clampInteger(value.lineIndex, 1, #StoryCatalog.PROLOGUE.lines, 1),
+        }
+    end
+    if phase ~= "opening" and phase ~= "boss" and phase ~= "memory" then return nil end
+    local chapter = clampInteger(value.chapter, 1, 100000000, math.max(1, math.floor((tonumber(value.floor) or 10) / 10)))
+    local gate = StoryCatalog.GetGate(chapter, phase)
+    gate.lineIndex = clampInteger(value.lineIndex, 1, #gate.lines, 1)
+    return gate
+end
+
+local function safePauseReason(value)
+    if type(value) ~= "string" or #value > 64 then return nil end
+    return value
+end
+
 function StateNormalizer.Normalize(rawState, now)
     rawState = type(rawState) == "table" and rawState or {}
     now = math.max(0, TableUtils.ToInteger(now, os.time()))
+    local sourceVersion = clampInteger(rawState.schemaVersion, 1, Catalog.SCHEMA_VERSION, 3)
+    local normalizedFloor = math.max(1, TableUtils.ToInteger(rawState.floor, 1))
+    local normalizedMaxFloor = math.max(normalizedFloor, TableUtils.ToInteger(rawState.maxFloor, normalizedFloor))
 
     local state = {
         schemaVersion = Catalog.SCHEMA_VERSION,
@@ -92,14 +366,20 @@ function StateNormalizer.Normalize(rawState, now)
         pendingOfflineSeconds = clampInteger(rawState.pendingOfflineSeconds or rawState.offlineSeconds, 0, Catalog.OFFLINE_MAX_SECONDS, 0),
         level = math.max(1, TableUtils.ToInteger(rawState.level, 1)),
         exp = math.max(0, TableUtils.ToInteger(rawState.exp, 0)),
-        floor = math.max(1, TableUtils.ToInteger(rawState.floor, 1)),
-        maxFloor = math.max(1, TableUtils.ToInteger(rawState.maxFloor, rawState.floor or 1)),
-        position = clampInteger(rawState.position, 0, 100, 0),
+        floor = normalizedFloor,
+        maxFloor = normalizedMaxFloor,
+        position = sourceVersion < 4 and 0 or clampInteger(rawState.position, 0, 10, 0),
+        transitionRemaining = sourceVersion < 4 and 0
+            or clampNumber(rawState.transitionRemaining, 0, 60, 0),
+        attemptId = clampInteger(rawState.attemptId, 0, Catalog.MAX_VALUE, 0),
+        floorDefeats = sourceVersion < 4 and 0 or clampInteger(rawState.floorDefeats, 0, 1000000, 0),
+        aidPending = sourceVersion >= 4 and rawState.aidPending == true,
+        aidGrantedFloors = sourceVersion < 4 and {} or sanitizeAidFloors(rawState.aidGrantedFloors),
         gold = LargeNumber.Normalize(rawState.gold),
         fragments = LargeNumber.Normalize(rawState.fragments),
         mythShards = LargeNumber.Normalize(rawState.mythShards),
         autoRun = rawState.autoRun == true,
-        pauseReason = type(rawState.pauseReason) == "string" and rawState.pauseReason or nil,
+        pauseReason = safePauseReason(rawState.pauseReason),
         floorKillBonus = clampNumber(rawState.floorKillBonus, 0, 0.50, 0),
         permanentBonus = clampNumber(rawState.permanentBonus, 0, 1000, 0),
         inventoryPolicy = {
@@ -112,8 +392,17 @@ function StateNormalizer.Normalize(rawState, now)
         currentMonster = nil,
         nextItemId = math.max(1, TableUtils.ToInteger(rawState.nextItemId or rawState.itemSequence, 1)),
         inventory = {},
+        overflowLoot = {},
         equipped = {},
         consumables = {},
+        automationPolicy = sanitizeAutomationPolicy(rawState.automationPolicy),
+        interactionMode = rawState.interactionMode == "cinematic" and "cinematic" or "normal",
+        rewardPity = sanitizeRewardPity(rawState.rewardPity),
+        storyProgress = sanitizeStoryProgress(rawState.storyProgress, sourceVersion, normalizedMaxFloor),
+        pendingStoryGate = sourceVersion < 4 and nil or sanitizeStoryGate(rawState.pendingStoryGate),
+        ruleAcknowledgements = sanitizeRuleAcknowledgements(rawState.ruleAcknowledgements),
+        pendingEquipDecision = nil,
+        previousLoadout = nil,
         appliedGmCommandIds = GameStateSchema.NormalizeAppliedGmCommandIds(rawState.appliedGmCommandIds),
     }
 
@@ -127,28 +416,49 @@ function StateNormalizer.Normalize(rawState, now)
     local rawDecompose = type(rawPolicy.decomposeRarities) == "table" and rawPolicy.decomposeRarities or (legacyMode == "decompose" and legacyRarities or {})
     local rawSell = type(rawPolicy.sellRarities) == "table" and rawPolicy.sellRarities or (legacyMode == "sell" and legacyRarities or {})
     for _, rarityId in ipairs(Catalog.RARITY_ORDER) do
-        state.inventoryPolicy.decomposeRarities[rarityId] = rarityId ~= "myth" and rawDecompose[rarityId] == true
-        state.inventoryPolicy.sellRarities[rarityId] = rarityId ~= "myth" and rawSell[rarityId] == true
+        local legacyId = rarityId == "advanced" and "blue"
+            or (rarityId == "rare" and "purple" or (rarityId == "myth" and "mythic" or nil))
+        state.inventoryPolicy.decomposeRarities[rarityId] = rarityId ~= "myth"
+            and (rawDecompose[rarityId] == true or (legacyId and rawDecompose[legacyId] == true) or false)
+        state.inventoryPolicy.sellRarities[rarityId] = rarityId ~= "myth"
+            and (rawSell[rarityId] == true or (legacyId and rawSell[legacyId] == true) or false)
     end
 
-    local rawMonster = type(rawState.currentMonster) == "table" and rawState.currentMonster or nil
+    local rawMonster = sourceVersion >= 4 and type(rawState.currentMonster) == "table" and rawState.currentMonster or nil
     if rawMonster then
         local eventType = rawMonster.eventType
-        local maxHp = clampInteger(rawMonster.maxHp, 1, 1000000000, 1)
+        local maxHpBig = normalizeMagnitude(rawMonster.maxHpBig, rawMonster.maxHp, 1)
+        if BigNumber.IsZero(maxHpBig) then maxHpBig = BigNumber.FromNumber(1) end
+        local hpBig = BigNumber.Min(
+            normalizeMagnitude(rawMonster.hpBig, rawMonster.hp, maxHpBig), maxHpBig)
+        local atkBig = normalizeMagnitude(rawMonster.atkBig, rawMonster.atk, 0)
+        local defBig = normalizeMagnitude(rawMonster.defBig, rawMonster.def, 0)
         local phase = rawMonster.phase == "recovery" and "recovery" or "windup"
         local sequenceIndex = clampInteger(rawMonster.sequenceIndex, 1, CombatSequence.Count(), 1)
         local sequence = CombatSequence.Get(sequenceIndex)
-        local hitFrame = clampInteger(rawMonster.hitFrame, 1, sequence.frameCount, sequence.hitFrames[1])
+        local hitIndex = clampInteger(rawMonster.hitIndex, 0, #sequence.hitFrames, 0)
+        local hitFrame = clampInteger(rawMonster.hitFrame, 1, sequence.frameCount, sequence.hitFrames[math.max(1, hitIndex)] or sequence.hitFrames[1])
         local endFrame = clampInteger(rawMonster.endFrame, hitFrame, sequence.frameCount, sequence.endFrame)
         if eventType == "monster" or eventType == "elite" or eventType == "boss" then
+            local room = clampInteger(rawMonster.room, 1, 10, math.max(1, state.position))
+            local encounter = rawMonster.encounter == "chapter_boss" and "chapterBoss" or rawMonster.encounter
+            if encounter ~= "normal" and encounter ~= "elite" and encounter ~= "boss" and encounter ~= "chapterBoss" then
+                encounter = eventType == "monster" and "normal"
+                    or (eventType == "elite" and "elite"
+                    or ((rawMonster.isChapterBoss == true or (room == 10 and state.floor % 10 == 0)) and "chapterBoss" or "boss"))
+            end
             state.currentMonster = {
                 id = type(rawMonster.id) == "string" and rawMonster.id or string.format("floor:%d:position:%d", state.floor, state.position),
                 eventType = eventType,
                 name = type(rawMonster.name) == "string" and rawMonster.name or "回廊怪物",
-                hp = clampInteger(rawMonster.hp, 0, maxHp, maxHp),
-                maxHp = maxHp,
-                atk = clampInteger(rawMonster.atk, 0, 1000000000, 0),
-                def = clampInteger(rawMonster.def, 0, 1000000000, 0),
+                hp = projectMagnitude(hpBig),
+                maxHp = projectMagnitude(maxHpBig),
+                atk = projectMagnitude(atkBig),
+                def = projectMagnitude(defBig),
+                hpBig = hpBig,
+                maxHpBig = maxHpBig,
+                atkBig = atkBig,
+                defBig = defBig,
                 phase = phase,
                 phaseRemaining = clampNumber(rawMonster.phaseRemaining, 0, 60, 0),
                 attackSerial = clampInteger(rawMonster.attackSerial, 1, 1000000000, 1),
@@ -159,6 +469,13 @@ function StateNormalizer.Normalize(rawState, now)
                 endFrame = endFrame,
                 recoverySeconds = clampNumber(rawMonster.recoverySeconds, 0, 60, CombatSequence.MIN_PHASE_SECONDS),
                 lastSequenceIndex = clampInteger(rawMonster.lastSequenceIndex, 0, CombatSequence.Count(), sequenceIndex),
+                room = room,
+                encounter = encounter,
+                hitIndex = hitIndex,
+                elapsedSeconds = clampNumber(rawMonster.elapsedSeconds, 0, 3600, 0),
+                enraged = rawMonster.enraged == true,
+                nextMonsterAttackSeconds = clampNumber(rawMonster.nextMonsterAttackSeconds, 0, 60, Catalog.ENEMY_ATTACK_SECONDS),
+                isChapterBoss = encounter == "chapterBoss",
             }
         end
     end
@@ -177,25 +494,33 @@ function StateNormalizer.Normalize(rawState, now)
     local legacyIdMap = {}
     local legacyObjectMap = {}
     local materialFallback = { fragments = 0, mythShards = 0 }
-    local overflowCount = 0
+    local droppedOverflowCount = 0
+
+    local function appendEquipment(rawItem, preferredTarget, isInventorySource)
+        local itemId
+        itemId, state.nextItemId = normalizeItemId(rawItem.id, usedIds, state.nextItemId)
+        local item = sanitizeEquipment(rawItem, itemId, sourceVersion)
+        if not item then return end
+        usedIds[itemId] = true
+
+        local target = preferredTarget
+        if target == state.inventory and #state.inventory >= Catalog.INVENTORY_CAP then
+            target = state.overflowLoot
+        end
+        if target == state.overflowLoot and #state.overflowLoot >= GameStateSchema.TEMPORARY_LOOT_CAP then
+            droppedOverflowCount = droppedOverflowCount + 1
+            return
+        end
+        target[#target + 1] = item
+        if isInventorySource and target == state.inventory then
+            legacyObjectMap[rawItem] = itemId
+            if rawItem.id ~= nil then legacyIdMap[tostring(rawItem.id)] = itemId end
+        end
+    end
 
     for _, rawItem in ipairs(type(rawState.inventory) == "table" and rawState.inventory or {}) do
         if type(rawItem) == "table" and (rawItem.equipmentId or Catalog.SLOT_BY_ID[rawItem.slot]) then
-            local itemId
-            itemId, state.nextItemId = normalizeItemId(rawItem.id, usedIds, state.nextItemId)
-            local item = sanitizeEquipment(rawItem, itemId)
-            if item then
-                if #state.inventory < Catalog.INVENTORY_CAP then
-                    state.inventory[#state.inventory + 1] = item
-                    usedIds[itemId] = true
-                    legacyObjectMap[rawItem] = itemId
-                    if rawItem.id ~= nil then
-                        legacyIdMap[tostring(rawItem.id)] = itemId
-                    end
-                else
-                    overflowCount = overflowCount + 1
-                end
-            end
+            appendEquipment(rawItem, state.inventory, true)
         elseif type(rawItem) == "table" and rawItem.category == "consumable" then
             state.consumables.healthPotion = state.consumables.healthPotion
                 + math.max(0, TableUtils.ToInteger(rawItem.quantity, 0))
@@ -205,6 +530,11 @@ function StateNormalizer.Normalize(rawState, now)
                 materialFallback[kind] = materialFallback[kind]
                     + math.max(0, TableUtils.ToInteger(rawItem.quantity, 0))
             end
+        end
+    end
+    for _, rawItem in ipairs(type(rawState.overflowLoot) == "table" and rawState.overflowLoot or {}) do
+        if type(rawItem) == "table" and (rawItem.equipmentId or Catalog.SLOT_BY_ID[rawItem.slot]) then
+            appendEquipment(rawItem, state.overflowLoot, false)
         end
     end
 
@@ -240,16 +570,67 @@ function StateNormalizer.Normalize(rawState, now)
         end
     end
 
-    local autoPolicyEnabled = (state.inventoryPolicy.autoDecompose or state.inventoryPolicy.autoSell)
-        and (state.inventoryPolicy.decomposeRarities.common
-            or state.inventoryPolicy.decomposeRarities.blue
-            or state.inventoryPolicy.decomposeRarities.purple
-            or state.inventoryPolicy.decomposeRarities.epic
-            or state.inventoryPolicy.sellRarities.common
-            or state.inventoryPolicy.sellRarities.blue
-            or state.inventoryPolicy.sellRarities.purple
-            or state.inventoryPolicy.sellRarities.epic)
-    if overflowCount > 0 or (#state.inventory >= Catalog.INVENTORY_CAP and state.inventoryPolicy.pauseOnFull and not autoPolicyEnabled) then
+    local rawPendingEquip = type(rawState.pendingEquipDecision) == "table" and rawState.pendingEquipDecision or nil
+    if rawPendingEquip and byId[rawPendingEquip.itemId] then
+        local powerDeltaBig = normalizeMagnitude(
+            rawPendingEquip.displayedPowerDeltaBig,
+            rawPendingEquip.displayedPowerDelta,
+            BigNumber.Zero())
+        state.pendingEquipDecision = {
+            itemId = rawPendingEquip.itemId,
+            createdAt = math.max(0, TableUtils.ToInteger(rawPendingEquip.createdAt, now)),
+            oldTowerScore = clampNumber(rawPendingEquip.oldTowerScore, 0, 1e300, nil),
+            newTowerScore = clampNumber(rawPendingEquip.newTowerScore, 0, 1e300, nil),
+            oldBossScore = clampNumber(rawPendingEquip.oldBossScore, 0, 1e300, nil),
+            newBossScore = clampNumber(rawPendingEquip.newBossScore, 0, 1e300, nil),
+            displayedPowerDelta = projectMagnitude(powerDeltaBig),
+            displayedPowerDeltaBig = powerDeltaBig,
+            headroomDelta = clampNumber(rawPendingEquip.headroomDelta, -1000000000, 1000000000, nil),
+        }
+    end
+
+    local rawPrevious = type(rawState.previousLoadout) == "table" and rawState.previousLoadout or nil
+    if rawPrevious then
+        local backupEquipped = {}
+        local backupIds = {}
+        local rawBackupEquipped = type(rawPrevious.equipped) == "table" and rawPrevious.equipped or {}
+        for _, slot in ipairs(Catalog.SLOTS) do
+            local itemId = rawBackupEquipped[slot.id]
+            local item = itemId and byId[itemId] or nil
+            if item and item.slot == slot.id and not backupIds[itemId] then
+                backupEquipped[slot.id] = itemId
+                backupIds[itemId] = true
+            end
+        end
+        state.previousLoadout = {
+            equipped = backupEquipped,
+            createdAt = math.max(0, TableUtils.ToInteger(rawPrevious.createdAt, now)),
+            available = rawPrevious.available == true,
+        }
+    end
+
+    for _, item in ipairs(state.inventory) do
+        if item.aidLocked and item.aidFloor and state.floor > item.aidFloor then item.aidLocked = false end
+    end
+    if state.aidPending then
+        for _, floor in ipairs(state.aidGrantedFloors) do
+            if floor == state.floor then state.aidPending = false break end
+        end
+    end
+
+    local autoPolicyEnabled = false
+    if state.inventoryPolicy.autoDecompose or state.inventoryPolicy.autoSell then
+        for _, rarityId in ipairs(Catalog.RARITY_ORDER) do
+            if state.inventoryPolicy.decomposeRarities[rarityId] or state.inventoryPolicy.sellRarities[rarityId] then
+                autoPolicyEnabled = true
+                break
+            end
+        end
+    end
+    if #state.overflowLoot > 0
+        or droppedOverflowCount > 0
+        or (#state.inventory >= Catalog.INVENTORY_CAP and state.inventoryPolicy.pauseOnFull and not autoPolicyEnabled)
+    then
         state.autoRun = false
         state.pauseReason = "inventory_full"
     elseif state.pauseReason == "inventory_full" and state.autoRun then
@@ -258,12 +639,24 @@ function StateNormalizer.Normalize(rawState, now)
     for _, item in ipairs(state.inventory) do
         item.power = Catalog.GetItemPower(item)
     end
-    state.stats = Catalog.CalculateStats(state)
-    local rawHp = TableUtils.ToInteger(rawState.hp, state.stats.hp)
-    if rawHp <= 0 then
-        rawHp = state.stats.hp
+    for _, item in ipairs(state.overflowLoot) do item.power = Catalog.GetItemPower(item) end
+    local rawStats = type(rawState.stats) == "table" and rawState.stats or nil
+    local rawStatsValid = false
+    if sourceVersion >= 5 and rawStats then
+        rawStatsValid = GameStateSchema.ValidateStats(rawStats, "$state.stats")
     end
-    state.hp = Catalog.Clamp(rawHp, 1, state.stats.hp)
+    if rawStatsValid and not BigNumber.IsZero(rawStats.hpBig) then
+        state.stats = TableUtils.DeepCopy(rawStats)
+        state.stats.setProgress = Catalog.GetSetProgress(state)
+    else
+        state.stats = Catalog.CalculateStats(state)
+    end
+    local maximumHp = state.stats.hpBig or BigNumber.FromNumber(state.stats.hp)
+    local rawHp = sourceVersion < 4
+        and maximumHp
+        or normalizeMagnitude(rawState.hpBig, rawState.hp, maximumHp)
+    state.hpBig = BigNumber.Min(rawHp, maximumHp)
+    state.hp = projectMagnitude(state.hpBig)
     state.currentEvent = state.currentMonster
         and state.currentMonster.eventType
         or Catalog.GetCellType(math.max(1, state.position), state.floor)
@@ -272,52 +665,7 @@ end
 
 function StateNormalizer.ToPersisted(state)
     local normalized = StateNormalizer.Normalize(state, state.updatedAt)
-    local persistedInventory = {}
-    for _, item in ipairs(normalized.inventory) do
-        persistedInventory[#persistedInventory + 1] = {
-            id = item.id,
-            equipmentId = item.equipmentId,
-            level = item.level,
-            enhance = item.enhance,
-            star = item.star,
-            locked = item.locked,
-            acquiredAt = item.acquiredAt,
-            source = item.source,
-            investedGold = item.investedGold,
-            investedFragments = item.investedFragments,
-        }
-    end
-    local persisted = {
-        schemaVersion = normalized.schemaVersion,
-        revision = normalized.revision,
-        updatedAt = normalized.updatedAt,
-        lastActiveAt = normalized.lastActiveAt,
-        pendingOfflineSeconds = normalized.pendingOfflineSeconds,
-        level = normalized.level,
-        exp = normalized.exp,
-        floor = normalized.floor,
-        maxFloor = normalized.maxFloor,
-        position = normalized.position,
-        gold = normalized.gold,
-        fragments = normalized.fragments,
-        mythShards = normalized.mythShards,
-        autoRun = normalized.autoRun,
-        pauseReason = normalized.pauseReason,
-        hp = normalized.hp,
-        floorKillBonus = normalized.floorKillBonus,
-        permanentBonus = normalized.permanentBonus,
-        inventoryPolicy = TableUtils.DeepCopy(normalized.inventoryPolicy),
-        currentMonster = TableUtils.DeepCopy(normalized.currentMonster),
-        nextItemId = normalized.nextItemId,
-        inventory = persistedInventory,
-        equipped = TableUtils.DeepCopy(normalized.equipped),
-        consumables = TableUtils.DeepCopy(normalized.consumables),
-        appliedGmCommandIds = TableUtils.DeepCopy(normalized.appliedGmCommandIds),
-    }
-    for _, item in ipairs(persisted.inventory) do
-        item.power = nil
-    end
-    return persisted
+    return GameStateSchema.ToPersistedState(normalized)
 end
 
 return StateNormalizer

@@ -10,6 +10,18 @@ local CONFIG = {
     OfflineMaxSeconds = 12 * 60 * 60,
 }
 
+-- 1080-wide design contract. Height deliberately stays dynamic so top/middle/
+-- bottom anchors fill every portrait aspect ratio without letterboxing.
+function CONFIG.ViewportScale()
+    local physicalWidth = graphics and graphics.GetWidth and graphics:GetWidth() or CONFIG.DesignW
+    return math.max(0.01, physicalWidth / CONFIG.DesignW)
+end
+
+function CONFIG.DynamicDesignHeight()
+    local physicalHeight = graphics and graphics.GetHeight and graphics:GetHeight() or CONFIG.DesignH
+    return physicalHeight / CONFIG.ViewportScale()
+end
+
 local C = {
     primary = {31, 162, 255, 255},
     primaryHover = {70, 183, 255, 255},
@@ -160,14 +172,22 @@ local BrawlForgeTheme = UI.Theme.ExtendTheme(UI.Theme.defaultTheme, {
 })
 
 local RARITIES = {
-    common = { name = "普通", short = "白", rank = 1, color = {111, 120, 151, 255}, mult = 1.0, fragment = 1 },
-    blue = { name = "高级", short = "蓝", rank = 2, color = {38, 182, 255, 255}, mult = 1.25, fragment = 2 },
-    purple = { name = "稀有", short = "紫", rank = 3, color = {193, 60, 255, 255}, mult = 1.65, fragment = 5 },
-    epic = { name = "史诗", short = "橙", rank = 4, color = {255, 163, 24, 255}, mult = 2.35, fragment = 18 },
-    myth = { name = "神话", short = "彩", rank = 5, color = {111, 231, 255, 255}, mult = 3.35, fragment = 80 },
+    common = { id = "common", name = "普通", short = "白", rank = 1, color = {232, 239, 255, 255}, beam = {220, 235, 255, 235}, mult = 0.90, fragment = 1 },
+    advanced = { id = "advanced", name = "高级", short = "蓝", rank = 2, color = {38, 182, 255, 255}, beam = {25, 170, 255, 245}, mult = 0.95, fragment = 2 },
+    rare = { id = "rare", name = "稀有", short = "紫", rank = 3, color = {193, 60, 255, 255}, beam = {179, 54, 255, 245}, mult = 1.00, fragment = 5 },
+    artifact = { id = "artifact", name = "神器", short = "粉", rank = 4, color = {255, 91, 193, 255}, beam = {255, 74, 188, 245}, mult = 1.07, fragment = 10 },
+    legendary = { id = "legendary", name = "传说", short = "赤", rank = 5, color = {255, 72, 65, 255}, beam = {255, 58, 48, 245}, mult = 1.15, fragment = 18 },
+    epic = { id = "epic", name = "史诗", short = "橙金", rank = 6, color = {255, 177, 34, 255}, beam = {255, 156, 24, 250}, mult = 1.25, fragment = 36 },
+    myth = { id = "myth", name = "神话", short = "七彩", rank = 7, color = {111, 231, 255, 255}, beam = {111, 231, 255, 250}, mult = 1.40, fragment = 80, dynamic = true },
 }
 
-local RARITY_ORDER = { "common", "blue", "purple", "epic", "myth" }
+-- Legacy IDs are presentation aliases only. Authoritative V5 snapshots use
+-- common/advanced/rare/artifact/legendary/epic/myth.
+RARITIES.blue = RARITIES.advanced
+RARITIES.purple = RARITIES.rare
+RARITIES.legend = RARITIES.legendary
+
+local RARITY_ORDER = { "common", "advanced", "rare", "artifact", "legendary", "epic", "myth" }
 
 local CATEGORIES = {
     { id = "weapon", name = "武器" },

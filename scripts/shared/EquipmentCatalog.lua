@@ -1,6 +1,8 @@
+local RarityCatalog = require("shared.RarityCatalog")
+
 local EquipmentCatalog = {}
 
-EquipmentCatalog.VERSION = 2
+EquipmentCatalog.VERSION = 3
 EquipmentCatalog.ATLAS_PATH = "image/equipment/equipment_atlas.png"
 EquipmentCatalog.ATLAS_COLUMNS = 8
 EquipmentCatalog.ATLAS_CELL_SIZE = 128
@@ -113,9 +115,12 @@ function EquipmentCatalog.FindLegacy(rawItem)
     local rawName = type(rawItem.name) == "string" and rawItem.name or ""
     local rawSlot = rawItem.slot
     local rawSet = rawItem.setId
-    local rawRarity = rawItem.rarity
+    local rawRarity = rawItem.rarity and RarityCatalog.NormalizeId(rawItem.rarity) or nil
     for _, definition in ipairs(definitions) do
-        if definition.slot == rawSlot and (not rawSet or definition.setId == rawSet) and (not rawRarity or definition.rarity == rawRarity) then
+        if definition.slot == rawSlot and (not rawSet or definition.setId == rawSet)
+            and (not rawRarity or definition.rarity == rawRarity
+                or (rawRarity ~= "epic" and rawRarity ~= "myth"))
+        then
             if rawName == definition.name or rawName:find(definition.name, 1, true) or rawName:find(definition.setId, 1, true) then return definition end
         end
     end
@@ -134,13 +139,36 @@ function EquipmentCatalog.BuildViewItem(instance)
     item.id = instance.id
     item.equipmentId = definition.id
     item.level = instance.level or definition.level
+    item.rarity = RarityCatalog.NormalizeId(instance.rarity or definition.rarity)
+    item.setEnabled = instance.setEnabled ~= false and RarityCatalog.Rank(item.rarity) >= RarityCatalog.Rank("epic")
+    item.setId = item.setEnabled and (instance.setId or definition.setId) or nil
     item.enhance = instance.enhance or 0
     item.star = instance.star or 0
     item.locked = instance.locked == true
     item.acquiredAt = instance.acquiredAt or 0
     item.source = instance.source or "legacy"
+    item.statVersion = instance.statVersion or 5
+    item.budget = instance.budget
+    item.budgetBig = instance.budgetBig
     item.investedGold = instance.investedGold or 0
     item.investedFragments = instance.investedFragments or 0
+    item.roll = instance.roll or 1
+    item.atk = instance.atk or definition.atk or 0
+    item.def = instance.def or definition.def or 0
+    item.hp = instance.hp or definition.hp or 0
+    item.atkBig = instance.atkBig
+    item.defBig = instance.defBig
+    item.hpBig = instance.hpBig
+    item.crit = instance.crit or definition.crit or 0
+    item.critDmg = instance.critDmg or definition.critDmg or 0
+    item.atkSpeed = instance.atkSpeed or definition.atkSpeed or 0
+    item.lifeSteal = instance.lifeSteal or 0
+    item.damageReduction = instance.damageReduction or 0
+    item.bossDamage = instance.bossDamage or 0
+    item.aidLocked = instance.aidLocked == true
+    item.aidFloor = instance.aidFloor
+    item.coreAffixes = instance.coreAffixes
+    item.uniqueEffect = instance.uniqueEffect
     item.power = instance.power
     return item
 end
@@ -152,6 +180,11 @@ EquipmentCatalog.REGION_BY_SLOT = REGION_BY_SLOT
 EquipmentCatalog.REGION_NAMES = REGION_NAMES
 EquipmentCatalog.REGION_SLOT_COUNT = REGION_SLOT_COUNT
 EquipmentCatalog.RARITY_NAMES = RARITY_NAMES
+EquipmentCatalog.RARITY_NAMES = {}
+for _, rarityId in ipairs(RarityCatalog.ORDER) do
+    EquipmentCatalog.RARITY_NAMES[rarityId] = RarityCatalog.Get(rarityId).name
+end
+EquipmentCatalog.RARITY_ORDER = RarityCatalog.ORDER
 EquipmentCatalog.MYTH_SLOT = MYTH_SLOT
 
 return EquipmentCatalog

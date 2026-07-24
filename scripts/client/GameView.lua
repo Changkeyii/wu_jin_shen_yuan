@@ -5,16 +5,20 @@ local GameStateAdapter = require("client.GameStateAdapter")
 local AdminPanel = require("client.AdminPanel")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local LargeNumber = require("shared.LargeNumber")
+local BigNumber = require("shared.BigNumber")
+local StoryCatalog = require("shared.StoryCatalog")
 local ItemTooltip = require("urhox-libs/UI/Components/ItemTooltip")
 local FrameEditorView = require("client.FrameEditorView")
 local LoadingController = require("client.LoadingController")
 local PlayPresentation = require("client.PlayPresentation")
 local CommonPromptDialog = require("client.CommonPromptDialog")
+local DialogCoordinator = require("client.DialogCoordinator")
 
 local CONFIG = GameTheme.CONFIG
 local C = GameTheme.Colors
 local AppTheme = GameTheme.Theme
 local RARITIES = GameTheme.Rarities
+local RARITY_ORDER = GameTheme.RarityOrder
 local CATEGORIES = GameTheme.Categories
 local SLOTS = GameTheme.Slots
 local SET_ORDER = GameTheme.SetOrder
@@ -24,6 +28,7 @@ local EVENT_INFO = GameTheme.EventInfo
 local GameView = {}
 local game = GameStateAdapter.GetViewState()
 local uiRoot_ = nil
+local screenRoot_ = nil
 local idleSettingsOverlay_ = nil
 local idleSettingTipOverlay_ = nil
 local pageContainer_ = nil
@@ -38,6 +43,8 @@ local equipmentPageScrollY_ = 0
 local collectingOffline_ = false
 local topRefs_ = {}
 local navRefs_ = {}
+local viewportWidth_ = 0
+local viewportHeight_ = 0
 
 local function BuildFrames(path, count)
     local frames = {}
@@ -269,6 +276,9 @@ local function MultiTxt(text, size, color, props)
 end
 
 local function FormatInt(v)
+    if type(v) == "table" and (v.mantissa ~= nil or v.exponent ~= nil) then
+        return BigNumber.Format(v, 4)
+    end
     return LargeNumber.Format(v)
 end
 
@@ -290,8 +300,15 @@ local function FormatDuration(seconds)
     return string.format("%d秒", remainingSeconds)
 end
 
+local function MagnitudeRatio(value, maxValue)
+    if type(value) == "table" or type(maxValue) == "table" then
+        return Clamp(BigNumber.Ratio(value or 0, maxValue or 1) or 0, 0, 1)
+    end
+    return Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+end
+
 local function ImageProgress(width, height, value, maxValue, trackImage, fillImage)
-    local ratio = Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+    local ratio = MagnitudeRatio(value, maxValue)
     local fillClip = UI.Panel {
         position = "absolute",
         left = 0,
@@ -327,7 +344,7 @@ end
 
 local function SetImageProgress(fillClip, width, value, maxValue)
     if not fillClip then return end
-    local ratio = Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+    local ratio = MagnitudeRatio(value, maxValue)
     fillClip:SetStyle({ width = math.floor(width * ratio) })
 end
 
@@ -403,16 +420,24 @@ local function ItemLevelText(item)
 end
 
 local function ItemPower(item)
-    if item.power then return item.power end
+    if not item then return 0 end
+    -- Equipment comparison is server-authoritative in V5. These are aliases
+    -- for evaluated values emitted by PowerEvaluator, never a local formula.
+    if item.power ~= nil then return item.power end
+    if item.displayedPower ~= nil then return item.displayedPower end
+    if item.evaluatedPower ~= nil then return item.evaluatedPower end
+    if item.powerContribution ~= nil then return item.powerContribution end
     if item.category == "material" or item.category == "consumable" then return item.quantity or 1 end
-    local rarity = RARITIES[item.rarity] or RARITIES.common
-    local atk = item.atk or 0
-    local def = item.def or 0
-    local hp = item.hp or 0
-    local crit = item.crit or 0
-    local critDmg = item.critDmg or 0
-    local atkSpeed = item.atkSpeed or 0
-    return math.floor((atk * 7 + def * 3 + hp * 0.55 + crit * 2000 + critDmg * 900 + atkSpeed * 650) * rarity.mult)
+    return 0
+end
+
+local function ItemPowerText(item)
+    if not item then return "待评估" end
+    if item.power == nil and item.displayedPower == nil and item.evaluatedPower == nil and item.powerContribution == nil
+        and item.category ~= "material" and item.category ~= "consumable" then
+        return "待评估"
+    end
+    return FormatInt(ItemPower(item))
 end
 
 local function GetItemById(id)
@@ -488,7 +513,8 @@ local function OfflineRewardMessage(response)
 end
 
 local function DecomposeRankLabel(maxRank)
-    for _, rarity in pairs(RARITIES) do
+    for _, rarityId in ipairs(RARITY_ORDER) do
+        local rarity = RARITIES[rarityId]
         if rarity.rank == maxRank then
             return rarity.name .. "（" .. rarity.short .. "色）"
         end
@@ -501,7 +527,7 @@ local function CollectDecomposeCandidates(maxRank)
     local candidateIds = {}
     for _, item in ipairs(game.inventory or {}) do
         local rarity = RARITIES[item.rarity]
-        if item.equipmentId and type(item.id) == "string"
+        if item.equipmentId and item.id ~= nil
             and rarity and rarity.rank <= maxRank
             and not item.locked and not IsEquipped(item) then
             candidateIds[#candidateIds + 1] = item.id
@@ -547,6 +573,7 @@ actionFns_.DecomposeByRank = function(maxRank)
         return
     end
     CommonPromptDialog.Show {
+        kind = "confirm",
         title = "确认批量分解",
         message = "将永久分解 " .. tostring(count) .. " 件装备",
         lines = {
@@ -563,8 +590,46 @@ actionFns_.DecomposeByRank = function(maxRank)
 end
 actionFns_.SetEquipmentLock = function(item) ServerClient.SetEquipmentLock(item.id, not item.locked, ActionResult) end
 actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, ActionResult) end
-actionFns_.StrengthenSelected = function() ServerClient.Strengthen(selectedSlot_, ActionResult) end
-actionFns_.StarSelected = function() ServerClient.Star(selectedSlot_, ActionResult) end
+local function UpgradeCostLines(kind, slotId)
+    local costs = game.upgradeCosts or game.equipmentUpgradeCosts or {}
+    local slotCosts = costs[slotId] or {}
+    local value = slotCosts[kind] or slotCosts[kind == "star" and "starUp" or "strengthen"]
+    if type(value) ~= "table" then
+        return { "最终消耗和成功结果由服务端结算；确认前不会扣除资源。" }
+    end
+    local parts = {}
+    if value.gold ~= nil then parts[#parts + 1] = "金币 " .. FormatInt(value.gold) end
+    if value.fragments ~= nil then parts[#parts + 1] = "碎片 " .. FormatInt(value.fragments) end
+    if value.materials ~= nil then parts[#parts + 1] = "材料 " .. FormatInt(value.materials) end
+    return { #parts > 0 and ("本次预计消耗：" .. table.concat(parts, "、")) or "具体消耗以服务端结算为准。" }
+end
+actionFns_.StrengthenSelected = function()
+    local slotId = selectedSlot_
+    CommonPromptDialog.Show {
+        kind = "confirm",
+        title = "确认强化",
+        message = "将强化当前" .. SlotName(slotId) .. "装备。",
+        lines = UpgradeCostLines("strengthen", slotId),
+        cancelText = "取消",
+        confirmText = "确认强化",
+        closeOnOverlay = false,
+        onConfirm = function() ServerClient.Strengthen(slotId, ActionResult) end,
+    }
+end
+actionFns_.StarSelected = function()
+    local slotId = selectedSlot_
+    CommonPromptDialog.Show {
+        kind = "confirm",
+        title = "确认升星",
+        message = "升星会消耗资源，是否为当前" .. SlotName(slotId) .. "装备升星？",
+        lines = UpgradeCostLines("star", slotId),
+        cancelText = "取消",
+        confirmText = "确认升星",
+        danger = true,
+        closeOnOverlay = false,
+        onConfirm = function() ServerClient.Star(slotId, ActionResult) end,
+    }
+end
 
 local RefreshCurrentPage
 local SwitchPage
@@ -575,14 +640,18 @@ UpdateTopBar = function()
     if not topRefs_ then return end
     game = GameStateAdapter.GetViewState()
     if topRefs_.floor then topRefs_.floor:SetText("层  第" .. tostring(game.floor or 1) .. "层") end
-    if topRefs_.power then topRefs_.power:SetText("战力  " .. FormatInt(game.stats and game.stats.power or 0)) end
+    if topRefs_.power then
+        local value = game.displayedPower or (game.stats and game.stats.power)
+        topRefs_.power:SetText(value ~= nil and ("战力  " .. FormatInt(value)) or "战力  待评估")
+    end
     if topRefs_.gold then topRefs_.gold:SetText("金币  " .. FormatInt(game.gold or 0)) end
     if topRefs_.fragments then topRefs_.fragments:SetText("碎片  " .. FormatInt(game.fragments or 0)) end
 end
 
 local function CreateTopBar()
     topRefs_.floor = Txt("层  第" .. tostring(game.floor or 1) .. "层", 22, C.focus, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
-    topRefs_.power = Txt("战力  " .. FormatInt(game.stats.power), 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    local displayedPower = game.displayedPower or (game.stats and game.stats.power)
+    topRefs_.power = Txt(displayedPower ~= nil and ("战力  " .. FormatInt(displayedPower)) or "战力  待评估", 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     topRefs_.gold = Txt("金币  " .. FormatInt(game.gold), 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     topRefs_.fragments = Txt("碎片  " .. FormatInt(game.fragments), 22, C.secondary, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     local function ResourceText(x, valueRef)
@@ -722,67 +791,17 @@ local function CreateBackground()
 end
 
 local function CloseIdleSettingTip()
-    if idleSettingTipOverlay_ and uiRoot_ then
-        uiRoot_:RemoveChild(idleSettingTipOverlay_)
-    end
     idleSettingTipOverlay_ = nil
 end
 
 local function ShowIdleSettingTip(title, description)
-    if not uiRoot_ then return end
-    CloseIdleSettingTip()
-    local tipPanel = UI.Panel {
-        position = "relative",
-        width = 740,
-        height = 360,
-        zIndex = 2300,
-        clickable = true,
-        overflow = "hidden",
-        backgroundImage = ASSETS.ui.panelLarge,
-        backgroundFit = "sliced",
-        backgroundSlice = { 14, 14, 14, 14 },
-        children = {
-            Txt(title, 26, C.focus, { position = "absolute", left = 42, top = 34, width = 570, height = 42, textStroke = { width = 2, color = "#000000" } }),
-            MultiTxt(description, 20, C.textSecondary, { position = "absolute", left = 42, top = 104, width = 650, height = 150, maxLines = 5, textStroke = { width = 1, color = "#000000" } }),
-            UI.Panel {
-                position = "absolute",
-                right = 24,
-                top = 24,
-                width = 58,
-                height = 58,
-                clickable = true,
-                backgroundImage = "image/ui/dialog/close_button.png",
-                backgroundFit = "contain",
-                onClick = CloseIdleSettingTip,
-            },
-        },
+    CommonPromptDialog.Show {
+        kind = "rules",
+        queueKey = "rule:" .. tostring(title),
+        title = title,
+        message = description,
+        confirmText = "知道了",
     }
-    idleSettingTipOverlay_ = UI.Panel {
-        position = "absolute",
-        left = 0,
-        top = 0,
-        right = 0,
-        bottom = 0,
-        zIndex = 2200,
-        pointerEvents = "box-none",
-        alignItems = "center",
-        justifyContent = "center",
-        children = {
-            UI.Panel {
-                position = "absolute",
-                left = 0,
-                top = 0,
-                right = 0,
-                bottom = 0,
-                clickable = true,
-                backgroundImage = ASSETS.ui.screenOverlay,
-                backgroundFit = "cover",
-                onClick = CloseIdleSettingTip,
-            },
-            tipPanel,
-        },
-    }
-    uiRoot_:AddChild(idleSettingTipOverlay_)
 end
 
 local function CreateIdlePolicySwitchRow(title, value, disabled, onChange, switchRegistry, switchId, tipTitle, tipDescription)
@@ -874,20 +893,25 @@ local function ShowIdleSettings()
     local sourceSell = policy.sellRarities or {}
     local decomposeRarities = {
         common = sourceDecompose.common == true,
-        blue = sourceDecompose.blue == true,
-        purple = sourceDecompose.purple == true,
+        advanced = sourceDecompose.advanced == true or sourceDecompose.blue == true,
+        rare = sourceDecompose.rare == true or sourceDecompose.purple == true,
+        artifact = sourceDecompose.artifact == true,
+        legendary = sourceDecompose.legendary == true or sourceDecompose.legend == true,
         epic = sourceDecompose.epic == true,
         myth = false,
     }
     local sellRarities = {
         common = sourceSell.common == true,
-        blue = sourceSell.blue == true,
-        purple = sourceSell.purple == true,
+        advanced = sourceSell.advanced == true or sourceSell.blue == true,
+        rare = sourceSell.rare == true or sourceSell.purple == true,
+        artifact = sourceSell.artifact == true,
+        legendary = sourceSell.legendary == true or sourceSell.legend == true,
         epic = sourceSell.epic == true,
         myth = false,
     }
     local readOnly = game.readOnly == true
     local switches = {}
+    local settingsHeight = Clamp(CONFIG.DynamicDesignHeight() - 96, 760, 1660)
 
     local function BuildPolicy()
         return {
@@ -908,6 +932,7 @@ local function ShowIdleSettings()
         local switch = switches[options.switchId]
         if switch then switch.props.value = false end
         CommonPromptDialog.Show {
+            kind = "confirm",
             title = options.title,
             message = options.message,
             lines = options.lines,
@@ -959,7 +984,7 @@ local function ShowIdleSettings()
         left = 58,
         top = 144,
         width = 872,
-        height = 1400,
+        height = math.max(500, settingsHeight - 260),
         scrollY = true,
         scrollX = false,
         showScrollbar = false,
@@ -1015,14 +1040,18 @@ local function ShowIdleSettings()
                     end),
                     Txt("自动分解品质", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
                     AddSwitch("decompose_common", "分解：普通 / 白色", "价值最低，适合作为第一优先级的自动分解对象。", decomposeRarities.common, function(value) SetRarity("decompose", "common", value) end),
-                    AddSwitch("decompose_blue", "分解：高级 / 蓝色", "蓝色装备将按当前规则自动分解。", decomposeRarities.blue, function(value) SetRarity("decompose", "blue", value) end),
-                    AddSwitch("decompose_purple", "分解：稀有 / 紫色", "紫色装备价值较高，开启前请确认。", decomposeRarities.purple, function(value) SetRarity("decompose", "purple", value) end),
-                    AddSwitch("decompose_epic", "分解：史诗 / 橙色", "橙色装备默认关闭，避免误分解。", decomposeRarities.epic, function(value) SetRarity("decompose", "epic", value) end),
+                    AddSwitch("decompose_advanced", "分解：高级 / 蓝色", "高级装备将按当前规则自动分解。", decomposeRarities.advanced, function(value) SetRarity("decompose", "advanced", value) end),
+                    AddSwitch("decompose_rare", "分解：稀有 / 紫色", "稀有装备价值较高，开启前请确认。", decomposeRarities.rare, function(value) SetRarity("decompose", "rare", value) end),
+                    AddSwitch("decompose_artifact", "分解：神器 / 粉色", "神器装备带有核心词条，开启前请确认。", decomposeRarities.artifact, function(value) SetRarity("decompose", "artifact", value) end),
+                    AddSwitch("decompose_legendary", "分解：传说 / 赤红", "传说装备默认关闭，避免误分解。", decomposeRarities.legendary, function(value) SetRarity("decompose", "legendary", value) end),
+                    AddSwitch("decompose_epic", "分解：史诗 / 橙金", "史诗装备属于套装体系，开启前请确认。", decomposeRarities.epic, function(value) SetRarity("decompose", "epic", value) end),
                     Txt("自动出售品质", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
                     AddSwitch("sell_common", "出售：普通 / 白色", "价值最低，适合作为第一优先级的自动出售对象。", sellRarities.common, function(value) SetRarity("sell", "common", value) end),
-                    AddSwitch("sell_blue", "出售：高级 / 蓝色", "蓝色装备将按当前规则自动出售并获得金币。", sellRarities.blue, function(value) SetRarity("sell", "blue", value) end),
-                    AddSwitch("sell_purple", "出售：稀有 / 紫色", "紫色装备价值较高，开启前请确认。", sellRarities.purple, function(value) SetRarity("sell", "purple", value) end),
-                    AddSwitch("sell_epic", "出售：史诗 / 橙色", "橙色装备默认关闭，避免误出售。", sellRarities.epic, function(value) SetRarity("sell", "epic", value) end),
+                    AddSwitch("sell_advanced", "出售：高级 / 蓝色", "高级装备将按当前规则自动出售并获得金币。", sellRarities.advanced, function(value) SetRarity("sell", "advanced", value) end),
+                    AddSwitch("sell_rare", "出售：稀有 / 紫色", "稀有装备价值较高，开启前请确认。", sellRarities.rare, function(value) SetRarity("sell", "rare", value) end),
+                    AddSwitch("sell_artifact", "出售：神器 / 粉色", "神器装备带有核心词条，开启前请确认。", sellRarities.artifact, function(value) SetRarity("sell", "artifact", value) end),
+                    AddSwitch("sell_legendary", "出售：传说 / 赤红", "传说装备默认关闭，避免误出售。", sellRarities.legendary, function(value) SetRarity("sell", "legendary", value) end),
+                    AddSwitch("sell_epic", "出售：史诗 / 橙金", "史诗装备属于套装体系，开启前请确认。", sellRarities.epic, function(value) SetRarity("sell", "epic", value) end),
                     CreateIdlePolicySwitchRow("神话品质保护", true, true, nil, switches, "myth", "神话品质保护", "神话品质永久保护，不会被自动分解或出售。需要处理时，请到背包中手动操作。"),
                 },
             },
@@ -1031,7 +1060,7 @@ local function ShowIdleSettings()
     local panel = UI.Panel {
         position = "relative",
         width = 996,
-        height = 1660,
+        height = settingsHeight,
         zIndex = 2100,
         clickable = true,
         overflow = "hidden",
@@ -1138,10 +1167,14 @@ local function CreateHomePage()
                 backgroundFit = "contain",
                 onClick = function()
                     CommonPromptDialog.Show {
+                        kind = "rules",
+                        queueKey = "rules:tower-reward",
                         title = "挂机刷宝说明",
-                        message = "离线期间也会持续积累刷宝收益。",
+                        message = "在线战斗收益为100%；离线收益固定按20%结算且只折算一次。",
                         lines = {
-                            "离线金币、经验、碎片及装备爆率均为在线效率的 1/5。",
+                            "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
+                            "死亡后回到本层第1场，双方满血，已获得奖励保留。",
+                            "离线金币、经验、碎片及最终掉落概率均为在线效率的1/5。",
                             "离线时间最多累计 12 小时；背包已满时，未结算时间会保留。",
                             "当前累计离线：" .. FormatDuration(game.pendingOfflineSeconds),
                         },
@@ -1225,12 +1258,12 @@ local function CreateHomePage()
                 width = statGridW,
                 height = statGridH,
                 children = {
-                    UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", FormatInt(stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", FormatInt(stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", FormatInt(stats.atkBig or stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", FormatInt(stats.defBig or stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
                     UI.Panel { position = "absolute", left = 0, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("暴击", FormatPercent(stats.crit), C.gold, ASSETS.ui.statCrit, statCardW, statCardH) } },
                     UI.Panel { position = "absolute", left = statCardW + statGapX, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("攻速", string.format("%.1f", stats.atkSpeed), C.mp, ASSETS.ui.statSpeed, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", FormatInt(game.hp) .. "/" .. FormatInt(stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", FormatInt(stats.power), C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", FormatInt(game.hpBig or game.hp) .. "/" .. FormatInt(game.playerMaxHp or stats.hpBig or stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", (game.displayedPower or stats.power) and FormatInt(game.displayedPower or stats.power) or "待评估", C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
                 }
             },
         }
@@ -1279,6 +1312,10 @@ local function BuildInventoryContext()
         rarityName = RarityName,
         slotName = SlotName,
         itemPower = ItemPower,
+        compareItemPower = function(left, right)
+            return BigNumber.Compare(ItemPower(left), ItemPower(right))
+        end,
+        itemPowerText = ItemPowerText,
         itemImage = ItemImage,
         isEquipped = IsEquipped,
         getItemById = GetItemById,
@@ -1302,7 +1339,7 @@ local function BuildInventoryContext()
                         ["等级"] = ItemLevelText(item),
                         ["强化"] = "+" .. tostring(item.enhance or 0),
                         ["星级"] = tostring(item.star or 0),
-                        ["战力"] = FormatInt(ItemPower(item)),
+                        ["战力"] = ItemPowerText(item),
                     },
                 }, bounds)
             end
@@ -1339,6 +1376,105 @@ local function BuildFrameEditorPage()
     })
 end
 
+local function SendStoryDecision(story, action, lineIndex)
+    if not story or not story.storyId then return end
+    ServerClient.AdvanceStory(action, story.storyId, lineIndex, function(response)
+        if not response or not response.ok then ActionResult(response) end
+    end)
+end
+
+local function ShowStoryGate(story)
+    if type(story) ~= "table" or type(story.lines) ~= "table" or #story.lines == 0 then return false end
+    return CommonPromptDialog.Show {
+        kind = "story",
+        queueKey = "story:" .. tostring(story.storyId or story.chapter or "unknown") .. ":" .. tostring(story.phase or "gate"),
+        title = story.title or story.speaker or (story.chapter and ("第" .. tostring(story.chapter) .. "章") or "万灵塔记忆"),
+        pages = story.lines,
+        cancelText = "跳过",
+        confirmText = "进入下一幕",
+        closeOnOverlay = false,
+        onPageAdvance = function(index) SendStoryDecision(story, "next", index) end,
+        onConfirm = function() SendStoryDecision(story, "complete", #story.lines) end,
+        onCancel = function() SendStoryDecision(story, "skip") end,
+    }
+end
+
+local function MetricLine(label, value, suffix)
+    if value == nil then return nil end
+    return label .. FormatInt(value) .. (suffix or "")
+end
+
+local function ShowEquipmentUpgrade(value)
+    value = value or {}
+    local lines = {}
+    local candidates = {
+        MetricLine("总战力：", value.newPower or value.displayedPower),
+        MetricLine("战力提升：", value.displayedPowerDeltaBig or value.displayedPowerDelta
+            or value.powerDeltaBig or value.powerDelta,
+            value.powerDeltaPercent and ("（" .. string.format("%.1f%%", value.powerDeltaPercent * 100) .. "）") or ""),
+        MetricLine("Boss DPS：", value.bossDps),
+        MetricLine("有效生命：", value.effectiveHp or value.ehp),
+        MetricLine("预计可推进：", value.estimatedEasyFloor, "层"),
+        value.setChange and ("套装变化：" .. tostring(value.setChange)) or nil,
+    }
+    for _, line in ipairs(candidates) do if line then lines[#lines + 1] = line end end
+    if #lines == 0 then lines[1] = "完整换装收益已由服务端战斗核评估。" end
+    local decisionId = value.decisionId or value.itemId
+    CommonPromptDialog.Show {
+        kind = "equipment",
+        queueKey = decisionId and ("equip:" .. tostring(decisionId)) or nil,
+        title = "发现更强装备",
+        message = tostring(value.name or "新装备") .. " 可提升完整配装表现，是否更换？",
+        lines = lines,
+        cancelText = "保留原装",
+        confirmText = "立即更换",
+        onConfirm = function()
+            ServerClient.DecideEquip("equip", value.itemId, ActionResult)
+        end,
+        onCancel = function()
+            ServerClient.DecideEquip("keep", value.itemId, ActionResult)
+        end,
+    }
+end
+
+local function ShowTowerRules()
+    local function AcknowledgeTowerRules()
+        ServerClient.AcknowledgeRules(StoryCatalog.RULE_ID, function(response)
+            if not response or not response.ok then ActionResult(response) end
+        end)
+    end
+    CommonPromptDialog.Show {
+        kind = "rules",
+        queueKey = "rules:" .. StoryCatalog.RULE_ID,
+        title = "无尽万灵塔规则",
+        message = "在线战斗收益100%，离线固定奖励与最终掉落概率均为20%，只折算一次。",
+        lines = {
+            "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
+            "死亡后回到本层第1场，双方满血，已获得奖励保留。",
+            "连续失败两次会准备塔灵援助，第三次挑战前可领取定向装备。",
+            "挂机开关只负责运行/暂停，不改变在线收益倍率。",
+        },
+        confirmText = "知道了",
+        onConfirm = AcknowledgeTowerRules,
+        onCancel = AcknowledgeTowerRules,
+    }
+end
+
+local function ShowAidPrompt(value)
+    CommonPromptDialog.Show {
+        kind = "equipment",
+        queueKey = "aid:" .. tostring(value and (value.aidId or value.floor) or "pending"),
+        title = "塔灵援助已准备",
+        message = "你已连续失败两次，可在第三次挑战前领取定向援助装备。",
+        lines = { "援助只在在线战斗页发放；通关前不可出售或分解。" },
+        cancelText = "稍后领取",
+        confirmText = "领取援助",
+        onConfirm = function()
+            ServerClient.ClaimAid(ActionResult)
+        end,
+    }
+end
+
 local function ConfigurePlayPresentation()
     PlayPresentation.Configure({
         UI = UI,
@@ -1351,11 +1487,22 @@ local function ConfigurePlayPresentation()
         imageProgress = ImageProgress,
         setImageProgress = SetImageProgress,
         getGame = function() return GameStateAdapter.GetViewState() end,
+        getMiddleDesignHeight = function()
+            return math.max(520, CONFIG.DynamicDesignHeight() - TOP_ZONE_HEIGHT - BOTTOM_ZONE_HEIGHT)
+        end,
         updateTopBar = UpdateTopBar,
         serverClient = ServerClient,
         loadingController = LoadingController,
         actionResult = ActionResult,
         openIdleSettings = ShowIdleSettings,
+        showStoryGate = ShowStoryGate,
+        showEquipmentUpgrade = ShowEquipmentUpgrade,
+        showTowerRules = ShowTowerRules,
+        showAidPrompt = ShowAidPrompt,
+        itemImage = ItemImage,
+        rarityColor = RarityColor,
+        rarityName = RarityName,
+        rarities = RARITIES,
         currentPlayer = CurrentPlayer,
         getRunParams = FrameEditorView.GetRunParams,
         getAttackParams = FrameEditorView.GetAttackParams,
@@ -1622,7 +1769,7 @@ local function BuildRoot()
         top = 0,
         right = 0,
         bottom = 0,
-        edges = "all",
+        edges = { "top", "bottom" },
         nativeMenuInset = true,
         alignItems = "center",
         pointerEvents = "box-none",
@@ -1639,7 +1786,8 @@ local function BuildRoot()
         },
     }
 
-    local screenRoot = UI.Panel {
+    screenRoot_ = UI.Panel {
+        id = "screenRoot",
         width = "100%",
         height = "100%",
         position = "relative",
@@ -1651,12 +1799,12 @@ local function BuildRoot()
             safeContent,
         }
     }
-    UI.SetRoot(screenRoot, true)
+    UI.SetRoot(screenRoot_, true)
     CommonPromptDialog.Configure {
         txt = Txt,
         multiTxt = MultiTxt,
     }
-    CommonPromptDialog.AttachRoot(uiRoot_)
+    CommonPromptDialog.AttachRoot(screenRoot_)
     LoadingController.AttachRoot(uiRoot_)
     if game.page == "play" then
         LoadingController.EnsurePlayAssetsReady(function() PlayPresentation.Update(0) end)
@@ -1666,7 +1814,7 @@ end
 local function InitUI()
     UI.Init({
         theme = AppTheme,
-        scale = UI.Scale.DESIGN_RESOLUTION(CONFIG.DesignW, CONFIG.DesignH),
+        scale = CONFIG.ViewportScale,
     })
     UI.SetOverflowWarnings(false)
 end
@@ -1747,6 +1895,8 @@ function GameView.Start()
     })
     ConfigurePlayPresentation()
     InitUI()
+    viewportWidth_ = graphics:GetWidth()
+    viewportHeight_ = graphics:GetHeight()
     ProbeOptionalFonts()
     game = GameStateAdapter.GetViewState()
     BuildRoot()
@@ -1764,6 +1914,8 @@ end
 function GameView.Stop()
     UnsubscribeFromEvent("Update")
     PlayPresentation.Reset()
+    CommonPromptDialog.Reset()
+    DialogCoordinator.Clear(false)
     LoadingController.Stop()
     ServerClient.Stop()
     UI.Shutdown()
@@ -1778,6 +1930,13 @@ function GameView.HandleUpdate(eventType, eventData)
     game = state
     if game.page == "play" then PlayPresentation.Update(dt) end
     if game.page == "frameEditor" then FrameEditorView.Update(dt) end
+    local physicalWidth = graphics:GetWidth()
+    local physicalHeight = graphics:GetHeight()
+    if physicalWidth ~= viewportWidth_ or physicalHeight ~= viewportHeight_ then
+        viewportWidth_ = physicalWidth
+        viewportHeight_ = physicalHeight
+        RequestFullRebuild()
+    end
     if needsFullRebuild_ then
         needsFullRebuild_ = false
         needsPageRefresh_ = false

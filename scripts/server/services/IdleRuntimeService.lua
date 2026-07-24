@@ -1,5 +1,6 @@
 local GameEngine = require("server.domain.GameEngine")
 local Catalog = require("server.domain.Catalog")
+local BigNumber = require("shared.BigNumber")
 
 local IdleRuntimeService = {}
 IdleRuntimeService.__index = IdleRuntimeService
@@ -39,7 +40,9 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
             done()
         end
         local session = self.profileService:GetSession(userId)
-        if not session or not session.ready or not session.state.autoRun then finish(); return end
+        if not session or not session.ready or not session.state.autoRun
+            or session.state.pendingStoryGate
+        then finish(); return end
         self.profileService:Apply(userId, "auto combat tick", function(state, now)
             return GameEngine.AdvanceCombatTick(state, rng, now, elapsedSeconds)
         end, function(result)
@@ -61,7 +64,7 @@ function IdleRuntimeService:Update(timeStep)
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         online[userId] = true
         local state = self.profileService:GetState(userId)
-        if state and state.autoRun then
+        if state and state.autoRun and not state.pendingStoryGate then
             local elapsed =
                 (self.elapsed[userId] or 0)
                 + timeStep
@@ -69,12 +72,20 @@ function IdleRuntimeService:Update(timeStep)
                 Catalog.STEP_SECONDS
 
             if state.currentMonster then
+                local monster = state.currentMonster
+                local nextPhase = math.max(0, tonumber(monster.phaseRemaining) or 0)
+                local monsterHp = monster.hpBig or monster.hp
+                local nextEnemy = not BigNumber.IsZero(monsterHp)
+                    and math.max(0, tonumber(monster.nextMonsterAttackSeconds) or Catalog.ENEMY_ATTACK_SECONDS)
+                    or math.huge
+                local nextEnrage = math.huge
+                if monster.isBoss and not monster.enraged then
+                    nextEnrage = math.max(0,
+                        Catalog.BOSS_ENRAGE_SECONDS - (tonumber(monster.elapsedSeconds) or 0))
+                end
                 interval = math.max(
                     Catalog.COMBAT_TICK_SECONDS,
-                    tonumber(
-                        state.currentMonster
-                            .phaseRemaining
-                    ) or 0
+                    math.min(nextPhase, nextEnemy, nextEnrage)
                 )
             end
 

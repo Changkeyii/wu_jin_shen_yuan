@@ -1,6 +1,7 @@
 local Protocol = require("shared.NetworkProtocol")
 local ErrorCodes = require("shared.ErrorCodes")
 local GameStateSchema = require("shared.GameStateSchema")
+local GameEventSchema = require("shared.GameEventSchema")
 local GameStateAdapter = require("client.GameStateAdapter")
 
 local ServerClient = {}
@@ -17,6 +18,45 @@ local requestCounter_ = 0
 local listeners_ = {}
 local pending_ = {}
 local snapshotAssembly_ = nil
+
+local function DeepCopy(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] then return seen[value] end
+    local copy = {}
+    seen[value] = copy
+    for key, child in pairs(value) do
+        copy[DeepCopy(key, seen)] = DeepCopy(child, seen)
+    end
+    return copy
+end
+
+-- V5 uses `type` as the authoritative event discriminator. The current view
+-- adapter still consumes `kind`, so preserve any encounter kind separately
+-- and expose the discriminator under both names at the client boundary.
+local function PrepareEventsForClient(events)
+    if type(events) ~= "table" then return nil, "events must be a table" end
+    local prepared = {}
+    for index, source in ipairs(events) do
+        if type(source) ~= "table" then
+            return nil, string.format("events[%d] must be a table", index)
+        end
+        local value = DeepCopy(source)
+        local eventType = value.type or value.kind
+        if type(eventType) ~= "string" or eventType == "" then
+            return nil, string.format("events[%d] has no event type", index)
+        end
+        value.type = eventType
+        if value.kind ~= nil and value.kind ~= eventType and value.encounterKind == nil then
+            value.encounterKind = value.kind
+        end
+        value.kind = eventType
+        prepared[#prepared + 1] = value
+    end
+    local valid, reason = GameEventSchema.ValidateList(prepared, "$events")
+    if not valid then return nil, reason end
+    return prepared
+end
 
 local function Emit(name, payload)
     local handlers = listeners_[name]
@@ -76,17 +116,23 @@ local function HandleResponse(eventType, eventData)
 end
 
 local function ApplyCompleteSnapshot(snapshot, events)
+    local valid, validationError = GameStateSchema.ValidateSnapshot(snapshot)
+    if not valid then
+        Emit("error", {
+            code = ErrorCodes.INVALID_STATE,
+            reason = validationError and validationError.reason or "invalid assembled snapshot",
+        })
+        return false
+    end
     local currentRevision = GameStateAdapter.GetRevision()
     if snapshot.revision and snapshot.revision <= currentRevision and GameStateAdapter.GetViewState().connectionState == "ready" then
         print("[ServerClient] ignored stale snapshot revision=" .. tostring(snapshot.revision)
             .. " current=" .. tostring(currentRevision))
         return false
     end
-    if type(snapshot.kind) ~= "string" or snapshot.kind ~= "GameSnapshot"
-        or type(snapshot.inventory) ~= "table"
-        or type(snapshot.playerNickname) ~= "string"
-    then
-        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = "invalid assembled snapshot" })
+    local preparedEvents, eventReason = PrepareEventsForClient(events or {})
+    if not preparedEvents then
+        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = eventReason })
         return false
     end
     local ok, applyReason = GameStateAdapter.ApplySnapshot(snapshot)
@@ -94,14 +140,14 @@ local function ApplyCompleteSnapshot(snapshot, events)
         Emit("error", { code = ErrorCodes.INVALID_STATE, reason = applyReason })
         return false
     end
-    GameStateAdapter.ApplySnapshotEvents(events or {})
+    GameStateAdapter.ApplySnapshotEvents(preparedEvents)
     ready_ = true
     syncingConnection_ = nil
     snapshotAssembly_ = nil
     GameStateAdapter.SetConnectionState("ready")
     Emit("snapshot", GameStateAdapter.GetViewState())
-    if events and #events > 0 then
-        Emit("delta", { state = GameStateAdapter.GetViewState(), events = events })
+    if #preparedEvents > 0 then
+        Emit("delta", { state = GameStateAdapter.GetViewState(), events = preparedEvents })
     end
     Emit("ready", GameStateAdapter.GetViewState())
     return true
@@ -198,6 +244,23 @@ local function HandleDelta(eventType, eventData)
         return
     end
     local delta = payload.delta or payload
+    local valid, validationError = GameStateSchema.ValidateDelta(delta)
+    if not valid then
+        Emit("error", {
+            code = ErrorCodes.INVALID_STATE,
+            reason = validationError and validationError.reason or "invalid delta",
+        })
+        ServerClient.RequestSnapshot()
+        return
+    end
+    if delta.revision <= GameStateAdapter.GetRevision() then return end
+    local preparedEvents, eventReason = PrepareEventsForClient(delta.events or {})
+    if not preparedEvents then
+        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = eventReason })
+        ServerClient.RequestSnapshot()
+        return
+    end
+    delta.events = preparedEvents
     local ok, applyReason = GameStateAdapter.ApplyDelta(delta)
     if not ok then
         Emit("error", { code = ErrorCodes.INVALID_STATE, reason = applyReason })
@@ -392,6 +455,31 @@ end
 
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
 function ServerClient.AutoRun(enabled, callback) return ServerClient.Send("Game.SetAutoRun", { enabled = enabled }, callback) end
+function ServerClient.SetInteractionMode(mode, callback)
+    return ServerClient.Send("Game.SetInteractionMode", { mode = mode }, callback)
+end
+function ServerClient.SetAutomationPolicy(policy, callback)
+    return ServerClient.Send("Game.SetAutomationPolicy", policy, callback)
+end
+function ServerClient.DecideEquip(action, itemId, callback)
+    local payload = { action = action }
+    if itemId ~= nil then payload.itemId = itemId end
+    return ServerClient.Send("Game.DecideEquip", payload, callback)
+end
+function ServerClient.UndoEquip(callback) return ServerClient.Send("Game.UndoEquip", {}, callback) end
+function ServerClient.AdvanceStory(action, storyId, lineIndex, callback)
+    local payload = { action = action }
+    if storyId ~= nil then payload.storyId = storyId end
+    if lineIndex ~= nil then payload.lineIndex = lineIndex end
+    return ServerClient.Send("Game.AdvanceStory", payload, callback)
+end
+function ServerClient.AcknowledgeRules(ruleId, callback)
+    return ServerClient.Send("Game.AcknowledgeRules", { ruleId = ruleId }, callback)
+end
+function ServerClient.ClaimAid(callback) return ServerClient.Send("Game.ClaimAid", {}, callback) end
+function ServerClient.Sell(maxRank, candidateIds, callback)
+    return ServerClient.Send("Game.Sell", { maxRank = maxRank, candidateIds = candidateIds }, callback)
+end
 function ServerClient.Equip(itemId, callback) return ServerClient.Send("Game.Equip", { itemId = itemId }, callback) end
 function ServerClient.Unequip(slot, callback) return ServerClient.Send("Game.Unequip", { slot = slot }, callback) end
 function ServerClient.AutoEquip(callback) return ServerClient.Send("Game.AutoEquip", {}, callback) end

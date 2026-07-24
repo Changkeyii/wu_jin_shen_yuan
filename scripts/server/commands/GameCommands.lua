@@ -6,6 +6,23 @@ local GameCommands = {}
 
 local EMPTY_SCHEMA = { type = "object", fields = {}, allowUnknown = false }
 
+local SAFE_ID_SCHEMA = {
+    type = "string",
+    minLength = 1,
+    maxLength = 96,
+    pattern = "^[%w%._:%-]+$",
+}
+
+local AUTOMATION_POLICY_SCHEMA = {
+    type = "object",
+    required = { "autoEquip", "autoSkipStory" },
+    allowUnknown = false,
+    fields = {
+        autoEquip = { type = "boolean" },
+        autoSkipStory = { type = "boolean" },
+    },
+}
+
 local function AsyncMutation(services, operationName, mutator)
     return function(context, payload, done)
         services.profileService:Apply(context.uid, operationName, function(state, now)
@@ -47,6 +64,105 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
+        name = "Game.SetInteractionMode",
+        schema = {
+            type = "object",
+            required = { "mode" },
+            allowUnknown = false,
+            fields = {
+                mode = { type = "string", enum = { "normal", "cinematic" } },
+            },
+        },
+        rate = ServerConfig.RATES.AutoRun,
+        async = true,
+        handler = AsyncMutation(services, "set interaction mode", function(state, payload, now)
+            return GameEngine.SetInteractionMode(state, payload.mode, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.SetAutomationPolicy",
+        schema = AUTOMATION_POLICY_SCHEMA,
+        rate = ServerConfig.RATES.AutoRun,
+        async = true,
+        handler = AsyncMutation(services, "set automation policy", function(state, payload, now)
+            return GameEngine.SetAutomationPolicy(state, payload, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.DecideEquip",
+        schema = {
+            type = "object",
+            required = { "action" },
+            allowUnknown = false,
+            fields = {
+                action = { type = "string", enum = { "equip", "keep" } },
+                itemId = { type = "string", minLength = 36, maxLength = 36 },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "decide equipment upgrade", function(state, payload, now)
+            return GameEngine.DecideEquip(state, payload, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.UndoEquip",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "undo equipment change", function(state, payload, now)
+            return GameEngine.UndoEquip(state, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.AdvanceStory",
+        schema = {
+            type = "object",
+            required = { "action" },
+            allowUnknown = false,
+            fields = {
+                action = { type = "string", enum = { "next", "skip", "complete" } },
+                storyId = SAFE_ID_SCHEMA,
+                lineIndex = { type = "integer", min = 1, max = 32 },
+            },
+        },
+        rate = ServerConfig.RATES.AutoRun,
+        async = true,
+        handler = AsyncMutation(services, "advance story", function(state, payload, now)
+            return GameEngine.AdvanceStory(state, payload, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.AcknowledgeRules",
+        schema = {
+            type = "object",
+            required = { "ruleId" },
+            allowUnknown = false,
+            fields = { ruleId = SAFE_ID_SCHEMA },
+        },
+        rate = ServerConfig.RATES.AutoRun,
+        async = true,
+        handler = AsyncMutation(services, "acknowledge tower rules", function(state, payload, now)
+            return GameEngine.AcknowledgeRules(state, payload.ruleId, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.ClaimAid",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "claim tower aid", function(state, payload, now)
+            return GameEngine.ClaimAid(state, now)
+        end),
+    })
+
+    router:Register({
         name = "Game.Equip",
         schema = {
             type = "object",
@@ -78,7 +194,7 @@ function GameCommands.Register(router, services)
             required = { "maxRank", "candidateIds" },
             allowUnknown = false,
             fields = {
-                maxRank = { type = "integer", min = 1, max = 4 },
+                maxRank = { type = "integer", min = 1, max = 6 },
                 candidateIds = {
                     type = "array",
                     minLength = 1,
@@ -91,6 +207,29 @@ function GameCommands.Register(router, services)
         async = true,
         handler = AsyncMutation(services, "decompose equipment", function(state, payload, now)
             return GameEngine.Decompose(state, payload.maxRank, now, payload.candidateIds)
+        end),
+    })
+
+    router:Register({
+        name = "Game.Sell",
+        schema = {
+            type = "object",
+            required = { "maxRank", "candidateIds" },
+            allowUnknown = false,
+            fields = {
+                maxRank = { type = "integer", min = 1, max = 6 },
+                candidateIds = {
+                    type = "array",
+                    minLength = 1,
+                    maxLength = ServerConfig.INVENTORY_CAP,
+                    items = { type = "string", minLength = 36, maxLength = 36 },
+                },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "sell equipment", function(state, payload, now)
+            return GameEngine.Sell(state, payload.maxRank, now, payload.candidateIds)
         end),
     })
 
@@ -126,8 +265,9 @@ function GameCommands.Register(router, services)
                     type = "object",
                     allowUnknown = false,
                     fields = {
-                        common = { type = "boolean" }, blue = { type = "boolean" },
-                        purple = { type = "boolean" }, epic = { type = "boolean" },
+                        common = { type = "boolean" }, advanced = { type = "boolean" },
+                        rare = { type = "boolean" }, artifact = { type = "boolean" },
+                        legendary = { type = "boolean" }, epic = { type = "boolean" },
                         myth = { type = "boolean", enum = { false } },
                     },
                 },
@@ -135,8 +275,9 @@ function GameCommands.Register(router, services)
                     type = "object",
                     allowUnknown = false,
                     fields = {
-                        common = { type = "boolean" }, blue = { type = "boolean" },
-                        purple = { type = "boolean" }, epic = { type = "boolean" },
+                        common = { type = "boolean" }, advanced = { type = "boolean" },
+                        rare = { type = "boolean" }, artifact = { type = "boolean" },
+                        legendary = { type = "boolean" }, epic = { type = "boolean" },
                         myth = { type = "boolean", enum = { false } },
                     },
                 },

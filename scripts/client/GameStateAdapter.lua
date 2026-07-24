@@ -1,5 +1,6 @@
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local LargeNumber = require("shared.LargeNumber")
+local BigNumber = require("shared.BigNumber")
 
 local GameStateAdapter = {}
 
@@ -20,6 +21,29 @@ local function DeepCopy(value, seen)
     return copy
 end
 
+local function CopyStoryGate(value)
+    if type(value) ~= "table" then return nil end
+    return {
+        storyId = value.storyId,
+        chapter = value.chapter,
+        floor = value.floor,
+        phase = value.phase,
+        title = value.title,
+        lines = DeepCopy(value.lines),
+        lineIndex = value.lineIndex,
+    }
+end
+
+local function NormalizeStoryGate(state)
+    if type(state) ~= "table" then return end
+    if type(state.pendingStoryGate) == "table" then
+        state.pendingStoryGate = CopyStoryGate(state.pendingStoryGate)
+    elseif type(state.pendingStory) == "table" then
+        state.pendingStoryGate = CopyStoryGate(state.pendingStory)
+    end
+    state.pendingStory = nil
+end
+
 local function Merge(target, patch)
     for key, value in pairs(patch or {}) do
         if type(value) == "table" and type(target[key]) == "table" then
@@ -31,7 +55,18 @@ local function Merge(target, patch)
 end
 
 local function FormatValue(value)
+    if type(value) == "table" and (value.mantissa ~= nil or value.exponent ~= nil) then
+        return BigNumber.Format(value, 4)
+    end
     return LargeNumber.Format(value or 0)
+end
+
+local function FirstNumber(...)
+    for index = 1, select("#", ...) do
+        local value = select(index, ...)
+        if type(value) == "number" then return value end
+    end
+    return nil
 end
 
 local function EventText(value)
@@ -41,13 +76,36 @@ local function EventText(value)
     elseif kind == "battle_reward" then
         return "战斗胜利：金币" .. FormatValue(value.gold) .. "、经验" .. FormatValue(value.exp) .. "。"
     elseif kind == "battle_lost" then
-        return "挑战失败，已退回修整。"
-    elseif kind == "equipment_drop" then
+        return "挑战失败，已回到本层第1场重新整备。"
+    elseif kind == "equipment_drop" or kind == "loot_dropped" then
         return "获得装备：" .. tostring(value.name or value.itemId or "未知装备")
+    elseif kind == "loot_settled" then
+        local outcome = value.outcome or value.destination or "inventory"
+        return (outcome == "temporary_box" or outcome == "temporary_loot")
+            and "背包已满，战利品已进入临时战利品箱。" or "战利品已自动拾取。"
     elseif kind == "level_up" then
         return "等级提升至 " .. tostring(value.level or "?") .. " 级"
     elseif kind == "floor_advanced" then
         return "进入第" .. tostring(value.floor or "?") .. "层。"
+    elseif kind == "floor_reset" then
+        return "本层重置：从第1场重新开始，已获得奖励保留。"
+    elseif kind == "player_damaged" then
+        return "受到 " .. FormatValue(value.amountBig or value.damageBig or value.amount or value.damage) .. " 点伤害。"
+    elseif kind == "player_healed" or kind == "life_steal" then
+        local source = value.source == "floor_rest" and "层间休整"
+            or value.source == "revive" and "复活"
+            or "吸血"
+        return source .. "恢复 " .. FormatValue(value.amountBig or value.amount) .. " 点生命。"
+    elseif kind == "player_died" then
+        return "角色倒下，本层将从第1场重新开始。"
+    elseif kind == "player_revived" then
+        return "角色已复活并返回本层初始位置。"
+    elseif kind == "boss_enraged" then
+        return "Boss进入狂暴：伤害和攻击速度提升。"
+    elseif kind == "aid_pending" or kind == "tower_aid_requested" then
+        return "连续失败两次，塔灵援助已准备。"
+    elseif kind == "aid_granted" then
+        return "塔灵援助装备已发放。"
     elseif kind == "chest_reward" then
         return "开启宝箱：金币" .. FormatValue(value.gold) .. "、碎片" .. FormatValue(value.fragments) .. "。"
     elseif kind == "merchant_trade" then
@@ -91,6 +149,10 @@ local function EventText(value)
         return "装备强化至 +" .. tostring(value.enhance or 0) .. "。"
     elseif kind == "equipment_starred" then
         return "装备升至 " .. tostring(value.star or 0) .. " 星。"
+    elseif kind == "equipment_upgrade_available" then
+        return "发现可提升整套战力的装备。"
+    elseif kind == "equipment_reverted" or kind == "equip_undone" then
+        return "已撤回上一次自动换装。"
     end
     return nil
 end
@@ -99,11 +161,76 @@ local function ApplyEvents(state, events)
     state.logs = state.logs or {}
     for _, value in ipairs(events or {}) do
         local kind = value.kind
-        if kind == "battle_won" then
+        if kind == "battle_won" or kind == "monster_defeated" then
             state.currentMonster = nil
-        elseif kind == "battle_hit" then
+        elseif kind == "battle_started" or kind == "monster_spawned" then
+            local monster = type(value.monster) == "table" and DeepCopy(value.monster) or {}
+            monster.id = monster.id or value.monsterId
+            monster.name = monster.name or value.name
+            monster.eventType = monster.eventType or value.eventType
+            monster.encounterKind = monster.encounterKind or value.encounterKind
+            monster.hpBig = value.monsterHpBig or value.hpBig or monster.hpBig
+            monster.maxHpBig = value.monsterMaxHpBig or value.maxHpBig or monster.maxHpBig or monster.hpBig
+            monster.hp = FirstNumber(value.monsterHp, value.hp, monster.hp)
+            monster.maxHp = FirstNumber(value.monsterMaxHp, value.maxHp, monster.maxHp, monster.hp)
+            monster.floor = value.floor or monster.floor or state.floor
+            monster.room = value.room or monster.room or state.room
+            monster.isChapterBoss = value.isChapterBoss == true or monster.encounterKind == "chapterBoss"
+            state.currentMonster = monster
+        elseif kind == "battle_hit" or kind == "damage_dealt" or kind == "player_attack_hit" then
             local prefix = value.lucky and "触发777" or (value.critical and "暴击" or "命中")
-            state.recentDamage = prefix .. " " .. tostring(value.damage or 0) .. " 伤害，怪物剩余 " .. tostring(value.monsterHp or 0)
+            local damage = value.amountBig or value.damageBig or value.amount or value.damage or 0
+            local monsterHp = value.targetHpBig or value.monsterHpBig or value.targetHp or value.monsterHp
+            local monsterMaxHp = value.targetMaxHpBig or value.monsterMaxHpBig
+                or value.targetMaxHp or value.monsterMaxHp
+            state.recentDamage = prefix .. " " .. FormatValue(damage) .. " 伤害"
+            if state.currentMonster and monsterHp ~= nil then
+                if type(monsterHp) == "table" then
+                    state.currentMonster.hpBig = monsterHp
+                else
+                    state.currentMonster.hp = monsterHp
+                end
+                if type(monsterMaxHp) == "table" then
+                    state.currentMonster.maxHpBig = monsterMaxHp
+                elseif monsterMaxHp ~= nil then
+                    state.currentMonster.maxHp = monsterMaxHp
+                end
+            end
+        elseif kind == "player_damaged" then
+            state.hpBig = value.hpBig or value.playerHpBig or state.hpBig
+            state.hp = FirstNumber(value.hp, value.playerHp, state.hp)
+            state.playerMaxHp = value.maxHpBig or value.playerMaxHpBig
+                or value.maxHp or value.playerMaxHp or state.playerMaxHp
+        elseif kind == "player_healed" or kind == "life_steal" then
+            state.hpBig = value.hpBig or value.playerHpBig or state.hpBig
+            state.hp = FirstNumber(value.hp, value.playerHp, state.hp)
+            state.playerMaxHp = value.maxHpBig or value.playerMaxHpBig
+                or value.maxHp or value.playerMaxHp or state.playerMaxHp
+        elseif kind == "player_died" then
+            state.hp = 0
+            state.hpBig = BigNumber.Zero()
+        elseif kind == "player_revived" then
+            state.hpBig = value.hpBig or value.playerHpBig or state.hpBig
+            state.hp = FirstNumber(value.hp, value.playerHp, state.hp)
+            state.playerMaxHp = value.maxHpBig or value.playerMaxHpBig
+                or value.maxHp or value.playerMaxHp or state.playerMaxHp
+            state.room = value.room or 1
+        elseif kind == "floor_reset" then
+            state.room = value.room or 1
+            state.currentMonster = nil
+        elseif kind == "story_gate" then
+            state.pendingStoryGate = CopyStoryGate(value)
+            state.pendingStory = nil
+        elseif kind == "story_advanced" then
+            local gate = state.pendingStoryGate
+            if type(gate) == "table" and (value.storyId == nil or value.storyId == gate.storyId) then
+                gate.lineIndex = value.lineIndex or gate.lineIndex
+            end
+        elseif kind == "story_completed" or kind == "story_skipped" then
+            state.pendingStoryGate = nil
+            state.pendingStory = nil
+        elseif kind == "equip_decision_applied" then
+            state.pendingEquipDecision = nil
         elseif kind == "battle" then
             local prefix = value.lucky and "触发777" or (value.critical and "暴击" or "造成")
             state.recentDamage = prefix .. " " .. tostring(value.lastDamage or 0) .. " 伤害"
@@ -119,8 +246,11 @@ local function ProjectEquipment(item)
     local definition = EquipmentCatalog.Get(item.equipmentId)
     if not definition then return item end
     local projected = DeepCopy(definition)
+    -- V5 instances carry their rolled authoritative stats. Definition values
+    -- are visual/catalog fallbacks only; never overwrite server-provided data.
+    for key, value in pairs(item) do projected[key] = DeepCopy(value) end
     projected.id = item.id
-    projected.equipmentId = definition.id
+    projected.equipmentId = item.equipmentId or definition.id
     projected.level = item.level or definition.level
     projected.enhance = item.enhance or 0
     projected.star = item.star or 0
@@ -129,7 +259,6 @@ local function ProjectEquipment(item)
     projected.source = item.source or "legacy"
     projected.investedGold = item.investedGold or 0
     projected.investedFragments = item.investedFragments or 0
-    projected.power = item.power
     return projected
 end
 
@@ -144,7 +273,7 @@ end
 
 local function EmptyView()
     return {
-        schemaVersion = 1,
+        schemaVersion = 5,
         revision = 0,
         updatedAt = 0,
         floor = 1,
@@ -161,10 +290,24 @@ local function EmptyView()
         offlineSeconds = 0,
         stepTimer = 0,
         hp = 1,
+        hpBig = BigNumber.FromNumber(1),
+        playerMaxHp = 1,
+        displayedPower = nil,
+        recommendedPower = nil,
+        nextChapterRecommendedPower = nil,
+        powerRatio = nil,
+        headroomFloors = nil,
+        difficultyLabel = "待评估",
+        bossScore = nil,
+        eliteScore = nil,
+        estimatedEasyFloor = nil,
         stats = {
             atk = 0,
             def = 0,
             hp = 1,
+            atkBig = BigNumber.Zero(),
+            defBig = BigNumber.Zero(),
+            hpBig = BigNumber.FromNumber(1),
             crit = 0,
             critDmg = 1.5,
             atkSpeed = 1,
@@ -204,6 +347,24 @@ local function RebuildView()
     nextView.equipmentInventoryCount = #nextView.inventory
     nextView.inventoryCapacity = nextView.inventoryCapacity or 300
     nextView.equippedSlots = nextView.equippedSlots or nextView.equipped or {}
+    nextView.room = nextView.room or nextView.encounter or math.max(1, math.min(10, (nextView.position or 0) + 1))
+    nextView.playerMaxHp = nextView.playerMaxHp
+        or (nextView.stats and (nextView.stats.hpBig or nextView.stats.hp))
+        or nextView.hpBig or nextView.hp or 1
+    nextView.displayedPower = nextView.displayedPower or (nextView.stats and nextView.stats.power)
+    if nextView.stats and nextView.displayedPower ~= nil then nextView.stats.power = nextView.displayedPower end
+    if nextView.powerRatio == nil and nextView.displayedPower ~= nil and nextView.recommendedPower ~= nil then
+        if type(nextView.displayedPower) == "table" and nextView.displayedPower.mantissa ~= nil then
+            nextView.powerRatio = BigNumber.Ratio(nextView.displayedPower, nextView.recommendedPower)
+        else
+            local displayed = LargeNumber.ToNumber and LargeNumber.ToNumber(nextView.displayedPower) or nextView.displayedPower
+            local recommended = LargeNumber.ToNumber and LargeNumber.ToNumber(nextView.recommendedPower) or nextView.recommendedPower
+            if type(displayed) == "number" and type(recommended) == "number" and recommended > 0 then
+                nextView.powerRatio = displayed / recommended
+            end
+        end
+    end
+    nextView.difficultyLabel = nextView.difficultyLabel or "待评估"
 
     if nextView.consumables and nextView.consumables.healthPotion then
         nextView.inventory[#nextView.inventory + 1] = {
@@ -262,6 +423,7 @@ function GameStateAdapter.ApplySnapshot(snapshot)
         return false, "snapshot must be a table"
     end
     authoritative_ = DeepCopy(snapshot)
+    NormalizeStoryGate(authoritative_)
     RebuildView()
     return true, view_
 end
@@ -289,8 +451,10 @@ function GameStateAdapter.ApplyDelta(delta)
 
     local changes = DeepCopy(delta.changes or delta.changed or delta.state or {})
     if changes.inventory ~= nil then authoritative_.inventory = ProjectInventory(changes.inventory); changes.inventory = nil end
+    if changes.overflowLoot ~= nil then authoritative_.overflowLoot = ProjectInventory(changes.overflowLoot); changes.overflowLoot = nil end
     if changes.equipped ~= nil then authoritative_.equipped = changes.equipped; changes.equipped = nil end
     if changes.consumables ~= nil then authoritative_.consumables = changes.consumables; changes.consumables = nil end
+    if changes.stats ~= nil then authoritative_.stats = DeepCopy(changes.stats); changes.stats = nil end
     Merge(authoritative_, changes)
     if delta.inventory ~= nil then authoritative_.inventory = ProjectInventory(delta.inventory) end
     if delta.consumables ~= nil then authoritative_.consumables = DeepCopy(delta.consumables) end
@@ -299,6 +463,7 @@ function GameStateAdapter.ApplyDelta(delta)
     if delta.revision ~= nil then authoritative_.revision = delta.revision end
     if delta.updatedAt ~= nil then authoritative_.updatedAt = delta.updatedAt end
     ApplyEvents(authoritative_, delta.events)
+    NormalizeStoryGate(authoritative_)
     RebuildView()
     return true, view_
 end

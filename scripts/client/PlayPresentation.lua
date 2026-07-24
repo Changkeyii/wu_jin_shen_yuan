@@ -1,5 +1,6 @@
 local PlayPresentation = {}
 local CombatSequence = require("shared.CombatSequence")
+local BigNumber = require("shared.BigNumber")
 
 local context_ = nil
 local refs_ = {}
@@ -23,6 +24,7 @@ local pickupFx_ = nil
 local currentPlayerImage_ = nil
 local floatingText_ = nil
 local enemyDamageBursts_ = {}
+local playerFeedbackBursts_ = {}
 local lastEventType_ = "monster"
 local lastLootText_ = "等待掉落"
 local lastLootIcon_ = nil
@@ -31,9 +33,26 @@ local pendingAutoRun_ = nil
 local sessionAutoStartAttempted_ = false
 
 local DAMAGE_LABEL_COUNT = 5
+local PLAYER_FEEDBACK_COUNT = 5
+local metrics_ = { width = 1080, height = 1400, enemyAnchorX = 820 }
+local Clamp
 
 local function C()
     return context_.colors
+end
+
+local function MagnitudeRatio(value, maximum)
+    if type(value) == "table" or type(maximum) == "table" then
+        return Clamp(BigNumber.Ratio(value or 0, maximum or 1) or 0, 0, 1)
+    end
+    return Clamp((value or 0) / math.max(1, maximum or 1), 0, 1)
+end
+
+local function MagnitudeKey(value)
+    if type(value) == "table" and (value.mantissa ~= nil or value.exponent ~= nil) then
+        return BigNumber.ToScientificString(value, 12)
+    end
+    return tostring(value or "")
 end
 
 local function Assets()
@@ -44,7 +63,7 @@ local function Game()
     return context_.getGame()
 end
 
-local function Clamp(value, minimum, maximum)
+Clamp = function(value, minimum, maximum)
     if value < minimum then return minimum end
     if value > maximum then return maximum end
     return value
@@ -135,13 +154,9 @@ local function EventIcon(eventType)
 end
 
 local function DeterministicEventType(index)
-    local game = Game()
-    local value = (index * 73 + (game.floor or 1) * 29) % 100
-    if value < 58 then return "monster" end
-    if value < 70 then return "elite" end
-    if value < 82 then return "chest" end
-    if value < 90 then return "random" end
-    if value < 96 then return "merchant" end
+    local room = ((index - 1) % 10) + 1
+    if room <= 7 then return "monster" end
+    if room <= 9 then return "elite" end
     return "boss"
 end
 
@@ -189,10 +204,7 @@ local function AlignCurrentRoadEvent(
             EventIcon(eventType)
             or Assets().items.crystal
         )
-    current.x =
-        presentationX_
-        + context_.playerScreenX
-        + context_.eventTriggerDistance
+    current.x = presentationX_ + metrics_.enemyAnchorX - context_.enemySize * 0.5
 end
 
 local function AdvanceRoadEvent()
@@ -221,11 +233,40 @@ local function ClearCombatPresentation(advanceLockedEvent)
     currentMonsterHp_ = 0
     currentMonsterMaxHp_ = 1
     enemyDamageBursts_ = {}
+    playerFeedbackBursts_ = {}
     floatingText_ = nil
 end
 
 local function ActionResult(response, successMessage)
     return context_.actionResult(response, successMessage)
+end
+
+local function RefreshMetrics()
+    local width = metrics_.width
+    local height = metrics_.height
+    if refs_.root and refs_.root.GetLayout then
+        local layout = refs_.root:GetLayout()
+        if layout and layout.w and layout.w > 0 then width = layout.w end
+        if layout and layout.h and layout.h > 0 then height = layout.h end
+    elseif context_.getMiddleDesignHeight then
+        height = context_.getMiddleDesignHeight()
+    end
+    width = math.max(640, width or 1080)
+    height = math.max(520, height or 1400)
+    local groundY = Clamp(height * 0.72, height - 290, height - 150)
+    metrics_ = {
+        width = width,
+        height = height,
+        groundY = groundY,
+        playerAnchorX = width * 0.22,
+        enemyAnchorX = width * 0.76,
+    }
+    context_.playerScreenX = math.floor(metrics_.playerAnchorX - context_.playerSize * 0.5)
+    context_.roadY = math.floor(groundY)
+    context_.platformPlayerY = math.floor(groundY - context_.runH + 21)
+    context_.bgTileTop = 0
+    context_.bgTileH = height
+    return metrics_
 end
 
 local function SetAutoRun(enabled)
@@ -266,23 +307,41 @@ local function SetAutoRun(enabled)
     return true
 end
 
-local function TriggerPickupVisual(image, startX, startY, text)
+local function TriggerPickupVisual(image, startX, startY, text, rarity, outcome)
     local assets = Assets()
     pickupFx_ = {
         age = 0,
-        duration = 0.52,
+        duration = 1.35,
         image = image or assets.items.crystal,
-        startX = startX or (context_.playerScreenX + 280),
+        startX = startX or (metrics_.enemyAnchorX - context_.lootSize * 0.5),
         startY = startY or (context_.roadY - context_.lootSize),
-        endX = context_.playerScreenX + 76,
-        endY = context_.platformPlayerY + 70,
+        endX = 58,
+        endY = metrics_.height - 50,
         text = text or "获得道具",
+        rarity = rarity or "common",
+        outcome = outcome,
     }
     lastLootText_ = pickupFx_.text
     lastLootIcon_ = pickupFx_.image
 end
 
+local function AddPlayerFeedback(text, color, source)
+    if #playerFeedbackBursts_ >= PLAYER_FEEDBACK_COUNT then
+        table.remove(playerFeedbackBursts_, 1)
+    end
+    playerFeedbackBursts_[#playerFeedbackBursts_ + 1] = {
+        age = 0,
+        text = text,
+        color = color,
+        source = source,
+        lane = (#playerFeedbackBursts_ % PLAYER_FEEDBACK_COUNT),
+    }
+end
+
 local function AddEnemyDamageBurst(text, baseX, baseY, delay, variant)
+    if #enemyDamageBursts_ >= DAMAGE_LABEL_COUNT then
+        table.remove(enemyDamageBursts_, 1)
+    end
     enemyDamageBursts_[#enemyDamageBursts_ + 1] = {
         age = -(delay or 0),
         text = text or "命中",
@@ -297,10 +356,7 @@ local function ScheduleAttackDamageText(
     eventType,
     isBurst
 )
-    local current = roadEvents_[1]
-    local enemyX = current
-        and (current.x - presentationX_ - 96)
-        or (context_.playerScreenX + 360)
+    local enemyX = metrics_.enemyAnchorX - 180
     local enemyY =
         context_.roadY
         - context_.enemySize
@@ -374,6 +430,12 @@ local function CreatePage()
     local game = Game()
     EnsureRoadEvents()
     refs_ = {objects = {}, bgTiles = {}}
+    RefreshMetrics()
+    if game.currentMonster then
+        currentMonsterHp_ = game.currentMonster.hpBig or game.currentMonster.hp or currentMonsterHp_
+        currentMonsterMaxHp_ = game.currentMonster.maxHpBig or game.currentMonster.maxHp
+            or game.currentMonster.hpBig or game.currentMonster.hp or currentMonsterMaxHp_
+    end
     currentPlayerImage_ = nil
     refs_.bgTiles[1] = context_.UI.Panel {position = "absolute", left = 0, top = context_.bgTileTop, width = context_.bgTileW, height = context_.bgTileH, backgroundImage = assets.bg, backgroundFit = "cover"}
     refs_.bgTiles[2] = context_.UI.Panel {position = "absolute", left = context_.bgTileW, top = context_.bgTileTop, width = context_.bgTileW, height = context_.bgTileH, backgroundImage = assets.bgMirror, backgroundFit = "cover"}
@@ -384,6 +446,12 @@ local function CreatePage()
     for index = 1, context_.eventViewCount do
         refs_.objects[index] = context_.UI.Panel {position = "absolute", left = 0, top = 0, width = context_.enemySize, height = context_.enemySize, backgroundImage = assets.enemies.slime, backgroundFit = "contain", visible = true}
     end
+    refs_.lootBeam = context_.UI.Panel {
+        position = "absolute", left = 0, top = 0, width = 112, height = 300,
+        visible = false, pointerEvents = "none",
+        backgroundGradient = { type = "linear", direction = "to-top", from = {255,255,255,230}, to = {255,255,255,0} },
+        borderLeftWidth = 3, borderRightWidth = 3,
+    }
     refs_.pickup = context_.UI.Panel {position = "absolute", left = 0, top = 0, width = context_.lootSize, height = context_.lootSize, backgroundImage = assets.items.crystal, backgroundFit = "contain", visible = false}
     refs_.pickupSpark = context_.UI.Panel {position = "absolute", left = 0, top = 0, width = 82, height = 82, backgroundImage = assets.ui.pickupSpark, backgroundFit = "contain", visible = false}
     refs_.floatLabel = context_.txt("", 30, C().gold, {position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = {width = 2, color = "#000000"}})
@@ -391,14 +459,25 @@ local function CreatePage()
     for index = 1, DAMAGE_LABEL_COUNT do
         refs_.enemyDamageLabels[index] = context_.txt("", 34, C().hp, {position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = {width = 3, color = "#000000"}})
     end
+    refs_.playerFeedbackLabels = {}
+    for index = 1, PLAYER_FEEDBACK_COUNT do
+        refs_.playerFeedbackLabels[index] = context_.txt("", 32, C().hp, {
+            position = "absolute", left = 0, top = 0, width = 360,
+            textAlign = "center", visible = false,
+            textStroke = {width = 3, color = "#000000"},
+        })
+    end
     refs_.event = context_.compactTxt("向右移动", 20, C().primary, {width = "100%"})
     refs_.progress = context_.compactTxt("第1层", 20, C().focus, {})
     refs_.lootLabel = context_.compactTxt(lastLootText_, 18, C().gold, {width = "100%"})
     local hpProgress
-    hpProgress, refs_.hpFill = context_.imageProgress(310, 24, game.hp or 1, game.stats.hp or 1, assets.ui.progressTrackHp, assets.ui.progressFillHp)
+    hpProgress, refs_.hpFill = context_.imageProgress(
+        420, 30, game.hpBig or game.hp or 1,
+        game.playerMaxHp or game.stats.hpBig or game.stats.hp or 1,
+        assets.ui.progressTrackHp, assets.ui.progressFillHp)
     refs_.hpBar = hpProgress
     local enemyHpProgress
-    enemyHpProgress, refs_.enemyHpFill = context_.imageProgress(310, 24, currentMonsterHp_, currentMonsterMaxHp_, assets.ui.progressTrackHp, assets.ui.progressFillHp)
+    enemyHpProgress, refs_.enemyHpFill = context_.imageProgress(420, 30, currentMonsterHp_, currentMonsterMaxHp_, assets.ui.progressTrackHp, assets.ui.progressFillHp)
     refs_.enemyHpBar = enemyHpProgress
     refs_.runButtonLabel = context_.compactTxt(game.autoRun and "刷宝中" or "开始刷宝", 20, C().text, {
         width = "100%",
@@ -411,15 +490,17 @@ local function CreatePage()
     for index = 1, #refs_.objects do sceneChildren[#sceneChildren + 1] = refs_.objects[index] end
     sceneChildren[#sceneChildren + 1] = refs_.playerShadow
     sceneChildren[#sceneChildren + 1] = refs_.player
+    sceneChildren[#sceneChildren + 1] = refs_.lootBeam
     sceneChildren[#sceneChildren + 1] = refs_.pickup
     sceneChildren[#sceneChildren + 1] = refs_.pickupSpark
     sceneChildren[#sceneChildren + 1] = refs_.floatLabel
     for index = 1, #refs_.enemyDamageLabels do sceneChildren[#sceneChildren + 1] = refs_.enemyDamageLabels[index] end
+    for index = 1, #refs_.playerFeedbackLabels do sceneChildren[#sceneChildren + 1] = refs_.playerFeedbackLabels[index] end
 
     local settingsButton = context_.UI.Panel {
         position = "absolute",
         right = 272,
-        top = 42,
+        top = 20,
         width = 72,
         height = 72,
         clickable = not game.readOnly,
@@ -441,7 +522,7 @@ local function CreatePage()
         or context_.loadingController.IsPlayAssetLoading()
         or pendingAutoRun_
     local runButton = context_.UI.Button {
-        position = "absolute", right = 26, top = 42, width = 230, height = 72,
+        position = "absolute", right = 26, top = 20, width = 230, height = 72,
         disabled = runButtonDisabled,
         alignItems = "center", justifyContent = "center",
         padding = 0, paddingHorizontal = 0, paddingVertical = 0,
@@ -460,25 +541,45 @@ local function CreatePage()
     refs_.runButton = runButton
 
     local root = context_.UI.Panel {width = "100%", height = "100%", position = "relative", overflow = "hidden", backgroundImage = assets.bg, backgroundFit = "cover", children = sceneChildren}
+    refs_.root = root
     refs_.event:SetStyle({visible = false})
-    local statusFrame = context_.UI.Panel {position = "absolute", left = 26, top = 42, width = 448, height = 60, backgroundImage = assets.ui.statusBar, backgroundFit = "contain", visible = false, children = {refs_.event}}
     refs_.progress:SetStyle({position = "absolute", left = 0, top = 19, width = 150, textAlign = "center"})
-    local floorBadge = context_.UI.Panel {position = "absolute", left = 476, top = 42, width = 150, height = 60, backgroundImage = assets.ui.floorBadge, backgroundFit = "contain", children = {refs_.progress}}
+    local floorBadge = context_.UI.Panel {position = "absolute", left = 465, top = 286, width = 150, height = 60, backgroundImage = assets.ui.floorBadge, backgroundFit = "contain", children = {refs_.progress}}
     refs_.floatLabel:SetStyle({visible = false})
     refs_.lootLabel:SetStyle({visible = false})
-    local hpFrame = context_.UI.Panel {position = "absolute", left = 30, top = 174, width = 545, height = 168, backgroundImage = assets.ui.playHpFrame, backgroundFit = "contain", children = {
-        context_.txt("生命", 24, C().hp, {position = "absolute", left = 74, top = 55, width = 92, textAlign = "center", textStroke = {width = 2, color = "#000000"}}),
-        context_.UI.Panel {position = "absolute", left = 176, top = 66, width = 310, height = 28, children = {refs_.hpBar}},
+    refs_.playerHpText = context_.compactTxt("", 17, C().text, {position = "absolute", left = 52, top = 105, width = 400, height = 28, textAlign = "center", textStroke = {width = 2, color = "#000000"}})
+    refs_.enemyHpText = context_.compactTxt("", 17, C().text, {position = "absolute", left = 52, top = 105, width = 400, height = 28, textAlign = "center", textStroke = {width = 2, color = "#000000"}})
+    refs_.playerName = context_.compactTxt("赤焰枪刃", 21, C().text, {position = "absolute", left = 40, top = 27, width = 434, height = 34, textAlign = "center", textStroke = {width = 2, color = "#000000"}})
+    refs_.enemyName = context_.compactTxt("等待敌人", 21, C().text, {position = "absolute", left = 40, top = 27, width = 434, height = 34, textAlign = "center", textStroke = {width = 2, color = "#000000"}})
+    local hpFrame = context_.UI.Panel {position = "absolute", left = 20, top = 112, width = 520, height = 160, backgroundImage = assets.ui.playHpFrame, backgroundFit = "contain", children = {
+        refs_.playerName,
+        context_.UI.Panel {position = "absolute", left = 52, top = 72, width = 420, height = 30, children = {refs_.hpBar}},
+        refs_.playerHpText,
     }}
-    local enemyHpFrame = context_.UI.Panel {position = "absolute", right = 30, top = 286, width = 545, height = 168, backgroundImage = assets.ui.playHpFrame, backgroundFit = "contain", visible = false, children = {
-        context_.txt("敌人", 24, C().hp, {position = "absolute", left = 74, top = 55, width = 92, textAlign = "center", textStroke = {width = 2, color = "#000000"}}),
-        context_.UI.Panel {position = "absolute", left = 176, top = 66, width = 310, height = 28, children = {refs_.enemyHpBar}},
+    local enemyHpFrame = context_.UI.Panel {position = "absolute", right = 20, top = 112, width = 520, height = 160, backgroundImage = assets.ui.playHpFrame, backgroundFit = "contain", children = {
+        refs_.enemyName,
+        context_.UI.Panel {position = "absolute", left = 52, top = 72, width = 420, height = 30, children = {refs_.enemyHpBar}},
+        refs_.enemyHpText,
     }}
     refs_.enemyHpFrame = enemyHpFrame
+    refs_.powerCurrent = context_.compactTxt("当前战力 待评估", 19, C().gold, {position = "absolute", left = 22, top = 12, width = 282, height = 28, textStroke = {width = 1, color = "#000000"}})
+    refs_.powerRecommended = context_.compactTxt("推荐战力 待同步", 18, C().textSecondary, {position = "absolute", left = 310, top = 12, width = 298, height = 28, textAlign = "right", textStroke = {width = 1, color = "#000000"}})
+    refs_.powerStatus = context_.compactTxt("战力评估同步中", 17, C().focus, {position = "absolute", left = 22, top = 46, width = 586, height = 26, textAlign = "center", textStroke = {width = 1, color = "#000000"}})
+    local powerCard = context_.UI.Panel {
+        position = "absolute", left = 26, top = 16, width = 630, height = 80,
+        backgroundImage = assets.ui.panelCompact, backgroundFit = "sliced", backgroundSlice = {12,12,12,12},
+        children = {refs_.powerCurrent, refs_.powerRecommended, refs_.powerStatus},
+    }
+    local rulesButton = context_.UI.Panel {
+        position = "absolute", left = 664, top = 24, width = 64, height = 64,
+        clickable = true, backgroundImage = "image/ui/dialog/help_button.png", backgroundFit = "contain",
+        onClick = function() if context_.showTowerRules then context_.showTowerRules() end end,
+    }
     refs_.lootTrayIcon = context_.UI.Panel {position = "absolute", left = 10, top = 8, width = 44, height = 44, backgroundImage = lastLootIcon_ or assets.items.chest, backgroundFit = "contain"}
     refs_.lootTrayLabel = context_.compactTxt(lastLootText_, 18, C().gold, {position = "absolute", left = 68, top = 18, width = 410, textStroke = {width = 2, color = "#000000"}})
     local lootTray = context_.UI.Panel {position = "absolute", left = 26, bottom = 20, width = 520, height = 60, backgroundImage = assets.ui.lootBarGold, backgroundFit = "contain", children = {refs_.lootTrayIcon, refs_.lootTrayLabel}}
-    root:AddChild(statusFrame)
+    root:AddChild(powerCard)
+    root:AddChild(rulesButton)
     root:AddChild(floorBadge)
     root:AddChild(hpFrame)
     root:AddChild(enemyHpFrame)
@@ -493,6 +594,16 @@ local function Update(dt)
     if not refs_.player then return end
     local assets = Assets()
     local game = Game()
+    RefreshMetrics()
+    local authoritativeMonster = game.currentMonster
+    if authoritativeMonster then
+        currentMonsterHp_ = authoritativeMonster.hpBig or authoritativeMonster.hp or currentMonsterHp_
+        currentMonsterMaxHp_ = authoritativeMonster.maxHpBig or authoritativeMonster.maxHp
+            or authoritativeMonster.hpBig or authoritativeMonster.hp or currentMonsterMaxHp_
+    elseif not currentEventLocked_ then
+        currentMonsterHp_ = 0
+        currentMonsterMaxHp_ = 1
+    end
     EnsureRoadEvents()
     animationTime_ = animationTime_ + dt
     combatAnimationTime_ = currentEventLocked_ and (combatAnimationTime_ + dt) or 0
@@ -528,16 +639,15 @@ local function Update(dt)
     end
 
     local bgShift = -(presentationX_ % (context_.bgTileW * 2))
-    refs_.bgTiles[1]:SetStyle({left = bgShift})
-    refs_.bgTiles[2]:SetStyle({left = bgShift + context_.bgTileW})
-    refs_.bgTiles[3]:SetStyle({left = bgShift + context_.bgTileW * 2})
+    refs_.bgTiles[1]:SetStyle({left = bgShift, top = 0, height = metrics_.height})
+    refs_.bgTiles[2]:SetStyle({left = bgShift + context_.bgTileW, top = 0, height = metrics_.height})
+    refs_.bgTiles[3]:SetStyle({left = bgShift + context_.bgTileW * 2, top = 0, height = metrics_.height})
     local currentEvent = roadEvents_[1]
     local distance = currentEvent and (currentEvent.x - presentationX_ - context_.playerScreenX) or 9999
     local isAttacking =
         currentEventLocked_
         and currentEvent
         and currentEvent.kind == "enemy"
-        and distance <= context_.eventTriggerDistance
         and combatSequenceIndex_ ~= nil
     local isPicking = currentEvent
         and currentEvent.kind == "loot"
@@ -583,6 +693,9 @@ local function Update(dt)
         if event then
             local x = event.x - presentationX_
             local size = event.kind == "enemy" and context_.enemySize or context_.lootSize
+            if index == 1 and currentEventLocked_ and event.kind == "enemy" then
+                x = metrics_.enemyAnchorX - size * 0.5
+            end
             local top = event.kind == "enemy" and (context_.roadY - context_.enemySize + EnemyFootOffset(event.eventType)) or (context_.roadY - context_.lootSize + context_.lootFootOffset)
             local active = index == 1 and (isAttacking or isPicking)
             local pulse = active and math.sin(animationTime_ * 18) * 5 or 0
@@ -597,16 +710,40 @@ local function Update(dt)
         refs_.event:SetText(actionText .. " / " .. ((context_.eventInfo[eventType] and context_.eventInfo[eventType].name) or "前方道路"))
         refs_.event:SetFontColor((context_.eventInfo[eventType] and context_.eventInfo[eventType].color) or C().primary)
     end
-    if refs_.progress then refs_.progress:SetText("第" .. tostring(game.floor or 1) .. "层  距离" .. tostring(math.floor(presentationX_ / 10))) end
+    if refs_.progress then refs_.progress:SetText("第" .. tostring(game.floor or 1) .. "层 · " .. tostring(game.room or 1) .. "/10") end
     if refs_.lootLabel then refs_.lootLabel:SetText(lastLootText_) end
     if refs_.lootTrayLabel then refs_.lootTrayLabel:SetText(lastLootText_) end
     if refs_.lootTrayIcon and lastLootIcon_ then refs_.lootTrayIcon:SetStyle({backgroundImage = lastLootIcon_}) end
-    if refs_.hpFill then context_.setImageProgress(refs_.hpFill, 310, game.hp or 1, (game.stats and game.stats.hp) or 1) end
+    local playerMaxHp = game.playerMaxHp
+        or (game.stats and (game.stats.hpBig or game.stats.hp)) or 1
+    local playerHp = game.hpBig or game.hp or 0
+    if refs_.hpFill then context_.setImageProgress(refs_.hpFill, 420, playerHp, playerMaxHp) end
     if refs_.enemyHpFill then
-        context_.setImageProgress(refs_.enemyHpFill, 310, currentMonsterHp_, currentMonsterMaxHp_)
+        context_.setImageProgress(refs_.enemyHpFill, 420, currentMonsterHp_, currentMonsterMaxHp_)
     end
-    if refs_.enemyHpFrame then
-        refs_.enemyHpFrame:SetStyle({ visible = isAttacking and currentMonsterMaxHp_ > 0 })
+    if refs_.playerHpText then
+        local ratio = MagnitudeRatio(playerHp, playerMaxHp)
+        refs_.playerHpText:SetText(context_.formatInt(playerHp) .. " / " .. context_.formatInt(playerMaxHp) .. "  ·  " .. string.format("%.1f%%", ratio * 100))
+    end
+    if refs_.enemyHpText then
+        local hasMonster = game.currentMonster ~= nil or currentEventLocked_
+        local displayMaxHp = hasMonster and currentMonsterMaxHp_ or 0
+        local displayHp = hasMonster and currentMonsterHp_ or 0
+        local ratio = MagnitudeRatio(displayHp, displayMaxHp)
+        refs_.enemyHpText:SetText(context_.formatInt(displayHp) .. " / " .. context_.formatInt(displayMaxHp) .. "  ·  " .. string.format("%.1f%%", ratio * 100))
+    end
+    if refs_.enemyName then
+        local monster = game.currentMonster
+        refs_.enemyName:SetText((monster and (monster.name or monster.encounterKind or monster.eventType)) or "等待敌人")
+    end
+    local displayedPower = game.displayedPower or (game.stats and game.stats.power)
+    if refs_.powerCurrent then refs_.powerCurrent:SetText(displayedPower ~= nil and ("当前战力 " .. context_.formatInt(displayedPower)) or "当前战力 待评估") end
+    if refs_.powerRecommended then refs_.powerRecommended:SetText(game.recommendedPower ~= nil and ("本层推荐 " .. context_.formatInt(game.recommendedPower)) or "本层推荐 待同步") end
+    if refs_.powerStatus then
+        local ratioText = game.powerRatio and string.format("%.1f%%", game.powerRatio * 100) or "--"
+        local floorText = game.estimatedEasyFloor and (" · 预计轻松至" .. tostring(math.floor(game.estimatedEasyFloor)) .. "层") or ""
+        refs_.powerStatus:SetText((game.difficultyLabel or "待评估") .. " · 战力比 " .. ratioText .. floorText)
+        refs_.powerStatus:SetFontColor((game.powerRatio or 0) >= 0.92 and C().success or ((game.powerRatio or 0) >= 0.88 and C().warning or C().hp))
     end
     if refs_.runButtonLabel then refs_.runButtonLabel:SetText(pendingAutoRun_ and "同步中" or (visualAutoRun and "刷宝中" or "开始刷宝")) end
     local runButtonUnavailable = game.readOnly or context_.loadingController.IsPlayAssetLoading()
@@ -615,15 +752,56 @@ local function Update(dt)
 
     if pickupFx_ then
         pickupFx_.age = pickupFx_.age + dt
-        local t = Clamp(pickupFx_.age / pickupFx_.duration, 0, 1)
-        local ease = 1 - (1 - t) * (1 - t)
-        local x = pickupFx_.startX + (pickupFx_.endX - pickupFx_.startX) * ease
-        local y = pickupFx_.startY + (pickupFx_.endY - pickupFx_.startY) * ease - math.sin(t * math.pi) * 58
-        local size = context_.lootSize * (1.0 - 0.62 * ease)
-        refs_.pickup:SetStyle({visible = t < 1, left = x, top = y, width = size, height = size, backgroundImage = pickupFx_.image, opacity = 1.0 - t * 0.12, scale = 1.0 + math.sin(t * math.pi) * 0.28})
-        refs_.pickupSpark:SetStyle({visible = t > 0.68 and t < 1, left = pickupFx_.endX - 10, top = pickupFx_.endY - 10, opacity = (1 - t) * 1.8, scale = 0.7 + t * 0.8})
-        if t >= 1 then pickupFx_ = nil end
+        local rarityInfo = context_.rarities and (context_.rarities[pickupFx_.rarity] or context_.rarities.common) or nil
+        local beamColor = rarityInfo and (rarityInfo.beam or rarityInfo.color) or {220, 235, 255, 240}
+        if rarityInfo and rarityInfo.dynamic then
+            local phase = pickupFx_.age * 5.5
+            beamColor = {
+                math.floor(128 + 127 * math.sin(phase)),
+                math.floor(128 + 127 * math.sin(phase + 2.094)),
+                math.floor(128 + 127 * math.sin(phase + 4.188)),
+                250,
+            }
+        end
+        local beamEnd = 0.45
+        local hoverEnd = 0.75
+        local temporaryBox = pickupFx_.outcome == "temporary_box" or pickupFx_.outcome == "temporary_loot"
+        local endX = temporaryBox and 62 or 58
+        local endY = temporaryBox and (metrics_.height - 56) or (metrics_.height - 50)
+        pickupFx_.endX, pickupFx_.endY = endX, endY
+        if pickupFx_.age <= hoverEnd then
+            local hover = math.sin(pickupFx_.age * 15) * 5
+            refs_.pickup:SetStyle({
+                visible = true, left = pickupFx_.startX, top = pickupFx_.startY + hover,
+                width = context_.lootSize, height = context_.lootSize,
+                backgroundImage = pickupFx_.image, opacity = 1, scale = 1.0 + math.sin(pickupFx_.age * 10) * 0.06,
+            })
+            local beamOpacity = pickupFx_.age <= beamEnd and (0.72 + math.sin(pickupFx_.age * 22) * 0.18)
+                or Clamp(1 - (pickupFx_.age - beamEnd) / (hoverEnd - beamEnd), 0, 1)
+            refs_.lootBeam:SetStyle({
+                visible = beamOpacity > 0,
+                left = pickupFx_.startX + context_.lootSize * 0.5 - 56,
+                top = context_.roadY - 300,
+                opacity = beamOpacity,
+                scale = 0.96 + math.sin(pickupFx_.age * 18) * 0.05,
+                borderLeftColor = beamColor,
+                borderRightColor = beamColor,
+                backgroundGradient = { type = "linear", direction = "to-top", from = beamColor, to = {beamColor[1], beamColor[2], beamColor[3], 0} },
+            })
+            refs_.pickupSpark:SetStyle({visible = false})
+        else
+            local t = Clamp((pickupFx_.age - hoverEnd) / math.max(0.01, pickupFx_.duration - hoverEnd), 0, 1)
+            local ease = 1 - (1 - t) * (1 - t)
+            local x = pickupFx_.startX + (endX - pickupFx_.startX) * ease
+            local y = pickupFx_.startY + (endY - pickupFx_.startY) * ease - math.sin(t * math.pi) * 76
+            local size = context_.lootSize * (1.0 - 0.62 * ease)
+            refs_.lootBeam:SetStyle({visible = false})
+            refs_.pickup:SetStyle({visible = t < 1, left = x, top = y, width = size, height = size, backgroundImage = pickupFx_.image, opacity = 1.0 - t * 0.12, scale = 1.0 + math.sin(t * math.pi) * 0.22})
+            refs_.pickupSpark:SetStyle({visible = t > 0.72 and t < 1 and endY < metrics_.height, left = endX - 10, top = endY - 10, opacity = (1 - t) * 2.0, scale = 0.7 + t * 0.8})
+            if t >= 1 then pickupFx_ = nil end
+        end
     else
+        refs_.lootBeam:SetStyle({visible = false})
         refs_.pickup:SetStyle({visible = false})
         refs_.pickupSpark:SetStyle({visible = false})
     end
@@ -638,6 +816,28 @@ local function Update(dt)
             local age = burst.age
             label:SetText(burst.text)
             label:SetStyle({visible = age < 0.95, left = burst.baseX + math.sin(age * 22.0 + (burst.variant or 1)) * 7, top = burst.baseY - age * (78 + (burst.variant or 1) * 4), fontColor = {255, 83, 93, math.floor(255 * math.max(0, 1 - age / 0.95))}, scale = 1.0 + math.max(0, 1 - age * 4.0) * 0.42})
+        else
+            label:SetStyle({visible = false})
+        end
+    end
+    for index = #playerFeedbackBursts_, 1, -1 do
+        local burst = playerFeedbackBursts_[index]
+        burst.age = burst.age + dt
+        if burst.age >= 1.25 then table.remove(playerFeedbackBursts_, index) end
+    end
+    for index, label in ipairs(refs_.playerFeedbackLabels or {}) do
+        local burst = playerFeedbackBursts_[index]
+        if burst then
+            local age = burst.age
+            local color = burst.color or C().hp
+            label:SetText(burst.text)
+            label:SetStyle({
+                visible = age < 1.15,
+                left = metrics_.playerAnchorX - 180 + (burst.lane or 0) * 8,
+                top = context_.platformPlayerY - 42 - age * 82 - (burst.lane or 0) * 13,
+                fontColor = {color[1], color[2], color[3], math.floor(255 * math.max(0, 1 - age / 1.15))},
+                scale = burst.source == "revive" and (1.18 + math.sin(age * 9) * 0.08) or (1.0 + math.max(0, 1 - age * 5) * 0.25),
+            })
         else
             label:SetStyle({visible = false})
         end
@@ -664,63 +864,159 @@ function PlayPresentation.Update(dt)
     Update(dt or 0)
 end
 
+local function NormalizedEventType(value)
+    local eventType = value.eventType or value.encounterKind or "monster"
+    if eventType == "normal" then return "monster" end
+    if eventType == "chapterBoss" then return "boss" end
+    return eventType
+end
+
+local function LootIcon(value)
+    if type(value.icon) == "string" and value.icon ~= "" then return value.icon end
+    if context_.itemImage then
+        return context_.itemImage(value.item or value)
+    end
+    return Assets().items.chest
+end
+
+local function VisualEventKey(group, value)
+    if value.eventId ~= nil then
+        return group .. ":event:" .. tostring(value.eventId)
+    end
+    local serial = value.attackSerial or value.sequenceSerial or value.monsterAttackSerial
+    local hitIndex = value.hitIndex or value.sequenceHitIndex
+    local amount = value.amountBig or value.damageBig or value.amount or value.damage
+    local remainingHp = value.targetHpBig or value.monsterHpBig or value.hpBig
+        or value.playerHpBig or value.targetHp or value.monsterHp or value.hp or value.playerHp
+    if serial == nil and hitIndex == nil and amount == nil and remainingHp == nil then
+        return nil
+    end
+    return table.concat({
+        group,
+        tostring(serial or ""),
+        tostring(hitIndex or ""),
+        MagnitudeKey(amount),
+        MagnitudeKey(remainingHp),
+        tostring(value.source or ""),
+    }, ":")
+end
+
+local function ShouldRenderVisual(seen, group, value)
+    local key = VisualEventKey(group, value)
+    if key == nil then return true end
+    if seen[key] then return false end
+    seen[key] = true
+    return true
+end
+
 function PlayPresentation.HandleDelta(payload)
     local game = Game()
+    local seenVisualEvents = {}
     for _, value in ipairs((payload and payload.events) or {}) do
-        if value.kind == "cell_entered" then
-            lastEventType_ = value.eventType or lastEventType_
-            AlignCurrentRoadEvent(value.eventType)
-        elseif value.kind == "auto_run_changed" then
+        local kind = value.kind or value.type
+        if kind == "cell_entered" then
+            lastEventType_ = NormalizedEventType(value)
+            AlignCurrentRoadEvent(lastEventType_)
+        elseif kind == "auto_run_changed" then
             requestedAutoRun_ = nil
             pendingAutoRun_ = nil
             if value.enabled == false then ClearCombatPresentation(false) end
-        elseif value.kind == "battle_started" then
+        elseif kind == "battle_started" or kind == "monster_spawned" then
+            local eventType = NormalizedEventType(value)
+            lastEventType_ = eventType
+            AlignCurrentRoadEvent(eventType)
             currentEventLocked_ = true
-            currentMonsterHp_ = value.monsterHp or 0
-            currentMonsterMaxHp_ = value.monsterMaxHp or value.monsterHp or 1
-        elseif value.kind == "attack_started" then
+            currentMonsterHp_ = value.monsterHpBig or value.hpBig
+                or (value.monster and value.monster.hpBig)
+                or value.monsterHp or value.hp or (value.monster and value.monster.hp) or 0
+            currentMonsterMaxHp_ = value.monsterMaxHpBig or value.maxHpBig
+                or (value.monster and value.monster.maxHpBig)
+                or value.monsterMaxHp or value.maxHp
+                or (value.monster and value.monster.maxHp) or currentMonsterHp_ or 1
+        elseif kind == "attack_started" then
             currentEventLocked_ = true
+            local sequenceIndex = value.sequenceIndex or tonumber(value.sequenceId)
+                or ({A = 1, B = 2, C = 3})[value.sequenceId]
             SetCombatSequence(
-                value.sequenceIndex,
-                value.hitFrame,
+                sequenceIndex,
+                value.hitFrame or (value.hitFrames and value.hitFrames[1]),
                 value.attackSerial,
                 value.windupSeconds,
-                value.recoverySeconds,
+                value.recoverySeconds or value.durationSeconds,
                 value.endFrame
             )
-        elseif value.kind == "battle_hit" then
-            currentEventLocked_ = true
-            currentMonsterHp_ = value.monsterHp or currentMonsterHp_
-            currentMonsterMaxHp_ = value.monsterMaxHp or currentMonsterMaxHp_
-            ScheduleAttackDamageText(
-                (value.critical and "暴击 " or "") .. context_.formatInt(value.damage or 0),
-                value.eventType,
-                value.critical == true or value.lucky == true
-            )
-            TriggerCombatVisual(value.damage and context_.formatInt(value.damage) or "命中", value.eventType, value.critical == true or value.lucky == true)
-        elseif value.kind == "battle_won" then
+        elseif kind == "battle_hit" or kind == "damage_dealt" or kind == "player_attack_hit" then
+            if ShouldRenderVisual(seenVisualEvents, "enemy_hit", value) then
+                currentEventLocked_ = true
+                local amount = value.amountBig or value.damageBig or value.amount or value.damage or 0
+                currentMonsterHp_ = value.targetHpBig or value.monsterHpBig
+                    or value.targetHp or value.monsterHp or currentMonsterHp_
+                currentMonsterMaxHp_ = value.targetMaxHpBig or value.monsterMaxHpBig
+                    or value.targetMaxHp or value.monsterMaxHp or currentMonsterMaxHp_
+                ScheduleAttackDamageText(
+                    (value.critical and "暴击 " or "") .. context_.formatInt(amount),
+                    value.eventType,
+                    value.critical == true or value.lucky == true
+                )
+                TriggerCombatVisual(context_.formatInt(amount), value.eventType, value.critical == true or value.lucky == true)
+            end
+        elseif kind == "player_damaged" then
+            if ShouldRenderVisual(seenVisualEvents, "player_damage", value) then
+                AddPlayerFeedback("-" .. context_.formatInt(
+                    value.amountBig or value.damageBig or value.amount or value.damage or 0), C().hp, "damage")
+            end
+        elseif kind == "player_healed" or kind == "life_steal" then
+            if ShouldRenderVisual(seenVisualEvents, "player_heal", value) then
+                local source = value.source == "life_steal" and "lifesteal" or value.source
+                local color = source == "floor_rest" and C().focus or (source == "revive" and C().focus or C().success)
+                local prefix = source == "floor_rest" and "休整 +" or (source == "revive" and "复活 +" or "吸血 +")
+                AddPlayerFeedback(prefix .. context_.formatInt(value.amountBig or value.amount or 0), color, source)
+            end
+        elseif kind == "player_died" then
+            AddPlayerFeedback("角色倒下", C().hp, "death")
+        elseif kind == "player_revived" then
+            AddPlayerFeedback("复活 · 返回本层第1场", C().focus, "revive")
+        elseif kind == "floor_reset" then
+            ClearCombatPresentation(false)
+            AddPlayerFeedback("本层重置", C().focus, "floor_rest")
+        elseif kind == "boss_enraged" then
+            AddEnemyDamageBurst("Boss 狂暴!", metrics_.enemyAnchorX - 180, context_.roadY - context_.enemySize - 90, 0, 4)
+        elseif kind == "battle_won" or kind == "monster_defeated" then
             currentMonsterHp_ = 0
             currentMonsterMaxHp_ = 1
             combatSequenceIndex_ = nil
             combatHitFrame_ = nil
             currentAttackFrames_ = nil
-            if currentEventLocked_ then
-                AdvanceRoadEvent()
-            end
-        elseif value.kind == "battle_lost" then
-            currentMonsterHp_ = value.monsterHp or currentMonsterMaxHp_
-        elseif value.kind == "battle" then
-            -- 兼容旧事件：新战斗由 battle_started/attack_started/battle_hit 驱动。
+            if currentEventLocked_ then AdvanceRoadEvent() end
+        elseif kind == "battle_lost" then
+            currentMonsterHp_ = value.monsterHpBig or value.monsterHp or currentMonsterMaxHp_
+        elseif kind == "battle" then
             currentEventLocked_ = true
-        elseif value.kind == "battle_reward" then
+        elseif kind == "battle_reward" then
             lastLootText_ = "金币+" .. context_.formatInt(value.gold or 0) .. " 经验+" .. context_.formatInt(value.exp or 0)
             lastLootIcon_ = Assets().items.gold
-        elseif value.kind == "equipment_drop" then
-            lastLootText_ = tostring(value.name or "装备掉落")
-            lastLootIcon_ = Assets().items.sword
-        elseif value.kind == "chest_reward" then
+        elseif kind == "loot_dropped" or kind == "equipment_drop" then
+            local icon = LootIcon(value)
+            local rarity = value.rarity or "common"
+            local rarityName = context_.rarityName and context_.rarityName(rarity) or rarity
+            local text = tostring(value.name or rarityName .. " " .. tostring(value.slot or "装备"))
+            TriggerPickupVisual(icon, metrics_.enemyAnchorX - context_.lootSize * 0.5, context_.roadY - context_.lootSize, text, rarity)
+        elseif kind == "loot_settled" then
+            if pickupFx_ then pickupFx_.outcome = value.outcome or value.destination end
+            if value.outcome == "temporary_box" or value.outcome == "temporary_loot" then
+                lastLootText_ = "已进入临时战利品箱"
+            end
+        elseif kind == "chest_reward" then
             lastLootText_ = "宝箱+" .. context_.formatInt(value.gold or 0)
             lastLootIcon_ = Assets().items.chest
+        elseif kind == "story_gate" and context_.showStoryGate then
+            context_.showStoryGate(value)
+        elseif kind == "equipment_upgrade_available" and context_.showEquipmentUpgrade then
+            context_.showEquipmentUpgrade(value)
+        elseif (kind == "aid_pending" or kind == "tower_aid_requested") and context_.showAidPrompt then
+            context_.showAidPrompt(value)
+        elseif kind == "equipment_reverted" or kind == "equip_undone" then
+            context_.UI.Toast.Show("已撤回上一次自动换装", {duration = 2, variant = "info", position = "bottom"})
         end
     end
     context_.updateTopBar()
@@ -733,12 +1029,14 @@ function PlayPresentation.HandleSnapshot()
 
     if monster then
         AlignCurrentRoadEvent(
-            monster.eventType
+            NormalizedEventType(monster)
         )
         currentEventLocked_ = true
-        currentMonsterHp_ = monster.hp or 0
+        currentMonsterHp_ = monster.hpBig or monster.hp or 0
         currentMonsterMaxHp_ =
-            monster.maxHp
+            monster.maxHpBig
+            or monster.maxHp
+            or monster.hpBig
             or monster.hp
             or 1
 
@@ -770,26 +1068,18 @@ function PlayPresentation.HandleSnapshot()
                 combatWindupSeconds_
         end
     else
+        currentEventLocked_ = false
+        combatSequenceIndex_ = nil
+        currentAttackFrames_ = nil
         currentMonsterHp_ = 0
         currentMonsterMaxHp_ = 1
     end
 
-    if not sessionAutoStartAttempted_ then
-        sessionAutoStartAttempted_ = true
-        if not game.autoRun then
-            requestedAutoRun_ = true
-            pendingAutoRun_ = true
-            print("[Play] authoritative auto-run is off; requesting automatic start")
-            context_.serverClient.AutoRun(true, function(response)
-                pendingAutoRun_ = nil
-                if response and response.ok then
-                    context_.serverClient.RequestSnapshot()
-                else
-                    requestedAutoRun_ = nil
-                    print("[Play] automatic start rejected: " .. tostring(response and response.reason or "unknown"))
-                end
-            end)
-        end
+    sessionAutoStartAttempted_ = true
+    local pendingStoryGate = game.pendingStoryGate or game.pendingStory
+    if pendingStoryGate and context_.showStoryGate then context_.showStoryGate(pendingStoryGate) end
+    if game.pendingEquipDecision and context_.showEquipmentUpgrade then
+        context_.showEquipmentUpgrade(game.pendingEquipDecision)
     end
     if requestedAutoRun_ ~= nil and game.autoRun == requestedAutoRun_ then
         requestedAutoRun_ = nil
@@ -818,6 +1108,8 @@ function PlayPresentation.Reset()
     presentationX_ = 0
     animationTime_ = 0
     pickupFx_ = nil
+    playerFeedbackBursts_ = {}
+    metrics_ = { width = 1080, height = 1400, enemyAnchorX = 820 }
     sessionAutoStartAttempted_ = false
     requestedAutoRun_ = nil
     pendingAutoRun_ = nil

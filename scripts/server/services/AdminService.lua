@@ -343,7 +343,7 @@ function AdminService:Execute(actorUserId, action, payload, onComplete)
     elseif action == "adjust_progress" then
         local floor, position = tonumber(payload.floor), tonumber(payload.position)
         if not floor or floor ~= math.floor(floor) or floor < 1 or floor > 100000
-            or not position or position ~= math.floor(position) or position < 0 or position > 100 then
+            or not position or position ~= math.floor(position) or position < 0 or position > 10 then
             onComplete(Result(false, {}, "INVALID_PROGRESS", "floor or position is outside the allowed range"))
             return
         end

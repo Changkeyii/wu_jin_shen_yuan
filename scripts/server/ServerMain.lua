@@ -1,6 +1,7 @@
 local Protocol = require("shared.NetworkProtocol")
 local ErrorCodes = require("shared.ErrorCodes")
 local GameStateSchema = require("shared.GameStateSchema")
+local GameEventSchema = require("shared.GameEventSchema")
 local ServerConfig = require("server.ServerConfig")
 local PlayerRegistry = require("server.core.PlayerRegistry")
 local AdmissionGuard = require("server.core.AdmissionGuard")
@@ -30,6 +31,18 @@ local idleService_ = nil
 local adminService_ = nil
 local adminPolicy_ = nil
 local snapshotTransferId_ = 0
+
+local POWER_SNAPSHOT_FIELDS = {
+    "displayedPower",
+    "recommendedPower",
+    "nextChapterRecommendedPower",
+    "powerRatio",
+    "headroomFloors",
+    "difficultyLabel",
+    "bossScore",
+    "eliteScore",
+    "estimatedEasyFloor",
+}
 
 local function NextSnapshotTransferId()
     snapshotTransferId_ = snapshotTransferId_ + 1
@@ -127,6 +140,74 @@ local function CurrentEntry(userId)
     return nil
 end
 
+local function CanonicalizeGameEvents(events)
+    local result = {}
+    for _, source in ipairs(type(events) == "table" and events or {}) do
+        if type(source) ~= "table" then
+            return nil, "game event must be a table"
+        end
+        local value = GameStateSchema.DeepCopy(source)
+        local eventType = value.type or value.kind
+        if type(eventType) ~= "string" or eventType == "" then
+            return nil, "game event is missing its type"
+        end
+        value.type = eventType
+        value.kind = value.kind or eventType
+
+        -- Domain V3 events used explicit player/monster prefixes. Preserve
+        -- those fields and add the V5 scalar/big aliases at the network edge.
+        if eventType == "player_damaged" or eventType == "player_healed" then
+            value.amount = value.amount or value.damage
+            value.amountBig = value.amountBig or value.damageBig
+            value.hp = value.hp or value.playerHp
+            value.maxHp = value.maxHp or value.playerMaxHp
+            value.hpBig = value.hpBig or value.playerHpBig
+            value.maxHpBig = value.maxHpBig or value.playerMaxHpBig
+        elseif eventType == "player_attack_hit" then
+            value.amount = value.amount or value.damage
+            value.amountBig = value.amountBig or value.damageBig
+            value.hitIndex = value.hitIndex or value.sequenceHitIndex
+        elseif eventType == "battle_started" then
+            if type(value.monster) == "string" and value.name == nil then
+                value.name = value.monster
+            end
+            if type(value.monster) ~= "table" then value.monster = nil end
+        elseif eventType == "monster_spawned" then
+            local monster = type(value.monster) == "table" and value.monster or {}
+            value.floor = value.floor or monster.floor
+            value.room = value.room or monster.room
+            value.kind = value.encounterKind or monster.encounterKind or monster.kind or "normal"
+            value.hp = value.hp or value.monsterHp or monster.hp
+            value.maxHp = value.maxHp or value.monsterMaxHp or monster.maxHp
+            value.hpBig = value.hpBig or value.monsterHpBig or monster.hpBig
+            value.maxHpBig = value.maxHpBig or value.monsterMaxHpBig or monster.maxHpBig
+            if type(value.monster) ~= "table" then value.monster = nil end
+        elseif eventType == "loot_dropped" then
+            value.rarity = value.rarity or "common"
+            value.icon = value.icon or value.iconPath or value.itemIcon or ""
+        elseif eventType == "loot_settled" then
+            value.outcome = value.outcome or value.destination
+        end
+        result[#result + 1] = value
+    end
+    local valid, reason = GameEventSchema.ValidateList(result, "$events")
+    if not valid then return nil, reason end
+    return result
+end
+
+local function AddPowerSnapshotFields(changes, state)
+    local result = GameStateSchema.DeepCopy(changes or {})
+    local stats = type(state) == "table" and state.stats or nil
+    for _, fieldName in ipairs(POWER_SNAPSHOT_FIELDS) do
+        if type(stats) == "table" and stats[fieldName] ~= nil then
+            result[fieldName] = GameStateSchema.DeepCopy(stats[fieldName])
+        elseif type(state) == "table" and state[fieldName] ~= nil then
+            result[fieldName] = GameStateSchema.DeepCopy(state[fieldName])
+        end
+    end
+    return result
+end
+
 local function BuildSnapshotChunkPayload(transferId, revision, chunkIndex, chunkCount, chunkItems, snapshot, events)
     local payload = {
         transferId = transferId,
@@ -154,6 +235,23 @@ local function SendSnapshot(userId, snapshotEvents)
         itemPower = GameEngine.GetItemPower,
         playerNickname = entry.nickname,
     })
+    local stats = state.stats or {}
+    snapshot.recommendedPower = snapshot.recommendedPower or stats.recommendedPower or 0
+    snapshot.nextChapterRecommendedPower = snapshot.nextChapterRecommendedPower
+        or stats.nextChapterRecommendedPower or snapshot.recommendedPower
+    snapshot.powerRatio = snapshot.powerRatio or stats.powerRatio or 0
+    snapshot.headroomFloors = snapshot.headroomFloors or stats.headroomFloors or 0
+    snapshot.difficultyLabel = snapshot.difficultyLabel or stats.difficultyLabel or "危险"
+    snapshot.bossScore = snapshot.bossScore or stats.bossScore or 0
+    snapshot.eliteScore = snapshot.eliteScore or stats.eliteScore or 0
+    snapshot.estimatedEasyFloor = snapshot.estimatedEasyFloor
+        or stats.estimatedEasyFloor or state.floor or 1
+    local snapshotEventsForState = GameStateSchema.BuildSnapshotEvents(state, snapshotEvents)
+    local networkEvents, eventError = CanonicalizeGameEvents(snapshotEventsForState)
+    if not networkEvents then
+        print("[Server] rejected invalid snapshot events: " .. tostring(eventError))
+        networkEvents = {}
+    end
     snapshot.inventoryCapacity = ServerConfig.INVENTORY_CAP
     snapshot.logs = snapshot.logs or {
         "权威存档已同步，所有玩法结算由服务器执行。",
@@ -186,7 +284,7 @@ local function SendSnapshot(userId, snapshotEvents)
             1,
             candidate,
             #chunks == 0 and snapshot or nil,
-            #chunks == 0 and snapshotEvents or nil
+            #chunks == 0 and networkEvents or nil
         )
         local probeJson = cjson.encode(probe)
         if #currentItems > 0 and #probeJson > maxChunkBytes then
@@ -206,7 +304,7 @@ local function SendSnapshot(userId, snapshotEvents)
             chunkCount,
             chunkItems,
             chunkIndex == 1 and snapshot or nil,
-            chunkIndex == 1 and snapshotEvents or nil
+            chunkIndex == 1 and networkEvents or nil
         )
         if not SendPayload(entry.connection, Protocol.EVENTS.SNAPSHOT, "GameSnapshotChunk", payload) then
             return nil
@@ -223,10 +321,15 @@ local function SendDelta(userId, domainDelta)
     local entry = CurrentEntry(userId)
     local state = profileService_:GetState(userId)
     if not entry or not entry.ready or not state or not domainDelta then return false end
-    local changes = domainDelta.changes or domainDelta.changed or {}
+    local changes = AddPowerSnapshotFields(domainDelta.changes or domainDelta.changed or {}, state)
+    local networkEvents, eventError = CanonicalizeGameEvents(domainDelta.events)
+    if not networkEvents then
+        print("[Server] rejected invalid delta events: " .. tostring(eventError))
+        return SendSnapshot(userId) ~= nil
+    end
     local inventoryChanged = domainDelta.inventoryChanged == true or domainDelta.equippedChanged == true
     if inventoryChanged then
-        return SendSnapshot(userId, domainDelta.events) ~= nil
+        return SendSnapshot(userId, networkEvents) ~= nil
     end
     local delta = GameStateSchema.BuildDelta(state.revision, changes, {
         serverTime = os.time(),
@@ -234,7 +337,7 @@ local function SendDelta(userId, domainDelta)
         state = state,
     })
     delta.updatedAt = state.updatedAt
-    delta.events = domainDelta.events or {}
+    delta.events = networkEvents
     delta.eventKind = domainDelta.kind
     local valid, validationError = GameStateSchema.ValidateDelta(delta)
     if not valid then

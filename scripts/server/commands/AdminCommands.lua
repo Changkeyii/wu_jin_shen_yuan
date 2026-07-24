@@ -67,7 +67,7 @@ function AdminCommands.Register(router, adminService)
         fields = {
             targetUid = UID,
             floor = { type = "integer", min = 1, max = 100000 },
-            position = { type = "integer", min = 0, max = 100 },
+            position = { type = "integer", min = 0, max = 10 },
             reason = REASON,
         },
     }, ServerConfig.RATES.AdminMutation, AsyncAdmin(adminService, "adjust_progress")))
