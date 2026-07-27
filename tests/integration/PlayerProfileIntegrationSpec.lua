@@ -292,6 +292,67 @@ function Spec.TouchDetachPersistsOnlyCurrentGeneration()
     AssertTrue(service:GetSession(404) ~= nil, "old generation detached the replacement session")
 end
 
+function Spec.OfflineQuoteClaimIsStableAndIdempotent()
+    local gateway = FakeGateway.New()
+    local now = { value = 6000 }
+    local _, service = NewStack(gateway, now)
+    local initial = StateFactory.Create(now.value)
+    initial.pendingStoryGate = nil
+    initial.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS * 4
+    Attach(service, 606, 1, initial)
+
+    local preview = nil
+    service:PreviewOffline(606, function(result) preview = result end)
+    AssertTrue(preview and preview.ok, "offline preview failed")
+    AssertTrue(type(preview.data.quoteToken) == "string")
+    AssertTrue(type(preview.data.preview) == "table")
+    AssertEqual(service:GetState(606).revision, initial.revision,
+        "offline preview must not mutate session revision")
+
+    local first = nil
+    service:ClaimOffline(606, preview.data.quoteToken, function(result) first = result end)
+    AssertTrue(first and first.ok, "offline quote claim failed")
+    local committedRevision = service:GetState(606).revision
+    local commitCount = #gateway.commits
+
+    local replay = nil
+    service:ClaimOffline(606, preview.data.quoteToken, function(result) replay = result end)
+    AssertTrue(replay and replay.ok, "offline quote replay should return the success receipt")
+    AssertEqual(service:GetState(606).revision, committedRevision,
+        "offline quote replay advanced revision")
+    AssertEqual(#gateway.commits, commitCount,
+        "offline quote replay opened another transaction")
+end
+
+function Spec.OfflineQuoteExpiresAndBecomesStale()
+    local gateway = FakeGateway.New()
+    local now = { value = 7000 }
+    local _, service = NewStack(gateway, now)
+    local initial = StateFactory.Create(now.value)
+    initial.pendingStoryGate = nil
+    initial.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS * 3
+    Attach(service, 707, 1, initial)
+
+    local preview = nil
+    service:PreviewOffline(707, function(result) preview = result end)
+    AssertTrue(preview and preview.ok)
+    now.value = preview.data.expiresAt
+    local expired = nil
+    service:ClaimOffline(707, preview.data.quoteToken, function(result) expired = result end)
+    AssertTrue(expired and not expired.ok)
+    AssertEqual(expired.code, "OFFLINE_QUOTE_EXPIRED")
+
+    now.value = 7100
+    local freshPreview = nil
+    service:PreviewOffline(707, function(result) freshPreview = result end)
+    AssertTrue(freshPreview and freshPreview.ok)
+    service:GetState(707).revision = service:GetState(707).revision + 1
+    local stale = nil
+    service:ClaimOffline(707, freshPreview.data.quoteToken, function(result) stale = result end)
+    AssertTrue(stale and not stale.ok)
+    AssertEqual(stale.code, "STALE_OFFLINE_QUOTE")
+end
+
 function Spec.AppliedGmCommandHistoryIsBoundedAndNotInSnapshot()
     local state = StateFactory.Create(5000)
     state.appliedGmCommandIds = {}

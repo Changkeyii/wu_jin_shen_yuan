@@ -606,7 +606,16 @@ function ServerClient.SetInventoryPolicy(policy, callback)
 end
 function ServerClient.Strengthen(slot, callback) return ServerClient.Send("Game.Strengthen", { slot = slot }, callback) end
 function ServerClient.Star(slot, callback) return ServerClient.Send("Game.Star", { slot = slot }, callback) end
-function ServerClient.CollectOffline(callback) return ServerClient.Send("Game.CollectOffline", {}, callback) end
+function ServerClient.PreviewOffline(callback)
+    return ServerClient.Send("Game.PreviewOffline", {}, callback)
+end
+function ServerClient.CollectOffline(quoteToken, callback)
+    return ServerClient.Send(
+        "Game.CollectOffline",
+        { quoteToken = quoteToken },
+        callback
+    )
+end
 function ServerClient.AdminQuery(uid, callback) return ServerClient.Send("Admin.QueryPlayer", { targetUid = tostring(uid) }, callback) end
 function ServerClient.AdminGrantCurrency(uid, currency, amount, reason, callback)
     return ServerClient.Send("Admin.GrantCurrency", { targetUid = tostring(uid), currency = currency, amount = amount, reason = reason }, callback)

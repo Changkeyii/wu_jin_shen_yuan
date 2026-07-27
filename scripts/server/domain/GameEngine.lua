@@ -2743,13 +2743,14 @@ local function accumulateOfflineEvent(summary, value)
     end
 end
 
-function GameEngine.CollectOffline(inputState, now)
+local function simulateOfflineCollection(inputState, now, rng)
     now = nowInteger(now)
     local working = stateCopy(inputState, now)
     local seconds = math.min(working.pendingOfflineSeconds, Catalog.OFFLINE_MAX_SECONDS)
     local availableSteps = math.floor(seconds / Catalog.OFFLINE_STEP_SECONDS)
     if availableSteps <= 0 then
-        return failure(inputState, now, "NO_OFFLINE_REWARD", "offline reward requires at least 12 seconds")
+        return nil, "NO_OFFLINE_REWARD", "offline reward requires at least "
+            .. tostring(Catalog.OFFLINE_STEP_SECONDS) .. " seconds"
     end
 
     local summary = {
@@ -2768,7 +2769,7 @@ function GameEngine.CollectOffline(inputState, now)
     for _ = 1, availableSteps do
         local nextWorking, kind, stepEvents, stepInventoryChanged = advanceOneCellWorking(
             working,
-            nil,
+            rng,
             now,
             { offline = true }
         )
@@ -2797,28 +2798,101 @@ function GameEngine.CollectOffline(inputState, now)
 
     if processedSteps <= 0 then
         if working.pendingStoryGate then
-            return finalize(inputState, working, now, "offline_story_gate", deferredEvents, false, false)
+            return {
+                working = working,
+                events = deferredEvents,
+                inventoryChanged = false,
+                storyGate = true,
+            }
         end
-        return failure(inputState, now, "INVENTORY_FULL", "inventory is full; clear space before collecting offline rewards")
+        return nil, "INVENTORY_FULL", "inventory is full; clear space before collecting offline rewards"
     end
 
     local processedSeconds = math.floor(processedSteps * Catalog.OFFLINE_STEP_SECONDS)
     working.pendingOfflineSeconds = math.max(0, seconds - processedSeconds)
-    deferredEvents[#deferredEvents + 1] = event("offline_collected", {
-            seconds = seconds,
-            processedSeconds = processedSeconds,
-            remainingSeconds = working.pendingOfflineSeconds,
-            rewardRate = Catalog.OFFLINE_REWARD_RATE,
-            gold = summary.gold,
-            exp = summary.exp,
-            fragments = summary.fragments,
-            equipment = summary.equipment,
-            equipmentItems = summary.equipmentItems,
-            floor = inputState.floor,
-            fixedFloor = true,
-            interrupted = interrupted,
-        })
-    return finalize(inputState, working, now, "offline_collected", deferredEvents, inventoryChanged, false)
+    local reward = {
+        seconds = seconds,
+        processedSeconds = processedSeconds,
+        remainingSeconds = working.pendingOfflineSeconds,
+        rewardRate = Catalog.OFFLINE_REWARD_RATE,
+        gold = summary.gold,
+        exp = summary.exp,
+        fragments = summary.fragments,
+        equipment = summary.equipment,
+        equipmentItems = summary.equipmentItems,
+        floor = inputState.floor,
+        fixedFloor = true,
+        interrupted = interrupted,
+    }
+    deferredEvents[#deferredEvents + 1] = event("offline_collected", TableUtils.DeepCopy(reward))
+    return {
+        working = working,
+        events = deferredEvents,
+        inventoryChanged = inventoryChanged,
+        reward = reward,
+        storyGate = false,
+    }
+end
+
+function GameEngine.PreviewOffline(inputState, now, rng)
+    local simulation, code, reason = simulateOfflineCollection(inputState, now, rng)
+    if not simulation then
+        return failure(inputState, now, code, reason)
+    end
+    if simulation.storyGate then
+        return failure(inputState, now, "STORY_GATE_PENDING", "story must be completed before collecting offline rewards")
+    end
+    local proposal = noCommit(inputState, now, "offline_previewed")
+    proposal.preview = TableUtils.DeepCopy(simulation.reward)
+    proposal.previewState = TableUtils.DeepCopy(simulation.working)
+    proposal.previewEvents = TableUtils.DeepCopy(simulation.events)
+    proposal.previewInventoryChanged = simulation.inventoryChanged == true
+    return proposal
+end
+
+function GameEngine.CollectOfflineQuote(inputState, quote, now)
+    now = nowInteger(now)
+    if type(quote) ~= "table"
+        or type(quote.state) ~= "table"
+        or type(quote.reward) ~= "table"
+        or type(quote.events) ~= "table"
+    then
+        return failure(inputState, now, "INVALID_OFFLINE_QUOTE", "offline quote is invalid")
+    end
+    if quote.revision ~= inputState.revision
+        or quote.pendingOfflineSeconds ~= inputState.pendingOfflineSeconds
+        or quote.lastActiveAt ~= inputState.lastActiveAt
+    then
+        return failure(inputState, now, "STALE_OFFLINE_QUOTE", "offline quote no longer matches player state")
+    end
+    return finalize(
+        inputState,
+        TableUtils.DeepCopy(quote.state),
+        now,
+        "offline_collected",
+        TableUtils.DeepCopy(quote.events),
+        quote.inventoryChanged == true,
+        false
+    )
+end
+
+function GameEngine.CollectOffline(inputState, now, rng)
+    local simulation, code, reason = simulateOfflineCollection(inputState, now, rng)
+    if not simulation then
+        return failure(inputState, now, code, reason)
+    end
+    if simulation.storyGate then
+        return finalize(inputState, simulation.working, now, "offline_story_gate", simulation.events, false, false)
+    end
+    return finalize(
+        inputState,
+        simulation.working,
+        now,
+        "offline_collected",
+        simulation.events,
+        simulation.inventoryChanged,
+        false
+    )
 end
 
 function GameEngine.GrantCurrency(inputState, currency, amount, now)

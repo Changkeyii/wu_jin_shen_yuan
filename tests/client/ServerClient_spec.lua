@@ -471,7 +471,7 @@ function Spec.Run()
 
         local timeoutCalls = 0
         local timeoutResult = nil
-        local timeoutRequestId = assert(ServerClient.CollectOffline(function(response)
+        local timeoutRequestId = assert(ServerClient.CollectOffline("offline-quote-token", function(response)
             timeoutCalls = timeoutCalls + 1
             timeoutResult = response
         end))

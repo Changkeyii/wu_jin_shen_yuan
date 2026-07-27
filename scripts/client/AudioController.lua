@@ -82,6 +82,25 @@ local function HandleTouchBegin(eventType, eventData)
     PlayClickAtPhysicalPosition(eventData:GetInt("X"), eventData:GetInt("Y"))
 end
 
+local function PlayCurrentMusic()
+    local sound = currentMusic_ and musicSounds_[currentMusic_] or nil
+    if not musicSource_ or not sound then return false end
+    sound:SetLooped(true)
+    musicSource_:SetGain(musicVolume_)
+    musicSource_:Play(sound)
+    return true
+end
+
+---@param eventType StringHash|string
+---@param eventData SoundFinishedEventData
+local function HandleSoundFinished(eventType, eventData)
+    local source = eventData:GetPtr("SoundSource")
+    if source ~= musicSource_ or not started_ then return end
+    if PlayCurrentMusic() then
+        print("[AudioController] music loop restarted: " .. tostring(currentMusic_))
+    end
+end
+
 function AudioController.Start()
     if started_ then return end
     started_ = true
@@ -105,6 +124,7 @@ function AudioController.Start()
 
     SubscribeToEvent("MouseButtonDown", HandleMouseButtonDown)
     SubscribeToEvent("TouchBegin", HandleTouchBegin)
+    SubscribeToEvent("SoundFinished", HandleSoundFinished)
     print("[AudioController] audio scene ready")
 end
 
@@ -116,11 +136,12 @@ function AudioController.SetPage(pageId)
         print("[AudioController] music unavailable: " .. wanted)
         return
     end
-    currentMusic_ = wanted
+    currentMusic_ = nil
     musicSource_:Stop()
-    musicSource_:SetGain(musicVolume_)
-    musicSource_:Play(sound)
-    print("[AudioController] music switched: " .. wanted)
+    currentMusic_ = wanted
+    if PlayCurrentMusic() then
+        print("[AudioController] music switched: " .. wanted)
+    end
 end
 
 function AudioController.SetMusicVolume(value)
@@ -146,6 +167,7 @@ function AudioController.Stop()
     started_ = false
     UnsubscribeFromEvent("MouseButtonDown")
     UnsubscribeFromEvent("TouchBegin")
+    UnsubscribeFromEvent("SoundFinished")
     if musicSource_ then musicSource_:StopImmediate() end
     if clickSource_ then clickSource_:StopImmediate() end
     if audioScene_ then audioScene_:Dispose() end

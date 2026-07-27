@@ -476,8 +476,13 @@ local function RequestFullRebuild()
 end
 
 local ACTION_ERROR_MESSAGES = {
-    NO_OFFLINE_REWARD = "暂无可领取的离线收益（离线满15秒后可领取）",
+    NO_OFFLINE_REWARD = "暂无可领取的离线收益（离线满3秒后可领取）",
     INVENTORY_FULL = "背包已满，请先清理装备后再操作",
+    INVALID_OFFLINE_QUOTE = "离线收益预览已失效，请重新获取",
+    OFFLINE_QUOTE_EXPIRED = "离线收益预览已过期，请重新获取",
+    OFFLINE_QUOTE_IN_PROGRESS = "离线收益正在领取，请稍候",
+    STALE_OFFLINE_QUOTE = "角色状态已变化，请重新获取离线收益预览",
+    STORY_GATE_PENDING = "请先处理当前剧情，再领取离线收益",
     NOT_READY = "正在连接服务器，请稍后再试",
     RATE_LIMITED = "操作太频繁，请稍后再试",
     REQUEST_TIMEOUT = "服务器响应超时，请稍后重试",
@@ -552,6 +557,8 @@ local function AddRewardCard(cards, icon, name, amount, rarity)
     cards[#cards + 1] = OfflineRewardItemCard(icon, name, amount, rarity)
 end
 
+local OfflineRewardCardPanel
+
 local function ShowRewardDialog(options)
     options = options or {}
     rewardDialogSequence_ = rewardDialogSequence_ + 1
@@ -568,16 +575,7 @@ local function ShowRewardDialog(options)
         showClose = false,
         confirmText = options.confirmText or "确认收取",
         contentBuilder = function()
-            return UI.Panel {
-                width = "100%",
-                flexShrink = 0,
-                flexDirection = "row",
-                flexWrap = "wrap",
-                justifyContent = "center",
-                gap = 14,
-                paddingTop = 8,
-                children = cards,
-            }
+            return OfflineRewardCardPanel(cards)
         end,
     }
 end
@@ -594,6 +592,9 @@ end
 
 local function ShowDeltaFeedback(payload)
     local events = (payload and payload.events) or {}
+    for _, value in ipairs(events) do
+        if (value.kind or value.type) == "offline_collected" then return end
+    end
     local equipmentById = {}
     local cards = {}
     local title = "获得奖励"
@@ -685,7 +686,7 @@ local function ShowDeltaFeedback(payload)
     }
 end
 
-local function ShowOfflineRewardDialog(value)
+local function OfflineRewardCards(value)
     value = value or {}
     local cards = {
         OfflineRewardItemCard(ASSETS.items.gold, "金币", "+" .. FormatInt(value.gold or 0), "epic"),
@@ -708,36 +709,75 @@ local function ShowOfflineRewardDialog(value)
             "rare"
         )
     end
+    return cards
+end
+
+OfflineRewardCardPanel = function(cards)
+    return UI.Panel {
+        width = "100%",
+        flexShrink = 0,
+        flexDirection = "row",
+        flexWrap = "wrap",
+        justifyContent = "center",
+        gap = 14,
+        paddingTop = 8,
+        children = cards,
+    }
+end
+
+local function ShowOfflineRewardDialog(value)
+    value = value or {}
+    local cards = OfflineRewardCards(value)
     local lines = {
+        "本次实际结算：" .. FormatDuration(value.processedSeconds or 0),
         "离线期间仅重复挑战第" .. tostring(value.floor or game.floor or 1) .. "层，不会自动突破楼层。",
-        "金币、经验、碎片与最终装备掉落概率均按在线收益的1/5结算。",
+        "奖励已经过服务器确认并同步到当前角色。",
     }
     if value.interrupted then
         lines[#lines + 1] = "背包已满，尚未结算的离线时间已保留。"
     elseif (value.remainingSeconds or 0) > 0 then
         lines[#lines + 1] = "剩余离线时间：" .. FormatDuration(value.remainingSeconds)
     end
-    CommonPromptDialog.Show {
-        kind = "equipment",
+    ShowRewardDialog {
         priority = 450,
         queueKey = "offline_reward:" .. tostring(value.processedSeconds or 0) .. ":" .. tostring(value.floor or 1),
-        title = "离线收益",
-        message = "离线战斗结算完成",
+        title = "获得离线奖励",
+        message = "离线收益已领取",
         lines = lines,
-        closeOnOverlay = false,
-        showClose = false,
         confirmText = "确认收取",
+        cards = cards,
+    }
+end
+
+local function ShowOfflinePreviewDialog(quoteToken, value, onClaim)
+    value = value or {}
+    local lines = {
+        "当前累计离线：" .. FormatDuration(value.seconds or 0),
+        "预计结算时长：" .. FormatDuration(value.processedSeconds or 0),
+        "收益按在线效率的20%计算，装备结果已由服务器锁定。",
+    }
+    if value.interrupted then
+        lines[#lines + 1] = "背包空间不足，未结算时间将继续保留。"
+    elseif (value.remainingSeconds or 0) > 0 then
+        lines[#lines + 1] = "领取后仍保留：" .. FormatDuration(value.remainingSeconds)
+    end
+    return CommonPromptDialog.Show {
+        kind = "confirm",
+        priority = 460,
+        queueKey = "offline_preview:" .. tostring(quoteToken),
+        title = "离线收益预览",
+        message = "确认领取以下预计收益？",
+        lines = lines,
+        cancelText = "稍后领取",
+        confirmText = "确认领取",
+        closeOnOverlay = false,
+        showClose = true,
         contentBuilder = function()
-            return UI.Panel {
-                width = "100%",
-                flexShrink = 0,
-                flexDirection = "row",
-                flexWrap = "wrap",
-                justifyContent = "center",
-                gap = 14,
-                paddingTop = 8,
-                children = cards,
-            }
+            return OfflineRewardCardPanel(OfflineRewardCards(value))
+        end,
+        onConfirm = onClaim,
+        onCancel = function()
+            collectingOffline_ = false
         end,
     }
 end
@@ -769,22 +809,41 @@ end
 local actionFns_ = {}
 actionFns_.CollectOffline = function()
     if collectingOffline_ then
-        UI.Toast.Show("正在领取离线收益，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
+        UI.Toast.Show("正在处理离线收益，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
         return
     end
     collectingOffline_ = true
-    ServerClient.CollectOffline(function(response)
-        collectingOffline_ = false
-        if not ActionResult(response) then return end
-        local reward = OfflineRewardEvent(response)
-        if reward then
-            ShowOfflineRewardDialog(reward)
-        else
-            UI.Toast.Show("离线收益已领取", { duration = 2.0, variant = "success", position = "bottom" })
+    ServerClient.PreviewOffline(function(response)
+        if not response or not response.ok then
+            collectingOffline_ = false
+            ActionResult(response)
+            return
         end
-        -- Delta normally refreshes the page first; the snapshot is a safety net
-        -- for a temporarily dropped delta so the visible totals still converge.
-        ServerClient.RequestSnapshot()
+        local data = response.data or {}
+        local quoteToken = data.quoteToken
+        local preview = data.preview
+        if type(quoteToken) ~= "string" or type(preview) ~= "table" then
+            collectingOffline_ = false
+            ActionResult({ ok = false, reason = "服务器返回的离线预览无效" })
+            return
+        end
+        local shown = ShowOfflinePreviewDialog(quoteToken, preview, function()
+            ServerClient.CollectOffline(quoteToken, function(claimResponse)
+                collectingOffline_ = false
+                if not ActionResult(claimResponse) then return end
+                local reward = OfflineRewardEvent(claimResponse)
+                if reward then
+                    ShowOfflineRewardDialog(reward)
+                else
+                    UI.Toast.Show("离线收益已领取", { duration = 2.0, variant = "success", position = "bottom" })
+                end
+                ServerClient.RequestSnapshot()
+            end)
+        end)
+        if not shown then
+            collectingOffline_ = false
+            UI.Toast.Show("当前有其他弹窗，请稍后重试", { duration = 1.8, variant = "info", position = "bottom" })
+        end
     end)
 end
 actionFns_.EquipItem = function(item)

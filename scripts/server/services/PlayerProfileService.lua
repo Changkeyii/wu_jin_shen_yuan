@@ -7,6 +7,9 @@ local GameStateSchema = require("shared.GameStateSchema")
 local PlayerProfileService = {}
 PlayerProfileService.__index = PlayerProfileService
 
+local OFFLINE_QUOTE_TTL_SECONDS = 60
+local OFFLINE_QUOTE_RECEIPT_TTL_SECONDS = 10 * 60
+
 local function Result(ok, data, code, reason)
     return { ok = ok == true, data = data or {}, code = code or (ok and 0 or -1), reason = tostring(reason or "") }
 end
@@ -27,6 +30,7 @@ function PlayerProfileService.New(options)
         repository = options.repository,
         clock = options.clock or os.time,
         sessions = {},
+        offlineQuoteCounter = 0,
     }, PlayerProfileService)
 end
 
@@ -123,6 +127,8 @@ function PlayerProfileService:Attach(userId, connection, generation, loadData)
         ban = loadData.ban,
         ready = false,
         loadedAt = self.clock(),
+        offlineQuote = nil,
+        offlineReceipts = {},
     }
     return self.sessions[userId]
 end
@@ -146,6 +152,137 @@ end
 function PlayerProfileService:IsOnline(userId)
     local session = self.sessions[userId]
     return session ~= nil and session.connection ~= nil and session.ready == true
+end
+
+local function PruneOfflineReceipts(session, now)
+    for token, receipt in pairs(session.offlineReceipts or {}) do
+        if type(receipt) ~= "table" or (receipt.expiresAt or 0) <= now then
+            session.offlineReceipts[token] = nil
+        end
+    end
+end
+
+function PlayerProfileService:_nextOfflineQuoteToken(userId, generation, now)
+    self.offlineQuoteCounter = self.offlineQuoteCounter + 1
+    return string.format(
+        "oq-%s-%s-%d-%d-%08x%08x",
+        tostring(userId),
+        tostring(generation),
+        now,
+        self.offlineQuoteCounter,
+        math.random(0, 0x7fffffff),
+        math.random(0, 0x7fffffff)
+    )
+end
+
+function PlayerProfileService:PreviewOffline(userId, onComplete)
+    local session = self.sessions[userId]
+    if not session or not session.state then
+        onComplete(Result(false, {}, "PROFILE_NOT_LOADED", "player profile is not loaded"))
+        return
+    end
+    local now = self.clock()
+    PruneOfflineReceipts(session, now)
+    local ok, proposal = pcall(GameEngine.PreviewOffline, session.state, now)
+    if not ok then
+        onComplete(Result(false, {}, "DOMAIN_ERROR", proposal))
+        return
+    end
+    if type(proposal) ~= "table" or not proposal.ok then
+        local errorValue = type(proposal) == "table" and proposal.error or nil
+        onComplete(Result(false, {},
+            errorValue and errorValue.code or "INVALID_PROPOSAL",
+            errorValue and errorValue.reason or "offline preview failed"))
+        return
+    end
+    local valid, validationError = GameStateSchema.ValidateState(proposal.previewState)
+    if not valid then
+        onComplete(Result(false, {}, validationError.code, validationError.reason))
+        return
+    end
+
+    local token = self:_nextOfflineQuoteToken(userId, session.generation, now)
+    session.offlineQuote = {
+        token = token,
+        generation = session.generation,
+        revision = session.state.revision,
+        pendingOfflineSeconds = session.state.pendingOfflineSeconds,
+        lastActiveAt = session.state.lastActiveAt,
+        issuedAt = now,
+        expiresAt = now + OFFLINE_QUOTE_TTL_SECONDS,
+        state = proposal.previewState,
+        events = proposal.previewEvents,
+        inventoryChanged = proposal.previewInventoryChanged == true,
+        reward = proposal.preview,
+        claiming = false,
+    }
+    print("[OfflineQuote] uid=" .. tostring(userId)
+        .. " preview issued revision=" .. tostring(session.state.revision)
+        .. " seconds=" .. tostring(proposal.preview.seconds)
+        .. " processed=" .. tostring(proposal.preview.processedSeconds))
+    onComplete(Result(true, {
+        quoteToken = token,
+        expiresAt = session.offlineQuote.expiresAt,
+        preview = TableUtils.DeepCopy(proposal.preview),
+    }))
+end
+
+function PlayerProfileService:ClaimOffline(userId, quoteToken, onComplete)
+    local session = self.sessions[userId]
+    if not session or not session.state then
+        onComplete(Result(false, {}, "PROFILE_NOT_LOADED", "player profile is not loaded"))
+        return
+    end
+    local now = self.clock()
+    PruneOfflineReceipts(session, now)
+    local receipt = session.offlineReceipts and session.offlineReceipts[quoteToken]
+    if receipt then
+        onComplete(TableUtils.DeepCopy(receipt.result))
+        return
+    end
+    local quote = session.offlineQuote
+    if type(quote) ~= "table" or quote.token ~= quoteToken or quote.generation ~= session.generation then
+        onComplete(Result(false, {}, "INVALID_OFFLINE_QUOTE", "offline quote is invalid"))
+        return
+    end
+    if quote.expiresAt <= now then
+        session.offlineQuote = nil
+        onComplete(Result(false, {}, "OFFLINE_QUOTE_EXPIRED", "offline quote expired; request a new preview"))
+        return
+    end
+    if quote.claiming then
+        onComplete(Result(false, {}, "OFFLINE_QUOTE_IN_PROGRESS", "offline quote is already being claimed"))
+        return
+    end
+    if quote.revision ~= session.state.revision
+        or quote.pendingOfflineSeconds ~= session.state.pendingOfflineSeconds
+        or quote.lastActiveAt ~= session.state.lastActiveAt
+    then
+        session.offlineQuote = nil
+        onComplete(Result(false, {}, "STALE_OFFLINE_QUOTE", "offline quote no longer matches player state"))
+        return
+    end
+
+    quote.claiming = true
+    self:Apply(userId, "collect offline reward", function(state, timestamp)
+        return GameEngine.CollectOfflineQuote(state, quote, timestamp)
+    end, function(result)
+        quote.claiming = false
+        local current = self.sessions[userId]
+        if result.ok and current == session then
+            local replayResult = TableUtils.DeepCopy(result)
+            session.offlineReceipts[quoteToken] = {
+                expiresAt = self.clock() + OFFLINE_QUOTE_RECEIPT_TTL_SECONDS,
+                result = replayResult,
+            }
+            session.offlineQuote = nil
+            print("[OfflineQuote] uid=" .. tostring(userId)
+                .. " claimed revision=" .. tostring(result.data.state and result.data.state.revision))
+        elseif current == session and result.code ~= "CLOUD_ERROR" then
+            session.offlineQuote = nil
+        end
+        onComplete(result)
+    end)
 end
 
 function PlayerProfileService:OnlineUserIds()

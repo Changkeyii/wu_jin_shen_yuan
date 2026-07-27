@@ -388,6 +388,58 @@ function Spec.OfflineRewardsApplyTwentyPercentExactlyOnce()
     assertTrue(type(collected.equipmentItems) == "table")
 end
 
+function Spec.OfflinePreviewDoesNotMutateAndQuoteMatchesClaim()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS * 4
+    local before = TableUtils.DeepCopy(state)
+    local preview = GameEngine.PreviewOffline(state, 1001, queueRng())
+
+    assertTrue(preview.ok)
+    assertTrue(TableUtils.DeepEqual(state, before), "preview mutated the source state")
+    assertEqual(preview.commit.kind, "none")
+    assertTrue(type(preview.preview) == "table")
+    assertTrue(type(preview.previewState) == "table")
+
+    local quote = {
+        revision = state.revision,
+        pendingOfflineSeconds = state.pendingOfflineSeconds,
+        lastActiveAt = state.lastActiveAt,
+        state = preview.previewState,
+        events = preview.previewEvents,
+        inventoryChanged = preview.previewInventoryChanged,
+        reward = preview.preview,
+    }
+    local claimed = GameEngine.CollectOfflineQuote(state, quote, 1002)
+    assertTrue(claimed.ok)
+    local collected = findEvent(claimed.delta.events, "offline_collected")
+    assertTrue(collected ~= nil)
+    assertEqual(collected.gold, preview.preview.gold)
+    assertEqual(collected.exp, preview.preview.exp)
+    assertEqual(collected.fragments, preview.preview.fragments)
+    assertEqual(collected.equipment, preview.preview.equipment)
+    assertEqual(claimed.state.pendingOfflineSeconds, preview.preview.remainingSeconds)
+end
+
+function Spec.OfflineQuoteRejectsStateChanges()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS * 2
+    local preview = GameEngine.PreviewOffline(state, 1001, queueRng())
+    assertTrue(preview.ok)
+    local quote = {
+        revision = state.revision,
+        pendingOfflineSeconds = state.pendingOfflineSeconds,
+        lastActiveAt = state.lastActiveAt,
+        state = preview.previewState,
+        events = preview.previewEvents,
+        inventoryChanged = preview.previewInventoryChanged,
+        reward = preview.preview,
+    }
+    state.revision = state.revision + 1
+    local claimed = GameEngine.CollectOfflineQuote(state, quote, 1002)
+    assertTrue(not claimed.ok)
+    assertEqual(claimed.error.code, "STALE_OFFLINE_QUOTE")
+end
+
 function Spec.OfflineRewardsRepeatCurrentFloorWithoutAdvancing()
     local state = skipIntro(StateFactory.Create(1000))
     state.floor = 10

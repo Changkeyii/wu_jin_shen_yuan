@@ -374,13 +374,53 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
-        name = "Game.CollectOffline",
+        name = "Game.PreviewOffline",
         schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.PreviewOffline,
+        async = true,
+        handler = function(context, payload, done)
+            services.profileService:PreviewOffline(
+                context.uid,
+                function(result)
+                    done(result.ok, result)
+                end
+            )
+            return CommandRouter.PENDING
+        end,
+    })
+
+    router:Register({
+        name = "Game.CollectOffline",
+        schema = {
+            type = "object",
+            required = { "quoteToken" },
+            allowUnknown = false,
+            fields = {
+                quoteToken = {
+                    type = "string",
+                    minLength = 16,
+                    maxLength = 160,
+                },
+            },
+        },
         rate = ServerConfig.RATES.CollectOffline,
         async = true,
-        handler = AsyncMutation(services, "collect offline reward", function(state, payload, now)
-            return GameEngine.CollectOffline(state, now)
-        end),
+        handler = function(context, payload, done)
+            services.profileService:ClaimOffline(
+                context.uid,
+                payload.quoteToken,
+                function(result)
+                    if result.ok and result.data.delta then
+                        services.sendDelta(
+                            context.uid,
+                            result.data.delta
+                        )
+                    end
+                    done(result.ok, result)
+                end
+            )
+            return CommandRouter.PENDING
+        end,
     })
 end
 

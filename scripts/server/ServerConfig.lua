@@ -24,6 +24,7 @@ ServerConfig.RATES = {
     Encounter = { refillRate = 2, burst = 3 },
     Equipment = { refillRate = 2, burst = 4 },
     Progression = { refillRate = 1, burst = 3 },
+    PreviewOffline = { refillRate = 1, burst = 2 },
     CollectOffline = { refillRate = 0.1, burst = 1 },
     AdminQuery = { refillRate = 1, burst = 3 },
     AdminMutation = { refillRate = 0.2, burst = 2 },
