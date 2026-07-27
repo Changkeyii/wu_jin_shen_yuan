@@ -1,0 +1,161 @@
+local UI = require("urhox-libs/UI")
+
+local AudioController = {}
+
+local MUSIC_PATHS = {
+    home = "audio/music_1785119105392.ogg",
+    battle = "audio/music_1785119227932.ogg",
+}
+local CLICK_PATH = "audio/sfx/cyber_ui_click.mp3"
+
+---@type Scene
+local audioScene_ = nil
+---@type Node
+local audioNode_ = nil
+---@type SoundSource
+local musicSource_ = nil
+---@type SoundSource
+local clickSource_ = nil
+---@type Sound
+local clickSound_ = nil
+local musicSounds_ = {}
+local currentMusic_ = nil
+local musicVolume_ = 0.42
+local sfxVolume_ = 0.7
+local started_ = false
+
+local function ClampVolume(value)
+    value = tonumber(value) or 0
+    if value < 0 then return 0 end
+    if value > 1 then return 1 end
+    return value
+end
+
+local function LoadSound(path, looped)
+    local sound = cache:GetResource("Sound", path)
+    if not sound then
+        print("[AudioController] sound resource missing: " .. tostring(path))
+        return nil
+    end
+    sound:SetLooped(looped == true)
+    print(string.format("[AudioController] loaded sound: %s, length=%.2f", path, sound:GetLength()))
+    return sound
+end
+
+local function IsActionable(widget)
+    local current = widget
+    while current do
+        local props = current.props
+        if props then
+            if props.disabled == true then return false end
+            if props.onClick or props.clickable == true then return true end
+        end
+        current = current.parent
+    end
+    return false
+end
+
+function AudioController.PlaySoundEffect(sound)
+    if not clickSource_ or not sound or sfxVolume_ <= 0 then return end
+    clickSource_:Play(sound)
+end
+
+local function PlayClickAtPhysicalPosition(x, y)
+    if not clickSource_ or not clickSound_ then return end
+    local scale = UI.GetScale()
+    local widget = UI.FindWidgetAt((x or 0) / scale, (y or 0) / scale)
+    if IsActionable(widget) then
+        AudioController.PlaySoundEffect(clickSound_)
+    end
+end
+
+---@param eventType StringHash|string
+---@param eventData MouseButtonDownEventData
+local function HandleMouseButtonDown(eventType, eventData)
+    if eventData:GetInt("Button") ~= MOUSEB_LEFT then return end
+    PlayClickAtPhysicalPosition(eventData:GetInt("X"), eventData:GetInt("Y"))
+end
+
+---@param eventType StringHash|string
+---@param eventData TouchBeginEventData
+local function HandleTouchBegin(eventType, eventData)
+    PlayClickAtPhysicalPosition(eventData:GetInt("X"), eventData:GetInt("Y"))
+end
+
+function AudioController.Start()
+    if started_ then return end
+    started_ = true
+
+    -- SoundSource must belong to a live Scene. Keep the Scene at module scope so
+    -- it cannot be collected while the game is running.
+    audioScene_ = Scene()
+    audioNode_ = audioScene_:CreateChild("Audio")
+    musicSource_ = audioNode_:CreateComponent("SoundSource")
+    clickSource_ = audioNode_:CreateComponent("SoundSource")
+    musicSource_:SetSoundType(SOUND_MUSIC)
+    musicSource_:SetGain(musicVolume_)
+    musicSource_:SetDeclickEnabled(true)
+    clickSource_:SetSoundType(SOUND_EFFECT)
+    clickSource_:SetGain(sfxVolume_)
+    clickSource_:SetDeclickEnabled(true)
+
+    clickSound_ = LoadSound(CLICK_PATH, false)
+    musicSounds_.home = LoadSound(MUSIC_PATHS.home, true)
+    musicSounds_.battle = LoadSound(MUSIC_PATHS.battle, true)
+
+    SubscribeToEvent("MouseButtonDown", HandleMouseButtonDown)
+    SubscribeToEvent("TouchBegin", HandleTouchBegin)
+    print("[AudioController] audio scene ready")
+end
+
+function AudioController.SetPage(pageId)
+    local wanted = pageId == "play" and "battle" or "home"
+    local sound = musicSounds_[wanted]
+    if currentMusic_ == wanted and musicSource_ and musicSource_:IsPlaying() then return end
+    if not musicSource_ or not sound then
+        print("[AudioController] music unavailable: " .. wanted)
+        return
+    end
+    currentMusic_ = wanted
+    musicSource_:Stop()
+    musicSource_:SetGain(musicVolume_)
+    musicSource_:Play(sound)
+    print("[AudioController] music switched: " .. wanted)
+end
+
+function AudioController.SetMusicVolume(value)
+    musicVolume_ = ClampVolume(value)
+    if musicSource_ then musicSource_:SetGain(musicVolume_) end
+end
+
+function AudioController.GetMusicVolume()
+    return musicVolume_
+end
+
+function AudioController.SetSfxVolume(value)
+    sfxVolume_ = ClampVolume(value)
+    if clickSource_ then clickSource_:SetGain(sfxVolume_) end
+end
+
+function AudioController.GetSfxVolume()
+    return sfxVolume_
+end
+
+function AudioController.Stop()
+    if not started_ then return end
+    started_ = false
+    UnsubscribeFromEvent("MouseButtonDown")
+    UnsubscribeFromEvent("TouchBegin")
+    if musicSource_ then musicSource_:StopImmediate() end
+    if clickSource_ then clickSource_:StopImmediate() end
+    if audioScene_ then audioScene_:Dispose() end
+    audioScene_ = nil
+    audioNode_ = nil
+    musicSource_ = nil
+    clickSource_ = nil
+    clickSound_ = nil
+    musicSounds_ = {}
+    currentMusic_ = nil
+end
+
+return AudioController

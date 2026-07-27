@@ -3,6 +3,7 @@ local ServerConfig = {}
 ServerConfig.SCHEMA_VERSION = 1
 ServerConfig.LOGICAL_MAX_PLAYERS = 1
 ServerConfig.STEP_SECONDS = 3
+ServerConfig.COMBAT_TICK_SECONDS = 0.10
 ServerConfig.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 ServerConfig.INVENTORY_CAP = 300
 ServerConfig.MAX_PAYLOAD_BYTES = 16 * 1024
@@ -20,6 +21,7 @@ ServerConfig.RATES = {
     ClientReady = { refillRate = 0.2, burst = 2 },
     Snapshot = { refillRate = 0.2, burst = 2 },
     AutoRun = { refillRate = 1, burst = 3 },
+    Encounter = { refillRate = 2, burst = 3 },
     Equipment = { refillRate = 2, burst = 4 },
     Progression = { refillRate = 1, burst = 3 },
     CollectOffline = { refillRate = 0.1, burst = 1 },

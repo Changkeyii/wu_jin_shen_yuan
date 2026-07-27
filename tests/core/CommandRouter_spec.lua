@@ -69,9 +69,50 @@ function Spec.Run()
     assert(executions == 1 and #sent == 2)
     assert(sent[1].envelope.payloadJson == sent[2].envelope.payloadJson)
 
+    local getPtrCalls = 0
+    local function stringVariant(value)
+        return { GetString = function() return value end }
+    end
+    local variantEvent = {
+        RequestId = stringVariant("req-variant"),
+        Command = stringVariant("Grant"),
+        PayloadJson = stringVariant("one"),
+        Connection = {
+            GetPtr = function(_, typeName)
+                getPtrCalls = getPtrCalls + 1
+                assert(typeName == "Connection")
+                return connection
+            end,
+        },
+    }
+    assert(router:DispatchEvent(variantEvent))
+    assert(executions == 2, "DispatchEvent must unwrap UrhoX's Connection Variant")
+    assert(getPtrCalls == 1)
+    assert(sent[#sent].connection == connection)
+
+    local getterEvent = setmetatable(request("req-getter", "Grant", "one"), {
+        __index = function(_, key)
+            if key == "Connection" then error("direct field access is unavailable") end
+            if key == "GetPtr" then
+                return function(_, fieldName)
+                    assert(fieldName == "Connection")
+                    return connection
+                end
+            end
+        end,
+    })
+    assert(router:DispatchEvent(getterEvent))
+    assert(executions == 3, "DispatchEvent must support VariantMap:GetPtr fallback")
+    assert(sent[#sent].connection == connection)
+
+    local invalidConnectionEvent = request("req-invalid-connection", "Grant", "one")
+    invalidConnectionEvent.Connection = { GetPtr = function() return nil end }
+    assert(not router:DispatchEvent(invalidConnectionEvent))
+    assert(executions == 3, "a failed Variant unwrap must not dispatch with the Variant itself")
+
     local invalid = router:Dispatch(connection, request("req-2", "Grant", "two"))
     assert(not invalid)
-    assert(executions == 1)
+    assert(executions == 3)
 
     local deniedExecutions = 0
     router:Register({
@@ -87,7 +128,7 @@ function Spec.Run()
 
     local reuse = router:Dispatch(connection, request("req-1", "Grant", "two"))
     assert(not reuse)
-    assert(executions == 1)
+    assert(executions == 3)
 
     local asyncExecutions = 0
     local finishAsync = nil

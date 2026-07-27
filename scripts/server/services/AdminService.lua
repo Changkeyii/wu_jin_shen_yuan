@@ -186,21 +186,14 @@ function AdminService:Query(actorUserId, targetUserId, onComplete)
 end
 
 function AdminService:_equipmentSpec(state, payload)
-    local slot = Catalog.SLOT_BY_ID[payload.slot]
-    local rarity = Catalog.RARITIES[payload.rarity]
-    if not slot or not rarity then return nil end
-    local base = math.max(1, state.floor) * rarity.multiplier
-    return {
-        slot = slot.id,
-        rarity = payload.rarity,
-        level = state.floor,
-        atk = math.floor((slot.category == "weapon" and 20 or 6) + base * 3.4),
-        def = math.floor((slot.category == "armor" and 18 or 5) + base * 2.4),
-        hp = math.floor(60 + base * 18),
-        crit = slot.category == "jewelry" and 0.02 or 0,
-        critDmg = slot.category == "special" and 0.08 or 0,
-        atkSpeed = 0,
-    }
+    if type(payload) ~= "table" then return nil end
+    local definitions = Catalog.EQUIPMENT_DEFINITIONS
+    for _, definition in ipairs(definitions) do
+        if definition.slot == payload.slot and definition.rarity == payload.rarity then
+            return { equipmentId = definition.id, level = state.floor }
+        end
+    end
+    return nil
 end
 
 function AdminService:_applyMutation(command, onComplete)
@@ -350,7 +343,7 @@ function AdminService:Execute(actorUserId, action, payload, onComplete)
     elseif action == "adjust_progress" then
         local floor, position = tonumber(payload.floor), tonumber(payload.position)
         if not floor or floor ~= math.floor(floor) or floor < 1 or floor > 100000
-            or not position or position ~= math.floor(position) or position < 0 or position > 100 then
+            or not position or position ~= math.floor(position) or position < 0 or position > 10 then
             onComplete(Result(false, {}, "INVALID_PROGRESS", "floor or position is outside the allowed range"))
             return
         end

@@ -5,6 +5,7 @@ local OperationQueue = require("server.core.OperationQueue")
 local PlayerProfileRepository = require("server.repositories.PlayerProfileRepository")
 local PlayerProfileService = require("server.services.PlayerProfileService")
 local StateFactory = require("server.domain.StateFactory")
+local LargeNumber = require("shared.LargeNumber")
 
 local Spec = {}
 local ADMIN_UID = 1379670410
@@ -17,6 +18,32 @@ end
 
 local function AssertTrue(value, message)
     if not value then error(message or "expected truthy value", 2) end
+end
+
+local function AssertLargeEqual(actual, expected, message)
+    if LargeNumber.Compare(actual, expected) ~= 0 then
+        error((message or "large numbers differ")
+            .. ": expected " .. LargeNumber.ToString(expected)
+            .. ", got " .. LargeNumber.ToString(actual), 2)
+    end
+end
+
+local function HasSegmentedValue(operations, operationKind, keys, expected)
+    expected = LargeNumber.Normalize(expected)
+    local wanted = {
+        [keys[1]] = expected.high,
+        [keys[2]] = expected.mid,
+        [keys[3]] = expected.low,
+    }
+    local found = {}
+    for _, operation in ipairs(operations or {}) do
+        if operation.kind == operationKind and wanted[operation.key] ~= nil
+            and operation.value == wanted[operation.key]
+        then
+            found[operation.key] = true
+        end
+    end
+    return found[keys[1]] and found[keys[2]] and found[keys[3]]
 end
 
 local function NewProfileStack(gateway, now)
@@ -112,7 +139,7 @@ function Spec.OnlineTargetIsAppliedImmediately()
 
     AssertTrue(result and result.ok, "online GM mutation failed")
     AssertEqual(result.data.status, "applied")
-    AssertEqual(profiles:GetState(606).gold, beforeGold + 77)
+    AssertLargeEqual(profiles:GetState(606).gold, LargeNumber.Add(beforeGold, 77))
     AssertEqual(#deltas, 1, "online mutation did not push a delta")
     AssertEqual(#gateway.messages, 0, "online mutation was unnecessarily queued")
 end
@@ -154,7 +181,7 @@ function Spec.OfflineQueuedCommandReturnsAppliedResultToAdminInstance()
     })
 
     targetAdmin:Update(5)
-    AssertEqual(targetProfiles:GetState(707).gold, targetBefore + 88,
+    AssertLargeEqual(targetProfiles:GetState(707).gold, LargeNumber.Add(targetBefore, 88),
         "target authority did not apply queued command")
 
     actorAdmin:Update(5)
@@ -209,7 +236,7 @@ function Spec.QueuedCommandReplayAfterCrashIsExactlyOnce()
     firstTargetAdmin:ProcessInbox(808, function(value) firstAttempt = value end)
 
     AssertEqual(firstAttempt, nil, "simulated crashed instance unexpectedly completed its callback")
-    AssertEqual(targetProfiles:GetState(808).gold, initialGold,
+    AssertLargeEqual(targetProfiles:GetState(808).gold, initialGold,
         "crashed instance published memory without receiving the cloud callback")
     local commandMessage = nil
     for _, message in ipairs(gateway.messages) do
@@ -219,26 +246,31 @@ function Spec.QueuedCommandReplayAfterCrashIsExactlyOnce()
     local commitsAfterFirstApply = #gateway.commits
     local gmCommit = gateway.commits[commitsAfterFirstApply]
     local markerInProfile = false
-    local moneyInCommit = false
+    local currencyInCommit = false
     for _, operation in ipairs(gmCommit.operations) do
         if operation.kind == targetRepository.gateway.CommitOperation.SCORE_SET
             and operation.key == targetRepository.Keys.PROFILE
         then
             local ids = operation.value.appliedGmCommandIds or {}
             markerInProfile = ids[#ids] == queued.data.commandId
-        elseif operation.kind == targetRepository.gateway.CommitOperation.MONEY_ADD
-            and operation.key == targetRepository.Keys.GOLD
-            and operation.amount == 99
-        then
-            moneyInCommit = true
         end
     end
-    AssertTrue(markerInProfile and moneyInCommit,
+    currencyInCommit = HasSegmentedValue(
+        gmCommit.operations,
+        targetRepository.gateway.CommitOperation.SCORE_SET_INT,
+        {
+            targetRepository.Keys.GOLD_HIGH,
+            targetRepository.Keys.GOLD_MID,
+            targetRepository.Keys.GOLD_LOW,
+        },
+        LargeNumber.Add(initialGold, 99)
+    )
+    AssertTrue(markerInProfile and currencyInCommit,
         "GM command marker and currency mutation were not in the same BatchCommit")
 
     local recoveredRepository, recoveredProfiles = NewProfileStack(gateway, now)
     LoadAndAttach(recoveredProfiles, 808, 2, now.value)
-    AssertEqual(recoveredProfiles:GetState(808).gold, initialGold + 99,
+    AssertLargeEqual(recoveredProfiles:GetState(808).gold, LargeNumber.Add(initialGold, 99),
         "committed currency was not restored after instance recovery")
 
     local recoveredTargetAdmin = NewAdminService({
@@ -254,7 +286,7 @@ function Spec.QueuedCommandReplayAfterCrashIsExactlyOnce()
     AssertTrue(replay and replay.ok, "replayed command did not complete")
     AssertEqual(replay.data.status, "alreadyApplied")
     AssertEqual(replay.data.alreadyApplied, 1)
-    AssertEqual(recoveredProfiles:GetState(808).gold, initialGold + 99,
+    AssertLargeEqual(recoveredProfiles:GetState(808).gold, LargeNumber.Add(initialGold, 99),
         "replayed command granted currency twice")
     AssertEqual(#gateway.commits, commitsAfterFirstApply,
         "already-applied command opened another player transaction")
@@ -328,7 +360,7 @@ function Spec.CommandIdsIncludePerInstanceNonce()
     targetAdmin:ProcessInbox(909, function(value) processed = value end)
     AssertTrue(processed and processed.ok, "target did not process both instance commands")
     AssertEqual(processed.data.applied, 2)
-    AssertEqual(targetProfiles:GetState(909).gold, goldBefore + 2,
+    AssertLargeEqual(targetProfiles:GetState(909).gold, LargeNumber.Add(goldBefore, 2),
         "distinct command ids incorrectly suppressed one another")
 
     local seen = {}

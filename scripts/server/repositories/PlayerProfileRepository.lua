@@ -1,6 +1,9 @@
 local ServerCloudGateway = require("server.dao.ServerCloudGateway")
 local StateNormalizer = require("server.domain.StateNormalizer")
+local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
+local BigNumber = require("shared.BigNumber")
+local LargeNumber = require("shared.LargeNumber")
 
 local PlayerProfileRepository = {}
 PlayerProfileRepository.__index = PlayerProfileRepository
@@ -14,10 +17,17 @@ PlayerProfileRepository.Keys = {
     MAX_FLOOR = "abyss_max_floor",
     LEVEL = "abyss_level",
     POWER = "abyss_power",
+    POWER_VALUE = "abyss_power_value",
+    GOLD_HIGH = "abyss_gold_high",
+    GOLD_MID = "abyss_gold_mid",
+    GOLD_LOW = "abyss_gold_low",
+    FRAGMENTS_HIGH = "abyss_fragments_high",
+    FRAGMENTS_MID = "abyss_fragments_mid",
+    FRAGMENTS_LOW = "abyss_fragments_low",
+    MYTH_SHARDS_HIGH = "abyss_myth_shards_high",
+    MYTH_SHARDS_MID = "abyss_myth_shards_mid",
+    MYTH_SHARDS_LOW = "abyss_myth_shards_low",
     BAN = "abyss_ban",
-    GOLD = "abyss_gold",
-    FRAGMENTS = "abyss_fragments",
-    MYTH_SHARDS = "abyss_myth_shards",
     INVENTORY = "abyss_inventory",
     CONSUMABLE = "abyss_consumable",
     HEALTH_POTION = "abyss_health_potion",
@@ -31,6 +41,15 @@ local LOAD_KEYS = {
     PlayerProfileRepository.Keys.SCHEMA_VERSION,
     PlayerProfileRepository.Keys.REVISION,
     PlayerProfileRepository.Keys.UPDATED_AT,
+    PlayerProfileRepository.Keys.GOLD_HIGH,
+    PlayerProfileRepository.Keys.GOLD_MID,
+    PlayerProfileRepository.Keys.GOLD_LOW,
+    PlayerProfileRepository.Keys.FRAGMENTS_HIGH,
+    PlayerProfileRepository.Keys.FRAGMENTS_MID,
+    PlayerProfileRepository.Keys.FRAGMENTS_LOW,
+    PlayerProfileRepository.Keys.MYTH_SHARDS_HIGH,
+    PlayerProfileRepository.Keys.MYTH_SHARDS_MID,
+    PlayerProfileRepository.Keys.MYTH_SHARDS_LOW,
     PlayerProfileRepository.Keys.BAN,
 }
 
@@ -48,12 +67,86 @@ local function Integer(value, fallback)
     return math.floor(value)
 end
 
+local function ScorePresence(scores, keys)
+    local present = 0
+    for _, key in ipairs(keys) do
+        if scores[key] ~= nil then present = present + 1 end
+    end
+    return tostring(present) .. "/" .. tostring(#keys)
+end
+
+local function ReadLargeValue(scores, highKey, midKey, lowKey)
+    return LargeNumber.FromSegments(
+        Integer(scores[highKey], 0),
+        Integer(scores[midKey], 0),
+        Integer(scores[lowKey], 0)
+    )
+end
+
+local function AppendLargeValueOperations(operations, operation, userId, highKey, midKey, lowKey, value)
+    value = LargeNumber.Normalize(value)
+    operations[#operations + 1] = { kind = operation.SCORE_SET_INT, userId = userId, key = highKey, value = value.high }
+    operations[#operations + 1] = { kind = operation.SCORE_SET_INT, userId = userId, key = midKey, value = value.mid }
+    operations[#operations + 1] = { kind = operation.SCORE_SET_INT, userId = userId, key = lowKey, value = value.low }
+end
+
 local function ListId(row)
     return Integer(row.list_id or row.listId or row.id, nil)
 end
 
 local function ItemId(row)
     return Integer(row.item_id or row.itemId or row.id, nil)
+end
+
+local function PrintInventoryDiagnostics(userId, inventoryRows, normalizedInventory)
+    local normalizedCount = #(normalizedInventory or {})
+    print("[ProfileDiag] uid=" .. tostring(userId)
+        .. " inventoryRows=" .. tostring(#inventoryRows)
+        .. " normalizedInventory=" .. tostring(normalizedCount)
+        .. " cap=" .. tostring(Catalog.INVENTORY_CAP))
+    for index, row in ipairs(inventoryRows) do
+        local value = row.value
+        local definition = type(value) == "table" and Catalog.ResolveEquipment(value) or nil
+        local reason = definition and (index > Catalog.INVENTORY_CAP and "overflow" or "normalized") or "unresolved"
+        print("[ProfileDiag] uid=" .. tostring(userId)
+            .. " inventory[" .. tostring(index) .. "]"
+            .. " listId=" .. tostring(ListId(row))
+            .. " logicalId=" .. tostring(type(value) == "table" and value.id or nil)
+            .. " equipmentId=" .. tostring(type(value) == "table" and value.equipmentId or nil)
+            .. " name=" .. tostring(type(value) == "table" and value.name or nil)
+            .. " slot=" .. tostring(type(value) == "table" and value.slot or nil)
+            .. " setId=" .. tostring(type(value) == "table" and value.setId or nil)
+            .. " rarity=" .. tostring(type(value) == "table" and value.rarity or nil)
+            .. " resolution=" .. reason)
+    end
+end
+
+local function PrintProfileSummary(userId, profile, scores, iscores, inventoryRows, itemRows)
+    local profileType = type(profile)
+    print("[ProfileDiag] uid=" .. tostring(userId)
+        .. " profileType=" .. profileType
+        .. " profileSchema=" .. tostring(profileType == "table" and profile.schemaVersion or nil)
+        .. " scoreSchema=" .. tostring(iscores[PlayerProfileRepository.Keys.SCHEMA_VERSION])
+        .. " revision=" .. tostring(iscores[PlayerProfileRepository.Keys.REVISION])
+        .. " inventoryRows=" .. tostring(#inventoryRows)
+        .. " itemRows=" .. tostring(#itemRows)
+        .. " goldSegments=" .. ScorePresence(iscores, {
+            PlayerProfileRepository.Keys.GOLD_HIGH,
+            PlayerProfileRepository.Keys.GOLD_MID,
+            PlayerProfileRepository.Keys.GOLD_LOW,
+        })
+        .. " fragmentSegments=" .. ScorePresence(iscores, {
+            PlayerProfileRepository.Keys.FRAGMENTS_HIGH,
+            PlayerProfileRepository.Keys.FRAGMENTS_MID,
+            PlayerProfileRepository.Keys.FRAGMENTS_LOW,
+        })
+        .. " mythShardSegments=" .. ScorePresence(iscores, {
+            PlayerProfileRepository.Keys.MYTH_SHARDS_HIGH,
+            PlayerProfileRepository.Keys.MYTH_SHARDS_MID,
+            PlayerProfileRepository.Keys.MYTH_SHARDS_LOW,
+        })
+        .. " hasInventoryPolicy=" .. tostring(profileType == "table" and type(profile.inventoryPolicy) == "table")
+        .. " hasCurrentMonster=" .. tostring(profileType == "table" and type(profile.currentMonster) == "table"))
 end
 
 local function ProfileCore(state)
@@ -89,7 +182,7 @@ end
 PlayerProfileRepository.new = PlayerProfileRepository.New
 
 function PlayerProfileRepository:_joinReads(userId, onComplete)
-    local remaining = 4
+    local remaining = 3
     local finished = false
     local values = {}
 
@@ -111,7 +204,6 @@ function PlayerProfileRepository:_joinReads(userId, onComplete)
     end
 
     self.gateway:BatchGet(userId, LOAD_KEYS, receive("score"))
-    self.gateway:MoneyGet(userId, receive("money"))
     self.gateway:ListGet(userId, self.Keys.INVENTORY, receive("inventory"))
     self.gateway:ItemGet(userId, self.Keys.CONSUMABLE, receive("items"))
 end
@@ -124,14 +216,20 @@ function PlayerProfileRepository:Load(userId, onComplete)
         local iscores = result.data.score.iscores or {}
         local profile = scores[self.Keys.PROFILE]
         local inventoryRows = result.data.inventory.items or {}
-        local moneys = result.data.money.moneys or {}
         local itemRows = result.data.items.items or {}
+        PrintProfileSummary(userId, profile, scores, iscores, inventoryRows, itemRows)
 
         if profile == nil then
             local hasOrphanedData = #inventoryRows > 0 or #itemRows > 0
-                or (moneys[self.Keys.GOLD] or 0) ~= 0
-                or (moneys[self.Keys.FRAGMENTS] or 0) ~= 0
-                or (moneys[self.Keys.MYTH_SHARDS] or 0) ~= 0
+                or iscores[self.Keys.GOLD_HIGH] ~= nil
+                or iscores[self.Keys.GOLD_MID] ~= nil
+                or iscores[self.Keys.GOLD_LOW] ~= nil
+                or iscores[self.Keys.FRAGMENTS_HIGH] ~= nil
+                or iscores[self.Keys.FRAGMENTS_MID] ~= nil
+                or iscores[self.Keys.FRAGMENTS_LOW] ~= nil
+                or iscores[self.Keys.MYTH_SHARDS_HIGH] ~= nil
+                or iscores[self.Keys.MYTH_SHARDS_MID] ~= nil
+                or iscores[self.Keys.MYTH_SHARDS_LOW] ~= nil
                 or iscores[self.Keys.REVISION] ~= nil
             if hasOrphanedData then
                 onComplete(Result(false, {}, "ORPHANED_PROFILE", "profile header is missing while domain data exists"))
@@ -149,9 +247,9 @@ function PlayerProfileRepository:Load(userId, onComplete)
         raw.schemaVersion = iscores[self.Keys.SCHEMA_VERSION] or raw.schemaVersion
         raw.revision = iscores[self.Keys.REVISION] or raw.revision
         raw.updatedAt = iscores[self.Keys.UPDATED_AT] or raw.updatedAt
-        raw.gold = Integer(moneys[self.Keys.GOLD], 0)
-        raw.fragments = Integer(moneys[self.Keys.FRAGMENTS], 0)
-        raw.mythShards = Integer(moneys[self.Keys.MYTH_SHARDS], 0)
+        raw.gold = ReadLargeValue(iscores, self.Keys.GOLD_HIGH, self.Keys.GOLD_MID, self.Keys.GOLD_LOW)
+        raw.fragments = ReadLargeValue(iscores, self.Keys.FRAGMENTS_HIGH, self.Keys.FRAGMENTS_MID, self.Keys.FRAGMENTS_LOW)
+        raw.mythShards = ReadLargeValue(iscores, self.Keys.MYTH_SHARDS_HIGH, self.Keys.MYTH_SHARDS_MID, self.Keys.MYTH_SHARDS_LOW)
         raw.inventory = {}
 
         local listMap = {}
@@ -182,8 +280,49 @@ function PlayerProfileRepository:Load(userId, onComplete)
             if cloudItemId then itemMap[row.name or key or tostring(cloudItemId)] = cloudItemId end
         end
 
-        local state = StateNormalizer.Normalize(raw, self.clock())
-        self.listIds[userId] = listMap
+        local rawValid, rawIssue = StateNormalizer.ValidateRawV5BigNumbers(raw)
+        if not rawValid then
+            local code = rawIssue and rawIssue.scope == "inventory"
+                and "CORRUPT_INVENTORY" or "CORRUPT_PROFILE"
+            local path = rawIssue and rawIssue.path or "$profile"
+            local reason = rawIssue and rawIssue.reason or "invalid V5 BigNumber state"
+            onComplete(Result(false, {}, code, path .. ": " .. tostring(reason)))
+            return
+        end
+
+        print("[ProfileDiag] uid=" .. tostring(userId)
+            .. " normalizeBegin"
+            .. " level=" .. tostring(raw.level)
+            .. " exp=" .. tostring(raw.exp)
+            .. " floor=" .. tostring(raw.floor)
+            .. " maxFloor=" .. tostring(raw.maxFloor)
+            .. " inventoryRows=" .. tostring(#raw.inventory))
+        local normalizeOk, stateOrError = pcall(StateNormalizer.Normalize, raw, self.clock())
+        if not normalizeOk then
+            onComplete(Result(false, {}, "CORRUPT_PROFILE",
+                "profile normalization failed: " .. tostring(stateOrError)))
+            return
+        end
+        local state = stateOrError
+        print("[ProfileDiag] uid=" .. tostring(userId)
+            .. " normalizeComplete"
+            .. " level=" .. tostring(state.level)
+            .. " exp=" .. tostring(state.exp)
+            .. " floor=" .. tostring(state.floor))
+        local normalizedInventory = state.inventory or {}
+        if #normalizedInventory ~= #inventoryRows then
+            PrintInventoryDiagnostics(userId, inventoryRows, normalizedInventory)
+            onComplete(Result(false, {}, "CORRUPT_INVENTORY", "inventory rows could not be normalized without data loss"))
+            return
+        end
+        local normalizedListMap = {}
+        for index, row in ipairs(inventoryRows) do
+            local normalizedItem = normalizedInventory[index]
+            if normalizedItem then
+                normalizedListMap[normalizedItem.id] = ListId(row)
+            end
+        end
+        self.listIds[userId] = normalizedListMap
         self.itemIds[userId] = itemMap
         onComplete(Result(true, {
             missing = false,
@@ -196,6 +335,17 @@ end
 
 function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
     local operation = self.gateway.CommitOperation
+    local powerValue = newState.stats and (newState.stats.displayedPower or newState.stats.power) or 0
+    local powerBig = BigNumber.Normalize(powerValue)
+    local powerNumber = BigNumber.ToNumber(powerBig)
+    ---@type table
+    local powerProjection = {
+        value = BigNumber.ToScientificString(powerBig, 12),
+        mantissa = tonumber(powerBig.mantissa) or 0,
+        exponent = tonumber(powerBig.exponent) or 0,
+        high = powerNumber and select(1, LargeNumber.Split(powerNumber)) or 0,
+        low = powerNumber and select(2, LargeNumber.Split(powerNumber)) or 0,
+    }
     local operations = {
         { kind = operation.SCORE_SET, userId = userId, key = self.Keys.PROFILE, value = ProfileCore(newState) },
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.SCHEMA_VERSION, value = newState.schemaVersion },
@@ -204,25 +354,12 @@ function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.FLOOR, value = newState.floor },
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.MAX_FLOOR, value = newState.maxFloor },
         { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.LEVEL, value = newState.level },
-        { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.POWER, value = newState.stats.power },
+        { kind = operation.SCORE_SET_INT, userId = userId, key = self.Keys.POWER, value = BigNumber.RankScore(powerBig, LargeNumber.MAX_CLOUD_INTEGER) },
+        { kind = operation.SCORE_SET, userId = userId, key = self.Keys.POWER_VALUE, value = powerProjection },
     }
-
-    local oldGold = oldState and oldState.gold or 0
-    local oldFragments = oldState and oldState.fragments or 0
-    local oldMyth = oldState and oldState.mythShards or 0
-    local money = {
-        { key = self.Keys.GOLD, before = oldGold, after = newState.gold },
-        { key = self.Keys.FRAGMENTS, before = oldFragments, after = newState.fragments },
-        { key = self.Keys.MYTH_SHARDS, before = oldMyth, after = newState.mythShards },
-    }
-    for _, change in ipairs(money) do
-        local delta = change.after - change.before
-        if delta > 0 then
-            operations[#operations + 1] = { kind = operation.MONEY_ADD, userId = userId, key = change.key, amount = delta }
-        elseif delta < 0 then
-            operations[#operations + 1] = { kind = operation.MONEY_COST, userId = userId, key = change.key, amount = -delta }
-        end
-    end
+    AppendLargeValueOperations(operations, operation, userId, self.Keys.GOLD_HIGH, self.Keys.GOLD_MID, self.Keys.GOLD_LOW, newState.gold)
+    AppendLargeValueOperations(operations, operation, userId, self.Keys.FRAGMENTS_HIGH, self.Keys.FRAGMENTS_MID, self.Keys.FRAGMENTS_LOW, newState.fragments)
+    AppendLargeValueOperations(operations, operation, userId, self.Keys.MYTH_SHARDS_HIGH, self.Keys.MYTH_SHARDS_MID, self.Keys.MYTH_SHARDS_LOW, newState.mythShards)
 
     local oldItems = IndexInventory(oldState and PersistedInventory(oldState) or {})
     local newItems = IndexInventory(PersistedInventory(newState))
@@ -255,8 +392,8 @@ function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
 end
 
 function PlayerProfileRepository:Commit(userId, oldState, newState, description, onComplete)
-    if oldState and newState.revision ~= oldState.revision + 1 then
-        onComplete(Result(false, {}, "REVISION_MISMATCH", "new state revision must advance exactly once"))
+    if oldState and newState.revision <= oldState.revision then
+        onComplete(Result(false, {}, "REVISION_MISMATCH", "new state revision must advance"))
         return
     end
     local operations, buildReason = self:_buildOperations(userId, oldState, newState)
@@ -317,6 +454,108 @@ function PlayerProfileRepository:Create(userId, initialState, onComplete)
                 onComplete(result)
             end
         )
+    end)
+end
+
+function PlayerProfileRepository:SetHealthPotionCount(userId, targetCount, onComplete)
+    targetCount = math.max(0, Integer(targetCount, 0))
+
+    local function inspect(resultCode, resultReason)
+        self.gateway:ItemGet(userId, self.Keys.CONSUMABLE, function(inspectResult)
+            if not inspectResult.ok then
+                onComplete(Result(false, {}, resultCode, resultReason))
+                return
+            end
+            local actualCount = 0
+            local itemMap = {}
+            for _, row in ipairs(inspectResult.data.items or {}) do
+                local key = row.key
+                local name = row.name
+                local itemId = ItemId(row)
+                if key == self.Keys.HEALTH_POTION or name == self.Keys.HEALTH_POTION then
+                    actualCount = actualCount + math.max(0, Integer(row.count, 0))
+                    if itemId then itemMap[self.Keys.HEALTH_POTION] = itemId end
+                end
+            end
+            self.itemIds[userId] = itemMap
+            if resultCode then
+                onComplete(Result(false, { actualCount = actualCount }, resultCode, resultReason))
+            elseif actualCount ~= targetCount then
+                onComplete(Result(
+                    false,
+                    { actualCount = actualCount },
+                    "CONSUMABLE_COUNT_MISMATCH",
+                    "health potion count did not reach the requested value"
+                ))
+            else
+                onComplete(Result(true, { actualCount = actualCount }))
+            end
+        end)
+    end
+
+    self.gateway:ItemGet(userId, self.Keys.CONSUMABLE, function(result)
+        if not result.ok then onComplete(result); return end
+
+        local rows = {}
+        local currentCount = 0
+        for _, row in ipairs(result.data.items or {}) do
+            local key = row.key
+            local name = row.name
+            if key == self.Keys.HEALTH_POTION or name == self.Keys.HEALTH_POTION then
+                local count = math.max(0, Integer(row.count, 0))
+                local itemId = ItemId(row)
+                if count > 0 and itemId then
+                    rows[#rows + 1] = { itemId = itemId, count = count }
+                    currentCount = currentCount + count
+                end
+            end
+        end
+
+        if currentCount == targetCount then inspect(); return end
+        if currentCount < targetCount then
+            self.gateway:ItemAdd(
+                userId,
+                self.Keys.CONSUMABLE,
+                self.Keys.HEALTH_POTION,
+                targetCount - currentCount,
+                { category = "consumable", displayName = "生命药水" },
+                nil,
+                nil,
+                function(addResult)
+                    if not addResult.ok then
+                        inspect(addResult.code, addResult.reason)
+                        return
+                    end
+                    inspect()
+                end
+            )
+            return
+        end
+
+        local remaining = currentCount - targetCount
+        local index = 1
+        local function consumeNext()
+            if remaining <= 0 then inspect(); return end
+            local row = rows[index]
+            index = index + 1
+            if not row then
+                inspect(
+                    "CONSUMABLE_ROW_MISSING",
+                    "health potion rows ended before the target count was reached"
+                )
+                return
+            end
+            local amount = math.min(remaining, row.count)
+            self.gateway:ItemUse(userId, row.itemId, amount, function(useResult)
+                if not useResult.ok then
+                    inspect(useResult.code, useResult.reason)
+                    return
+                end
+                remaining = remaining - amount
+                consumeNext()
+            end)
+        end
+        consumeNext()
     end)
 end
 

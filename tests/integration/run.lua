@@ -10,8 +10,8 @@ package.path = table.concat({
 }, ";")
 
 local specs = {
-    require("integration.PlayerProfileIntegrationSpec"),
-    require("integration.AdminServiceIntegrationSpec"),
+    (require("integration.PlayerProfileIntegrationSpec")),
+    (require("integration.AdminServiceIntegrationSpec")),
 }
 
 local tests = {}

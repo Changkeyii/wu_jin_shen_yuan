@@ -3,11 +3,23 @@ local GameTheme = require("client.Theme")
 local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
 local AdminPanel = require("client.AdminPanel")
+local EquipmentCatalog = require("shared.EquipmentCatalog")
+local LargeNumber = require("shared.LargeNumber")
+local BigNumber = require("shared.BigNumber")
+local StoryCatalog = require("shared.StoryCatalog")
+local ItemTooltip = require("urhox-libs/UI/Components/ItemTooltip")
+local FrameEditorView = require("client.FrameEditorView")
+local LoadingController = require("client.LoadingController")
+local PlayPresentation = require("client.PlayPresentation")
+local CommonPromptDialog = require("client.CommonPromptDialog")
+local DialogCoordinator = require("client.DialogCoordinator")
+local AudioController = require("client.AudioController")
 
 local CONFIG = GameTheme.CONFIG
 local C = GameTheme.Colors
 local AppTheme = GameTheme.Theme
 local RARITIES = GameTheme.Rarities
+local RARITY_ORDER = GameTheme.RarityOrder
 local CATEGORIES = GameTheme.Categories
 local SLOTS = GameTheme.Slots
 local SET_ORDER = GameTheme.SetOrder
@@ -17,92 +29,24 @@ local EVENT_INFO = GameTheme.EventInfo
 local GameView = {}
 local game = GameStateAdapter.GetViewState()
 local uiRoot_ = nil
+local screenRoot_ = nil
+local idleSettingsOverlay_ = nil
+local idleSettingTipOverlay_ = nil
 local pageContainer_ = nil
 local needsFullRebuild_ = false
 local needsPageRefresh_ = false
-local safeAreaInstalled_ = false
 local selectedInventoryId_ = nil
 local selectedSlot_ = "weapon"
 local selectedCategory_ = "weapon"
+local inventoryTabScrollX_ = 0
 local equipmentScrollY_ = 0
 local equipmentPageScrollY_ = 0
+local collectingOffline_ = false
+local rewardDialogSequence_ = 0
 local topRefs_ = {}
 local navRefs_ = {}
----@type table<string, any>
-local playRefs_ = {}
-local loadingDots_ = {}
-local loadingPercentLabel_ = nil
-local loadingMessageLabel_ = nil
-local loadingProgressFill_ = nil
-local loadingActive_ = false
-local loadingOverlay_ = nil
-local playAssetsReady_ = false
-local playAssetLoading_ = false
-local textureCache_ = {}
-local pendingAutoRun_ = nil
-local requestedAutoRun_ = nil
-local sessionAutoStartAttempted_ = false
-local dwpObserverId_ = nil
-local loadingHideDelay_ = nil
-local initialSnapshotReceived_ = false
-local initialDwpFinished_ = false
-local loadingProgress_ = 0
-local loadingMessage_ = "正在加载像素字体"
-local loadingTimer_ = 0
-local SetLoading = nil
-local ShowLoadingOverlay = nil
-local EnsurePlayAssetsReady = nil
-local LAYOUT_CHECK_INTERVAL = 0.25
-local layoutState_ = {
-    timer = 0,
-    metrics = {
-        physicalWidth = 0,
-        physicalHeight = 0,
-        safeLeft = 0,
-        safeTop = 0,
-        safeRight = 0,
-        safeBottom = 0,
-        safeWidth = 1,
-        safeHeight = 1,
-        scale = 1,
-        key = "",
-    },
-}
----@type number
-local animationTime_ = 0
----@type number
-local presentationX_ = 0
-local nextEventId_ = 1
-local roadEvents_ = {}
----@type number
-local combatTimer_ = 0
----@type number
-local combatAnimationTime_ = 0
-local currentEventLocked_ = false
-local currentAttackFrames_ = nil
-local lastAttackSetIndex_ = nil
-local pickupFx_ = nil
-local currentPlayerImage_ = nil
-local floatingText_ = nil
-local enemyDamageBursts_ = {}
-local frameEditorRefs_ = {}
-local frameEditorSelected_ = "run"
-local frameEditorPaused_ = false
-local frameEditorVisible_ = { run = true, attackA = false, attackB = false, attackC = false }
-local frameEditorOrder_ = { "run", "attackA", "attackB", "attackC" }
----@class FrameEditorParam
----@field x number
----@field y number
----@field w number
----@field h number
----@field fps number
----@field scale number
----@type table<string, FrameEditorParam>
-local frameEditorParams_ = {}
-local lastEventType_ = game.currentEvent or "monster"
-local lastLootText_ = "等待掉落"
-local lastLootIcon_ = nil
-local hitBurst_ = false
+local viewportWidth_ = 0
+local viewportHeight_ = 0
 
 local function BuildFrames(path, count)
     local frames = {}
@@ -152,6 +96,7 @@ local ASSETS = {
         inventorySlotSelected = "image/ui/inventory/slot_selected.png",
         inventoryTabOn = "image/ui/inventory/tab_on.png",
         inventoryTabOff = "image/ui/inventory/tab_off.png",
+        idleSettings = "image/punk_idle_settings_icon_20260722080342.png",
         inventoryActionBlue = "image/ui/inventory/action_blue.png",
         inventoryActionRed = "image/ui/inventory/action_red.png",
         inventoryActionGold = "image/ui/inventory/action_gold.png",
@@ -159,6 +104,7 @@ local ASSETS = {
         inventoryEmptyState = "image/inventory_empty_state_20260720075957.png",
         inventoryItemCardSelected = "image/ui/inventory/item_card_selected.png",
         playHpFrame = "image/brawlforge_play_hp_frame_cropped.png",
+        playAutoRunButton = "image/brawlforge_play_autorun_button_cropped.png",
         panelLarge = "image/ui/generated/panel_940x320.png",
         panelCompact = "image/ui/generated/panel_940x180.png",
         infoBarBlue = "image/ui/generated/info_bar_blue_520x76.png",
@@ -170,18 +116,18 @@ local ASSETS = {
         equipSlot = "image/ui/generated/equip_slot_compact.png",
         equipSlotSelected = "image/ui/generated/equip_slot_compact_selected.png",
         equipmentSlotIcons = {
-            weapon = "image/ui/equipment_slots/weapon.png",
-            shoulder = "image/ui/equipment_slots/shoulder.png",
-            coat = "image/ui/equipment_slots/coat.png",
-            pants = "image/ui/equipment_slots/pants.png",
-            belt = "image/ui/equipment_slots/belt.png",
-            shoes = "image/ui/equipment_slots/shoes.png",
-            bracelet = "image/ui/equipment_slots/bracelet.png",
-            necklace = "image/ui/equipment_slots/necklace.png",
-            ring = "image/ui/equipment_slots/ring.png",
-            support = "image/ui/equipment_slots/support.png",
-            magicstone = "image/ui/equipment_slots/magicstone.png",
-            earring = "image/ui/equipment_slots/earring.png",
+            weapon = "image/empty_punk_weapon_icon_20260722074321.png",
+            shoulder = "image/empty_punk_shoulder_icon_20260722074323.png",
+            coat = "image/empty_punk_coat_icon_20260722074334.png",
+            pants = "image/empty_punk_pants_icon_20260722074327.png",
+            belt = "image/empty_punk_belt_icon_20260722074325.png",
+            shoes = "image/empty_punk_shoes_icon_20260722074322.png",
+            bracelet = "image/empty_punk_bracelet_icon_20260722074324.png",
+            necklace = "image/empty_punk_necklace_icon_20260722074326.png",
+            ring = "image/empty_punk_ring_icon_20260722074323.png",
+            support = "image/empty_punk_support_icon_20260722074320.png",
+            magicstone = "image/empty_punk_magicstone_icon_20260722074400.png",
+            earring = "image/empty_punk_earring_icon_20260722074358.png",
         },
         editorTabOn = "image/ui/generated/tab_on_170x62.png",
         editorTabOff = "image/ui/generated/tab_off_170x62.png",
@@ -212,15 +158,15 @@ local ASSETS = {
         boss = "image/punk_mech_enemy_boss_alt_20260718113640.png",
     },
     items = {
-        sword = "image/pixel_item_sword_20260713175812.png",
-        armor = "image/pixel_item_armor_20260713175625.png",
-        ring = "image/pixel_item_ring_20260713175624.png",
-        boots = "image/pixel_item_boots_20260713175628.png",
-        amulet = "image/pixel_item_amulet_20260713175651.png",
-        chest = "image/pixel_item_chest_20260713175627.png",
-        gold = "image/pixel_item_gold_20260713175638.png",
-        potion = "image/pixel_item_potion_20260713175813.png",
-        crystal = "image/pixel_item_crystal_20260713175626.png",
+        sword = "image/cyber_item_sword_20260725004709.png",
+        armor = "image/cyber_item_armor_20260725004650.png",
+        ring = "image/cyber_item_ring_20260725004652.png",
+        boots = "image/cyber_item_boots_20260725004701.png",
+        amulet = "image/cyber_item_amulet_20260725004651.png",
+        chest = "image/cyber_item_chest_20260725004656.png",
+        gold = "image/cyber_gold_coin_clear_20260725054437.png",
+        potion = "image/cyber_item_potion_20260725004649.png",
+        crystal = "image/cyber_item_crystal_20260725004653.png",
     },
 }
 
@@ -231,8 +177,6 @@ local RUN_FPS = 10
 local ATTACK_FPS = 16
 local ATTACK_DURATION = 3.0
 local ATTACK_HIT_TIMINGS = {0.18, 0.38, 0.58, 0.78, 0.93}
-local ATTACK_W = RUN_W
-local ATTACK_H = RUN_H
 local ENEMY_SIZE = 190
 local LOOT_SIZE = 96
 local PLAYER_SCREEN_X = 180
@@ -249,21 +193,17 @@ local EVENT_VIEW_COUNT = 8
 local PRESENTATION_SPEED = 96
 local MIN_FONT_SIZE = 24
 
-frameEditorParams_ = {
-    run = { x = 0, y = -5, w = RUN_W, h = RUN_H, fps = RUN_FPS, scale = 1.1 },
-    attackA = { x = 150, y = -45, w = RUN_W, h = RUN_H, fps = ATTACK_FPS, scale = 1.7 },
-    attackB = { x = 30, y = -45, w = RUN_W, h = RUN_H, fps = ATTACK_FPS, scale = 1.4 },
-    attackC = { x = 135, y = -20, w = RUN_W, h = RUN_H, fps = ATTACK_FPS, scale = 1.7 },
-}
+-- Vertical anchor contract (design pixels):
+--   Top    [0, 310)
+--   Middle [310, viewportHeight - 170)
+--   Bottom [viewportHeight - 170, viewportHeight)
+-- The design scale keeps the horizontal plane at 1080. Taller screens only
+-- extend the middle zone; the top and bottom zones remain edge-anchored.
+local TOP_ZONE_HEIGHT = 310
+local BOTTOM_ZONE_HEIGHT = 170
 
 local function CurrentPlayer()
     return ASSETS.player
-end
-
-local function FrameAt(frames, fps, time)
-    if not frames or #frames == 0 then return CurrentPlayer().icon end
-    local idx = math.floor((time or animationTime_) * (fps or 8)) % #frames + 1
-    return frames[idx]
 end
 
 local function CopyProps(base, extra)
@@ -273,108 +213,10 @@ local function CopyProps(base, extra)
     return t
 end
 
-local function Clamp(v, lo, hi)
-    if v < lo then return lo end
-    if v > hi then return hi end
-    return v
-end
-
-local function QuantizeLayoutValue(value, step)
-    return math.floor((value or 0) / (step or 1) + 0.5) * (step or 1)
-end
-
-local function ReadLayoutMetrics()
-    local physicalWidth = graphics:GetWidth()
-    local physicalHeight = graphics:GetHeight()
-    local safeLeft = 0
-    local safeTop = 0
-    local safeRight = 0
-    local safeBottom = 0
-    local safeRect = GetSafeAreaInsets(false)
-    if safeRect then
-        safeLeft = math.max(0, safeRect.min.x or 0)
-        safeTop = math.max(0, safeRect.min.y or 0)
-        safeRight = math.max(0, safeRect.max.x or 0)
-        safeBottom = math.max(0, safeRect.max.y or 0)
-    end
-
-    local nativeSdk = rawget(_G, "sdk")
-    if nativeSdk and nativeSdk.GetNativeExitMenuRect then
-        local menuRect = nativeSdk:GetNativeExitMenuRect()
-        if menuRect then
-            local menuLeft = (menuRect.left or 0) * physicalWidth
-            local menuTop = (menuRect.top or 0) * physicalHeight
-            local menuRight = (menuRect.right or 0) * physicalWidth
-            local menuBottom = (menuRect.bottom or 0) * physicalHeight
-            if menuRect.left <= 0.25 then
-                safeLeft = math.max(safeLeft, menuRight)
-            else
-                safeRight = math.max(safeRight, physicalWidth - menuLeft)
-            end
-            if menuRect.top <= 0.25 then
-                safeTop = math.max(safeTop, menuBottom)
-            else
-                safeBottom = math.max(safeBottom, physicalHeight - menuTop)
-            end
-        end
-    end
-
-    safeLeft = Clamp(safeLeft, 0, physicalWidth)
-    safeTop = Clamp(safeTop, 0, physicalHeight)
-    safeRight = Clamp(safeRight, 0, physicalWidth - safeLeft)
-    safeBottom = Clamp(safeBottom, 0, physicalHeight - safeTop)
-    local safeWidth = math.max(1, physicalWidth - safeLeft - safeRight)
-    local safeHeight = math.max(1, physicalHeight - safeTop - safeBottom)
-    local scale = math.min(safeWidth / CONFIG.designWidth, safeHeight / CONFIG.designHeight)
-    scale = math.max(0.1, scale)
-
-    local key = table.concat({
-        math.floor(physicalWidth + 0.5),
-        math.floor(physicalHeight + 0.5),
-        math.floor(scale * 1000 + 0.5),
-        math.floor(safeLeft + 0.5),
-        math.floor(safeTop + 0.5),
-        math.floor(safeRight + 0.5),
-        math.floor(safeBottom + 0.5),
-    }, ":")
-    local changed = key ~= layoutState_.metrics.key
-    layoutState_.metrics = {
-        physicalWidth = physicalWidth,
-        physicalHeight = physicalHeight,
-        safeLeft = safeLeft,
-        safeTop = safeTop,
-        safeRight = safeRight,
-        safeBottom = safeBottom,
-        safeWidth = safeWidth,
-        safeHeight = safeHeight,
-        scale = scale,
-        key = key,
-    }
-    return changed
-end
-
-local function CheckLayoutMetrics(dt)
-    local physicalWidth = graphics:GetWidth()
-    local physicalHeight = graphics:GetHeight()
-    layoutState_.timer = layoutState_.timer + (dt or 0)
-    local metrics = layoutState_.metrics
-    local sizeChanged = physicalWidth ~= metrics.physicalWidth or physicalHeight ~= metrics.physicalHeight
-    if not sizeChanged and layoutState_.timer < LAYOUT_CHECK_INTERVAL then return end
-    layoutState_.timer = 0
-    if ReadLayoutMetrics() and uiRoot_ then
-        UI.SetScale(layoutState_.metrics.scale)
-        needsFullRebuild_ = true
-    end
-end
-
-local function SafeAreaPadding()
-    local scale = math.max(0.1, layoutState_.metrics.scale)
-    return {
-        left = layoutState_.metrics.safeLeft / scale,
-        top = layoutState_.metrics.safeTop / scale,
-        right = layoutState_.metrics.safeRight / scale,
-        bottom = layoutState_.metrics.safeBottom / scale,
-    }
+local function Clamp(value, minimum, maximum)
+    if value < minimum then return minimum end
+    if value > maximum then return maximum end
+    return value
 end
 
 local function ShortenText(text, maxChars)
@@ -436,18 +278,39 @@ local function MultiTxt(text, size, color, props)
 end
 
 local function FormatInt(v)
-    v = math.floor(v or 0)
-    if v >= 100000000 then return string.format("%.1f亿", v / 100000000) end
-    if v >= 10000 then return string.format("%.1f万", v / 10000) end
-    return tostring(v)
+    if type(v) == "table" and (v.mantissa ~= nil or v.exponent ~= nil) then
+        return BigNumber.Format(v, 4)
+    end
+    return LargeNumber.Format(v)
 end
 
 local function FormatPercent(v)
     return string.format("%.1f%%", (v or 0) * 100)
 end
 
+local function FormatDuration(seconds)
+    seconds = math.max(0, math.floor(seconds or 0))
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    local remainingSeconds = seconds % 60
+    if hours > 0 then
+        return string.format("%d小时%02d分", hours, minutes)
+    end
+    if minutes > 0 then
+        return string.format("%d分%02d秒", minutes, remainingSeconds)
+    end
+    return string.format("%d秒", remainingSeconds)
+end
+
+local function MagnitudeRatio(value, maxValue)
+    if type(value) == "table" or type(maxValue) == "table" then
+        return Clamp(BigNumber.Ratio(value or 0, maxValue or 1) or 0, 0, 1)
+    end
+    return Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+end
+
 local function ImageProgress(width, height, value, maxValue, trackImage, fillImage)
-    local ratio = Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+    local ratio = MagnitudeRatio(value, maxValue)
     local fillClip = UI.Panel {
         position = "absolute",
         left = 0,
@@ -483,7 +346,7 @@ end
 
 local function SetImageProgress(fillClip, width, value, maxValue)
     if not fillClip then return end
-    local ratio = Clamp((value or 0) / math.max(1, maxValue or 1), 0, 1)
+    local ratio = MagnitudeRatio(value, maxValue)
     fillClip:SetStyle({ width = math.floor(width * ratio) })
 end
 
@@ -554,17 +417,29 @@ local function SlotName(id)
     return slot and slot.name or id
 end
 
+local function ItemLevelText(item)
+    return "Lv" .. tostring(item and (item.level or 1) or 1)
+end
+
 local function ItemPower(item)
-    if item.power then return item.power end
+    if not item then return 0 end
+    -- Equipment comparison is server-authoritative in V5. These are aliases
+    -- for evaluated values emitted by PowerEvaluator, never a local formula.
+    if item.power ~= nil then return item.power end
+    if item.displayedPower ~= nil then return item.displayedPower end
+    if item.evaluatedPower ~= nil then return item.evaluatedPower end
+    if item.powerContribution ~= nil then return item.powerContribution end
     if item.category == "material" or item.category == "consumable" then return item.quantity or 1 end
-    local rarity = RARITIES[item.rarity] or RARITIES.common
-    local atk = item.atk or 0
-    local def = item.def or 0
-    local hp = item.hp or 0
-    local crit = item.crit or 0
-    local critDmg = item.critDmg or 0
-    local atkSpeed = item.atkSpeed or 0
-    return math.floor((atk * 7 + def * 3 + hp * 0.55 + crit * 2000 + critDmg * 900 + atkSpeed * 650) * rarity.mult)
+    return 0
+end
+
+local function ItemPowerText(item)
+    if not item then return "待评估" end
+    if item.power == nil and item.displayedPower == nil and item.evaluatedPower == nil and item.powerContribution == nil
+        and item.category ~= "material" and item.category ~= "consumable" then
+        return "待评估"
+    end
+    return FormatInt(ItemPower(item))
 end
 
 local function GetItemById(id)
@@ -587,91 +462,9 @@ local function ItemImage(item)
     if not item then return ASSETS.items.chest end
     if item.category == "consumable" then return ASSETS.items.potion end
     if item.category == "material" then return ASSETS.items.crystal end
-    local slot = item.slot or ""
-    if slot == "weapon" then return ASSETS.items.sword end
-    if slot == "shoes" then return ASSETS.items.boots end
-    if slot == "ring" or slot == "bracelet" or slot == "necklace" then return ASSETS.items.ring end
-    if slot == "support" or slot == "magicstone" or slot == "earring" then return ASSETS.items.amulet end
-    if item.category == "armor" then return ASSETS.items.armor end
-    if item.category == "weapon" then return ASSETS.items.sword end
-    if item.category == "jewelry" then return ASSETS.items.ring end
-    if item.category == "special" then return ASSETS.items.amulet end
+    local definition = item.equipmentId and EquipmentCatalog.Get(item.equipmentId)
+    if definition and definition.icon then return definition.icon end
     return ASSETS.items.chest
-end
-
-local function EnemyFootOffset(eventType)
-    return eventType == "boss" and 7 or 12
-end
-
-local function EnemyImageForStep(step, eventType)
-    if eventType == "boss" then return ASSETS.enemies.boss end
-    if eventType == "elite" then return ASSETS.enemies.skeleton end
-    local value = step % 3
-    if value == 0 then return ASSETS.enemies.slime end
-    if value == 1 then return ASSETS.enemies.goblin end
-    return ASSETS.enemies.skeleton
-end
-
-local function EventIcon(eventType)
-    if eventType == "chest" then return ASSETS.items.chest end
-    if eventType == "merchant" then return ASSETS.items.gold end
-    if eventType == "random" then return ASSETS.items.crystal end
-    return nil
-end
-
-local function IsCombatEvent(eventType)
-    return eventType == "monster" or eventType == "elite" or eventType == "boss"
-end
-
-local function DeterministicEventType(index)
-    local value = (index * 73 + (game.floor or 1) * 29) % 100
-    if value < 58 then return "monster" end
-    if value < 70 then return "elite" end
-    if value < 82 then return "chest" end
-    if value < 90 then return "random" end
-    if value < 96 then return "merchant" end
-    return "boss"
-end
-
-local function MakeRoadEvent(index)
-    local eventType = DeterministicEventType(index)
-    local isEnemy = IsCombatEvent(eventType)
-    return {
-        id = index,
-        x = 820 + (index - 1) * EVENT_SPACING,
-        kind = isEnemy and "enemy" or "loot",
-        eventType = eventType,
-        image = isEnemy and EnemyImageForStep(index, eventType) or (EventIcon(eventType) or ASSETS.items.crystal),
-    }
-end
-
-local function EnsureRoadEvents()
-    while #roadEvents_ < EVENT_VIEW_COUNT do
-        roadEvents_[#roadEvents_ + 1] = MakeRoadEvent(nextEventId_)
-        nextEventId_ = nextEventId_ + 1
-    end
-end
-
-local function AdvanceRoadEvent()
-    table.remove(roadEvents_, 1)
-    roadEvents_[#roadEvents_ + 1] = MakeRoadEvent(nextEventId_)
-    nextEventId_ = nextEventId_ + 1
-    currentEventLocked_ = false
-    currentAttackFrames_ = nil
-end
-
-local function ClearCombatPresentation(advanceLockedEvent)
-    if advanceLockedEvent and currentEventLocked_ and roadEvents_[1] and roadEvents_[1].kind == "enemy" then
-        AdvanceRoadEvent()
-    else
-        currentEventLocked_ = false
-        currentAttackFrames_ = nil
-    end
-    combatTimer_ = 0
-    combatAnimationTime_ = 0
-    hitBurst_ = false
-    enemyDamageBursts_ = {}
-    floatingText_ = nil
 end
 
 local function RequestPageRefresh()
@@ -682,50 +475,328 @@ local function RequestFullRebuild()
     needsFullRebuild_ = true
 end
 
-local function ActionResult(response)
-    if response and response.ok then return end
-    UI.Toast.Show((response and response.reason) or "服务器未接受本次操作", { duration = 2, variant = "error", position = "bottom" })
+local ACTION_ERROR_MESSAGES = {
+    NO_OFFLINE_REWARD = "暂无可领取的离线收益（离线满15秒后可领取）",
+    INVENTORY_FULL = "背包已满，请先清理装备后再操作",
+    NOT_READY = "正在连接服务器，请稍后再试",
+    RATE_LIMITED = "操作太频繁，请稍后再试",
+    REQUEST_TIMEOUT = "服务器响应超时，请稍后重试",
+}
+
+local function ActionResult(response, successMessage)
+    if response and response.ok then
+        UI.Toast.Show(successMessage or "操作成功", { duration = 2.4, variant = "success", position = "bottom" })
+        return true
+    end
+    local message = response and ACTION_ERROR_MESSAGES[response.code]
+        or (response and response.reason)
+        or "服务器未接受本次操作"
+    UI.Toast.Show(message, { duration = 2.4, variant = "error", position = "bottom" })
+    return false
 end
 
-local function SetAutoRun(enabled)
-    requestedAutoRun_ = enabled
-    pendingAutoRun_ = true
-    if enabled then
-        EnsurePlayAssetsReady(function()
-            ServerClient.AutoRun(true, function(response)
-                pendingAutoRun_ = nil
-                if not response or not response.ok then
-                    requestedAutoRun_ = nil
-                    ActionResult(response)
-                    return
-                end
-                ServerClient.RequestSnapshot(function(snapshotResponse)
-                    if not snapshotResponse or not snapshotResponse.ok then
-                        print("[Play] auto-run enabled; waiting for authoritative delta")
-                    end
-                end)
-            end)
-        end)
-    else
-        ClearCombatPresentation(false)
-        ServerClient.AutoRun(false, function(response)
-            pendingAutoRun_ = nil
-            if not response or not response.ok then
-                requestedAutoRun_ = nil
-                ActionResult(response)
-                return
-            end
-            requestedAutoRun_ = false
-            ServerClient.RequestSnapshot()
-        end)
+local function OfflineRewardEvent(response)
+    local data = response and response.data
+    local delta = data and data.delta
+    for _, value in ipairs((delta and delta.events) or {}) do
+        if value.kind == "offline_collected" then return value end
     end
+    return nil
 end
+
+local function OfflineRewardItemCard(icon, name, amount, rarity)
+    local rarityInfo = RARITIES[rarity or "common"] or RARITIES.common
+    local color = rarityInfo.color or C.text
+    return UI.Panel {
+        width = 164,
+        height = 188,
+        flexShrink = 0,
+        alignItems = "center",
+        paddingTop = 12,
+        gap = 8,
+        backgroundImage = ASSETS.ui.inventoryItemCard,
+        backgroundFit = "sliced",
+        backgroundSlice = { 14, 14, 14, 14 },
+        borderWidth = 3,
+        borderColor = color,
+        boxShadow = {
+            { x = 0, y = 6, blur = 0, color = { 0, 0, 0, 90 } },
+            { x = 0, y = 0, blur = 14, color = { color[1], color[2], color[3], 75 } },
+        },
+        children = {
+            UI.Panel {
+                width = 94,
+                height = 94,
+                backgroundImage = icon,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            },
+            CompactTxt(ShortenText(name, 7), 18, color, {
+                width = 146,
+                height = 30,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+                pointerEvents = "none",
+            }),
+            CompactTxt(amount, 20, C.text, {
+                width = 146,
+                height = 30,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+            }),
+        },
+    }
+end
+
+local function AddRewardCard(cards, icon, name, amount, rarity)
+    cards[#cards + 1] = OfflineRewardItemCard(icon, name, amount, rarity)
+end
+
+local function ShowRewardDialog(options)
+    options = options or {}
+    rewardDialogSequence_ = rewardDialogSequence_ + 1
+    local cards = options.cards or {}
+    if #cards == 0 then return false end
+    return CommonPromptDialog.Show {
+        kind = "equipment",
+        priority = options.priority or 320,
+        queueKey = options.queueKey or ("reward:" .. tostring(rewardDialogSequence_)),
+        title = options.title or "获得奖励",
+        message = options.message or "奖励已存入背包",
+        lines = options.lines or {},
+        closeOnOverlay = false,
+        showClose = false,
+        confirmText = options.confirmText or "确认收取",
+        contentBuilder = function()
+            return UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                flexDirection = "row",
+                flexWrap = "wrap",
+                justifyContent = "center",
+                gap = 14,
+                paddingTop = 8,
+                children = cards,
+            }
+        end,
+    }
+end
+
+local function EventKey(value, index)
+    return table.concat({
+        tostring(value.kind or value.type or "event"),
+        tostring(value.itemId or value.equipmentId or ""),
+        tostring(value.floor or ""),
+        tostring(value.position or ""),
+        tostring(index or ""),
+    }, ":")
+end
+
+local function ShowDeltaFeedback(payload)
+    local events = (payload and payload.events) or {}
+    local equipmentById = {}
+    local cards = {}
+    local title = "获得奖励"
+    local message = "奖励已存入背包"
+    local lines = {}
+    local queueParts = {}
+    local gold = BigNumber.FromNumber(0) ---@type table
+    local exp = BigNumber.FromNumber(0) ---@type table
+    local fragments = BigNumber.FromNumber(0) ---@type table
+    local hasReward = false
+
+    for index, value in ipairs(events) do
+        local kind = value.kind or value.type
+        queueParts[#queueParts + 1] = EventKey(value, index)
+        if kind == "equipment_drop" or kind == "equipment_granted" or kind == "tower_aid_equipment" then
+            local itemId = tostring(value.itemId or value.equipmentId or index)
+            if not equipmentById[itemId] then
+                equipmentById[itemId] = true
+                local item = GetItemById(value.itemId) or value
+                AddRewardCard(
+                    cards,
+                    ItemImage(item),
+                    value.name or item.name or "装备",
+                    RarityName(value.rarity or item.rarity or "common") .. " ×1",
+                    value.rarity or item.rarity
+                )
+                hasReward = true
+            end
+        elseif kind == "battle_reward" then
+            gold = BigNumber.Add(gold, value.gold or 0)
+            exp = BigNumber.Add(exp, value.exp or 0)
+            title = "战斗胜利"
+            message = "战斗奖励结算完成"
+            hasReward = true
+        elseif kind == "chest_reward" then
+            gold = BigNumber.Add(gold, value.gold or 0)
+            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            title = "宝箱奖励"
+            message = "宝箱奖励已收取"
+            hasReward = true
+        elseif kind == "merchant_trade" then
+            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            title = "交易奖励"
+            message = "商人交易完成"
+            hasReward = true
+        elseif kind == "wish_pool" then
+            gold = BigNumber.Add(gold, value.gold or 0)
+            title = "许愿奖励"
+            message = "许愿池已回应"
+            hasReward = true
+        elseif kind == "abyss_echo" then
+            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            title = "深渊回响"
+            message = "深渊碎片已收取"
+            hasReward = true
+        elseif kind == "aid_granted" or kind == "tower_aid_claimed" then
+            title = "塔灵援助"
+            message = "援助奖励已发放"
+            if value.gold or value.fragments then
+                gold = BigNumber.Add(gold, value.gold or 0)
+                fragments = BigNumber.Add(fragments, value.fragments or 0)
+                hasReward = true
+            end
+        elseif kind == "battle_lost" then
+            UI.Toast.Show("挑战失败，已返回本层第1场重新整备", { duration = 2.8, variant = "error", position = "top" })
+        elseif kind == "inventory_full" then
+            UI.Toast.Show("背包已满，请清理装备或调整自动处理规则", { duration = 2.8, variant = "warning", position = "bottom" })
+        elseif kind == "inventory_drop_skipped" then
+            UI.Toast.Show("背包已满，本次装备掉落未能收取", { duration = 2.8, variant = "warning", position = "bottom" })
+        elseif kind == "merchant_skipped" then
+            UI.Toast.Show("金币不足，未能完成商人交易", { duration = 2.4, variant = "warning", position = "bottom" })
+        elseif kind == "story_skipped" then
+            UI.Toast.Show("剧情已跳过", { duration = 1.8, variant = "info", position = "bottom" })
+        end
+    end
+
+    if not BigNumber.IsZero(gold) then AddRewardCard(cards, ASSETS.items.gold, "金币", "+" .. FormatInt(gold), "epic") end
+    if not BigNumber.IsZero(exp) then AddRewardCard(cards, ASSETS.items.crystal, "经验", "+" .. FormatInt(exp), "advanced") end
+    if not BigNumber.IsZero(fragments) then AddRewardCard(cards, ASSETS.items.crystal, "碎片", "+" .. FormatInt(fragments), "rare") end
+    if not hasReward or #cards == 0 then return end
+
+    lines[#lines + 1] = "奖励结算由服务器确认，物品已同步到当前角色。"
+    ShowRewardDialog {
+        queueKey = "delta_reward:" .. table.concat(queueParts, "|"),
+        title = title,
+        message = message,
+        lines = lines,
+        cards = cards,
+    }
+end
+
+local function ShowOfflineRewardDialog(value)
+    value = value or {}
+    local cards = {
+        OfflineRewardItemCard(ASSETS.items.gold, "金币", "+" .. FormatInt(value.gold or 0), "epic"),
+        OfflineRewardItemCard(ASSETS.items.crystal, "经验", "+" .. FormatInt(value.exp or 0), "advanced"),
+        OfflineRewardItemCard(ASSETS.items.crystal, "碎片", "+" .. FormatInt(value.fragments or 0), "rare"),
+    }
+    for _, item in ipairs(value.equipmentItems or {}) do
+        cards[#cards + 1] = OfflineRewardItemCard(
+            ItemImage(item),
+            item.name or "装备",
+            RarityName(item.rarity or "common") .. " ×" .. tostring(item.quantity or 1),
+            item.rarity
+        )
+    end
+    if (value.equipment or 0) > 0 and #(value.equipmentItems or {}) == 0 then
+        cards[#cards + 1] = OfflineRewardItemCard(
+            ASSETS.items.chest,
+            "装备",
+            tostring(value.equipment or 0) .. "件",
+            "rare"
+        )
+    end
+    local lines = {
+        "离线期间仅重复挑战第" .. tostring(value.floor or game.floor or 1) .. "层，不会自动突破楼层。",
+        "金币、经验、碎片与最终装备掉落概率均按在线收益的1/5结算。",
+    }
+    if value.interrupted then
+        lines[#lines + 1] = "背包已满，尚未结算的离线时间已保留。"
+    elseif (value.remainingSeconds or 0) > 0 then
+        lines[#lines + 1] = "剩余离线时间：" .. FormatDuration(value.remainingSeconds)
+    end
+    CommonPromptDialog.Show {
+        kind = "equipment",
+        priority = 450,
+        queueKey = "offline_reward:" .. tostring(value.processedSeconds or 0) .. ":" .. tostring(value.floor or 1),
+        title = "离线收益",
+        message = "离线战斗结算完成",
+        lines = lines,
+        closeOnOverlay = false,
+        showClose = false,
+        confirmText = "确认收取",
+        contentBuilder = function()
+            return UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                flexDirection = "row",
+                flexWrap = "wrap",
+                justifyContent = "center",
+                gap = 14,
+                paddingTop = 8,
+                children = cards,
+            }
+        end,
+    }
+end
+
+local function DecomposeRankLabel(maxRank)
+    for _, rarityId in ipairs(RARITY_ORDER) do
+        local rarity = RARITIES[rarityId]
+        if rarity.rank == maxRank then
+            return rarity.name .. "（" .. rarity.short .. "色）"
+        end
+    end
+    return "指定品质"
+end
+
+local function CollectDecomposeCandidates(maxRank)
+    game = GameStateAdapter.GetViewState()
+    local candidateIds = {}
+    for _, item in ipairs(game.inventory or {}) do
+        local rarity = RARITIES[item.rarity]
+        if item.equipmentId and item.id ~= nil
+            and rarity and rarity.rank <= maxRank
+            and not item.locked and not IsEquipped(item) then
+            candidateIds[#candidateIds + 1] = item.id
+        end
+    end
+    return candidateIds
+end
+
 local actionFns_ = {}
-actionFns_.CollectOffline = function() ServerClient.CollectOffline(ActionResult) end
+actionFns_.CollectOffline = function()
+    if collectingOffline_ then
+        UI.Toast.Show("正在领取离线收益，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
+        return
+    end
+    collectingOffline_ = true
+    ServerClient.CollectOffline(function(response)
+        collectingOffline_ = false
+        if not ActionResult(response) then return end
+        local reward = OfflineRewardEvent(response)
+        if reward then
+            ShowOfflineRewardDialog(reward)
+        else
+            UI.Toast.Show("离线收益已领取", { duration = 2.0, variant = "success", position = "bottom" })
+        end
+        -- Delta normally refreshes the page first; the snapshot is a safety net
+        -- for a temporarily dropped delta so the visible totals still converge.
+        ServerClient.RequestSnapshot()
+    end)
+end
 actionFns_.EquipItem = function(item)
     if item and item.id then
         selectedSlot_ = item.slot or selectedSlot_
-        ServerClient.Equip(item.id, ActionResult)
+        ServerClient.Equip(item.id, function(response)
+            if not ActionResult(response, "装备已穿戴") then return end
+            RequestPageRefresh()
+            -- Delta is authoritative; this snapshot only covers a dropped
+            -- delta so the equipment page cannot remain visually stale.
+            ServerClient.RequestSnapshot()
+        end)
     end
 end
 actionFns_.UnequipSlot = function(slotId)
@@ -735,45 +806,89 @@ actionFns_.UnequipSlot = function(slotId)
     end
 end
 actionFns_.AutoEquipBest = function() ServerClient.AutoEquip(ActionResult) end
-actionFns_.DecomposeByRank = function(maxRank) ServerClient.Decompose(maxRank, ActionResult) end
-actionFns_.StrengthenSelected = function() ServerClient.Strengthen(selectedSlot_, ActionResult) end
-actionFns_.StarSelected = function() ServerClient.Star(selectedSlot_, ActionResult) end
-
-local CollectOffline = actionFns_.CollectOffline
-local EquipItem = actionFns_.EquipItem
-local AutoEquipBest = actionFns_.AutoEquipBest
-local DecomposeByRank = actionFns_.DecomposeByRank
-local StrengthenSelected = actionFns_.StrengthenSelected
-local StarSelected = actionFns_.StarSelected
-
-local function CurrentRunStatus()
-    local status = game.autoRun and "刷宝中" or "暂停"
-    local color = game.autoRun and C.success or C.warning
-    if game.connectionState == "syncing" then status, color = "同步", C.mp end
-    if game.connectionState == "disconnected" then status, color = "断线", C.error end
-    if game.readOnly then status, color = "只读", C.warning end
-    return status, color
+actionFns_.DecomposeByRank = function(maxRank)
+    local candidateIds = CollectDecomposeCandidates(maxRank)
+    local count = #candidateIds
+    if count <= 0 then
+        UI.Toast.Show("没有符合条件的未锁定、未穿戴装备", { duration = 1.8, variant = "info", position = "bottom" })
+        return
+    end
+    CommonPromptDialog.Show {
+        kind = "confirm",
+        title = "确认批量分解",
+        message = "将永久分解 " .. tostring(count) .. " 件装备",
+        lines = {
+            "品质范围：" .. DecomposeRankLabel(maxRank) .. "及以下。",
+            "已穿戴和已锁定装备会自动跳过；分解完成后无法撤销。",
+        },
+        cancelText = "取消",
+        confirmText = "确认分解",
+        danger = true,
+        closeOnOverlay = false,
+        zIndex = 2500,
+        onConfirm = function() ServerClient.Decompose(maxRank, candidateIds, ActionResult) end,
+    }
+end
+actionFns_.SetEquipmentLock = function(item) ServerClient.SetEquipmentLock(item.id, not item.locked, ActionResult) end
+actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, ActionResult) end
+local function UpgradeCostLines(kind, slotId)
+    local costs = game.upgradeCosts or game.equipmentUpgradeCosts or {}
+    local slotCosts = costs[slotId] or {}
+    local value = slotCosts[kind] or slotCosts[kind == "star" and "starUp" or "strengthen"]
+    if type(value) ~= "table" then
+        return { "最终消耗和成功结果由服务端结算；确认前不会扣除资源。" }
+    end
+    local parts = {}
+    if value.gold ~= nil then parts[#parts + 1] = "金币 " .. FormatInt(value.gold) end
+    if value.fragments ~= nil then parts[#parts + 1] = "碎片 " .. FormatInt(value.fragments) end
+    if value.materials ~= nil then parts[#parts + 1] = "材料 " .. FormatInt(value.materials) end
+    return { #parts > 0 and ("本次预计消耗：" .. table.concat(parts, "、")) or "具体消耗以服务端结算为准。" }
+end
+actionFns_.StrengthenSelected = function()
+    local slotId = selectedSlot_
+    CommonPromptDialog.Show {
+        kind = "confirm",
+        title = "确认强化",
+        message = "将强化当前" .. SlotName(slotId) .. "装备。",
+        lines = UpgradeCostLines("strengthen", slotId),
+        cancelText = "取消",
+        confirmText = "确认强化",
+        closeOnOverlay = false,
+        onConfirm = function() ServerClient.Strengthen(slotId, ActionResult) end,
+    }
+end
+actionFns_.StarSelected = function()
+    local slotId = selectedSlot_
+    CommonPromptDialog.Show {
+        kind = "confirm",
+        title = "确认升星",
+        message = "升星会消耗资源，是否为当前" .. SlotName(slotId) .. "装备升星？",
+        lines = UpgradeCostLines("star", slotId),
+        cancelText = "取消",
+        confirmText = "确认升星",
+        danger = true,
+        closeOnOverlay = false,
+        onConfirm = function() ServerClient.Star(slotId, ActionResult) end,
+    }
 end
 
-local UpdatePlayVisuals
 local RefreshCurrentPage
 local SwitchPage
 local UpdateTopBar
 local UpdateBottomNav
-local UpdateFrameEditorVisuals
 
 UpdateTopBar = function()
     if not topRefs_ then return end
     game = GameStateAdapter.GetViewState()
     if topRefs_.floor then topRefs_.floor:SetText("层  第" .. tostring(game.floor or 1) .. "层") end
-    if topRefs_.power then topRefs_.power:SetText("战力  " .. FormatInt(game.stats and game.stats.power or 0)) end
+    if topRefs_.level then topRefs_.level:SetText("Lv." .. tostring(game.level or 1)) end
     if topRefs_.gold then topRefs_.gold:SetText("金币  " .. FormatInt(game.gold or 0)) end
     if topRefs_.fragments then topRefs_.fragments:SetText("碎片  " .. FormatInt(game.fragments or 0)) end
 end
 
 local function CreateTopBar()
     topRefs_.floor = Txt("层  第" .. tostring(game.floor or 1) .. "层", 22, C.focus, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
-    topRefs_.power = Txt("战力  " .. FormatInt(game.stats.power), 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
+    topRefs_.level = Txt("Lv." .. tostring(game.level or 1), 22, C.focus, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     topRefs_.gold = Txt("金币  " .. FormatInt(game.gold), 22, C.gold, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     topRefs_.fragments = Txt("碎片  " .. FormatInt(game.fragments), 22, C.secondary, { whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center", textStroke = { width = 2, color = "#000000" } })
     local function ResourceText(x, valueRef)
@@ -792,7 +907,7 @@ local function CreateTopBar()
 
     return UI.Panel {
         width = "100%",
-        height = 310,
+        height = TOP_ZONE_HEIGHT,
         flexShrink = 0,
         position = "relative",
         children = {
@@ -826,7 +941,7 @@ local function CreateTopBar()
                 textStroke = { width = 1, color = "#000000" },
             }),
             ResourceText(86, topRefs_.floor),
-            ResourceText(316, topRefs_.power),
+            ResourceText(316, topRefs_.level),
             ResourceText(546, topRefs_.gold),
             ResourceText(776, topRefs_.fragments),
         }
@@ -851,109 +966,6 @@ local function ProbeOptionalFonts()
             print("[FontP0] optional font probe FAILED, fallback remains active: " .. path)
         end
     end
-end
-
-local function CacheTexture(path)
-    if not path or textureCache_[path] then return true end
-    local texture = cache:GetResource("Texture2D", path)
-    if texture then
-        textureCache_[path] = texture
-        return true
-    end
-    return false
-end
-
-local function CollectPlayAssetPaths()
-    local paths = { ASSETS.bg, ASSETS.bgMirror }
-    local player = CurrentPlayer()
-    local function Add(path)
-        if type(path) == "string" then
-            paths[#paths + 1] = path
-        elseif type(path) == "table" then
-            for _, nestedPath in pairs(path) do
-                Add(nestedPath)
-            end
-        end
-    end
-    Add(player.icon)
-    Add(player.sprite)
-    Add(player.attack)
-    for _, path in ipairs(player.idle or {}) do Add(path) end
-    for _, path in ipairs(player.run or {}) do Add(path) end
-    for _, set in ipairs(player.attackFrameSets or {}) do
-        for _, path in ipairs(set) do Add(path) end
-    end
-    for _, path in pairs(ASSETS.ui) do Add(path) end
-    for _, path in pairs(ASSETS.enemies) do Add(path) end
-    for _, path in pairs(ASSETS.items) do Add(path) end
-    local unique = {}
-    local result = {}
-    for _, path in ipairs(paths) do
-        if path and not unique[path] then
-            unique[path] = true
-            result[#result + 1] = path
-        end
-    end
-    return result
-end
-
-EnsurePlayAssetsReady = function(onReady)
-    if playAssetsReady_ then
-        if onReady then onReady() end
-        return
-    end
-    if playAssetLoading_ then return end
-    playAssetLoading_ = true
-    local paths = CollectPlayAssetPaths()
-    local total = #paths
-    local completed = 0
-    ShowLoadingOverlay(8, "正在预热战斗序列帧")
-    if total == 0 then
-        playAssetsReady_ = true
-        playAssetLoading_ = false
-        SetLoading(100, "战斗资源已就绪")
-        if initialSnapshotReceived_ and initialDwpFinished_ then
-            loadingHideDelay_ = 0.2
-        end
-        if onReady then onReady() end
-        return
-    end
-    for _, path in ipairs(paths) do
-        if textureCache_[path] then
-            completed = completed + 1
-            SetLoading(8 + math.floor(completed / total * 88), string.format("正在预热战斗资源 %d/%d", completed, total))
-            if completed >= total then
-                playAssetsReady_ = true
-                playAssetLoading_ = false
-                SetLoading(100, "战斗资源已就绪")
-                if initialSnapshotReceived_ and initialDwpFinished_ then
-                    loadingHideDelay_ = 0.2
-                end
-                if onReady then onReady() end
-            end
-        else
-            cache:GetResourceAsync("Texture2D", path, function(resource)
-                if resource then textureCache_[path] = resource end
-                completed = completed + 1
-                SetLoading(8 + math.floor(completed / total * 88), string.format("正在预热战斗资源 %d/%d", completed, total))
-                if completed >= total then
-                    playAssetsReady_ = true
-                    playAssetLoading_ = false
-                    SetLoading(100, "战斗资源已就绪")
-                    if initialSnapshotReceived_ and initialDwpFinished_ then
-                        loadingHideDelay_ = 0.2
-                    end
-                    if onReady then onReady() end
-                end
-            end)
-        end
-    end
-end
-
-local function PreloadAssets()
-    -- DWP 策略：不在启动阶段主动 GetResource 全量媒体资源。
-    -- UI 中的 backgroundImage 会触发引擎占位和后台下载，下载完成后热替换。
-    print("[DWP] media resources use download-while-playing; startup will not block on textures or frames.")
 end
 
 local function FormalStatCard(label, value, color, icon, width, height)
@@ -1015,6 +1027,390 @@ local function CreateBackground()
     }
 end
 
+local function CloseIdleSettingTip()
+    idleSettingTipOverlay_ = nil
+end
+
+local function ShowIdleSettingTip(title, description)
+    CommonPromptDialog.Show {
+        kind = "rules",
+        queueKey = "rule:" .. tostring(title),
+        title = title,
+        message = description,
+        confirmText = "知道了",
+    }
+end
+
+local function CreateIdlePolicySwitchRow(title, value, disabled, onChange, switchRegistry, switchId, tipTitle, tipDescription)
+    local switch = UI.Toggle {
+        width = 78,
+        height = 42,
+        trackWidth = 64,
+        trackHeight = 32,
+        thumbSize = 26,
+        value = value == true,
+        disabled = disabled,
+        trackBg = { 28, 42, 65, 255 },
+        trackCheckedBgColor = C.success,
+        trackBorderColor = C.border,
+        thumbCheckedColor = C.text,
+        onChange = function(_, checked)
+            if onChange then onChange(checked) end
+        end,
+    }
+    if switchRegistry and switchId then
+        switchRegistry[switchId] = switch
+    end
+    return UI.Panel {
+        width = "100%",
+        height = 86,
+        flexShrink = 0,
+        position = "relative",
+        backgroundImage = ASSETS.ui.infoBarBlue,
+        backgroundFit = "sliced",
+        backgroundSlice = { 10, 10, 10, 10 },
+        opacity = disabled and 0.5 or 1.0,
+        children = {
+            Txt(title, 22, C.text, {
+                position = "absolute",
+                left = 24,
+                top = 17,
+                width = 610,
+                height = 36,
+                textStroke = { width = 1, color = "#000000" },
+            }),
+            UI.Panel {
+                position = "absolute",
+                right = 118,
+                top = 13,
+                width = 44,
+                height = 44,
+                clickable = true,
+                backgroundImage = "image/ui/dialog/help_button.png",
+                backgroundFit = "contain",
+                onClick = function()
+                    ShowIdleSettingTip(tipTitle or title, tipDescription or "暂无详细说明。")
+                end,
+            },
+            UI.Panel {
+                position = "absolute",
+                right = 24,
+                top = 14,
+                width = 78,
+                height = 42,
+                children = { switch },
+            },
+        },
+    }
+end
+
+local function CloseIdleSettings()
+    CloseIdleSettingTip()
+    if idleSettingsOverlay_ and uiRoot_ then
+        uiRoot_:RemoveChild(idleSettingsOverlay_)
+    end
+    idleSettingsOverlay_ = nil
+end
+
+local function ShowIdleSettings()
+    if not uiRoot_ then return end
+    CloseIdleSettings()
+    game = GameStateAdapter.GetViewState()
+    local policy = game.inventoryPolicy or {
+        pauseOnFull = true,
+        autoDecompose = false,
+        autoSell = false,
+        decomposeRarities = {},
+        sellRarities = {},
+    }
+    local pauseOnFull = policy.pauseOnFull ~= false
+    local autoDecompose = policy.autoDecompose == true
+    local autoSell = policy.autoSell == true
+    local sourceDecompose = policy.decomposeRarities or {}
+    local sourceSell = policy.sellRarities or {}
+    local decomposeRarities = {
+        common = sourceDecompose.common == true,
+        advanced = sourceDecompose.advanced == true or sourceDecompose.blue == true,
+        rare = sourceDecompose.rare == true or sourceDecompose.purple == true,
+        artifact = sourceDecompose.artifact == true,
+        legendary = sourceDecompose.legendary == true or sourceDecompose.legend == true,
+        epic = sourceDecompose.epic == true,
+        myth = false,
+    }
+    local sellRarities = {
+        common = sourceSell.common == true,
+        advanced = sourceSell.advanced == true or sourceSell.blue == true,
+        rare = sourceSell.rare == true or sourceSell.purple == true,
+        artifact = sourceSell.artifact == true,
+        legendary = sourceSell.legendary == true or sourceSell.legend == true,
+        epic = sourceSell.epic == true,
+        myth = false,
+    }
+    local readOnly = game.readOnly == true
+    local switches = {}
+    local settingsHeight = Clamp(CONFIG.DynamicDesignHeight() - 96, 760, 1660)
+
+    local function BuildPolicy()
+        return {
+            pauseOnFull = pauseOnFull,
+            autoDecompose = autoDecompose,
+            autoSell = autoSell,
+            decomposeRarities = decomposeRarities,
+            sellRarities = sellRarities,
+        }
+    end
+
+    local function ApplyPolicy()
+        actionFns_.SetInventoryPolicy(BuildPolicy())
+        RequestPageRefresh()
+    end
+
+    local function ConfirmPolicyEnable(options)
+        local switch = switches[options.switchId]
+        if switch then switch.props.value = false end
+        CommonPromptDialog.Show {
+            kind = "confirm",
+            title = options.title,
+            message = options.message,
+            lines = options.lines,
+            cancelText = "取消",
+            confirmText = "确认启用",
+            danger = true,
+            closeOnOverlay = false,
+            zIndex = 2500,
+            onCancel = function()
+                if switch then switch.props.value = false end
+            end,
+            onConfirm = function()
+                if switch then switch.props.value = true end
+                options.apply()
+            end,
+        }
+    end
+
+    local function SetRarity(kind, rarityId, enabled)
+        local target = kind == "decompose" and decomposeRarities or sellRarities
+        local other = kind == "decompose" and sellRarities or decomposeRarities
+        if not enabled then
+            target[rarityId] = false
+            ApplyPolicy()
+            return
+        end
+        local actionName = kind == "decompose" and "自动分解" or "自动出售"
+        ConfirmPolicyEnable {
+            switchId = kind .. "_" .. rarityId,
+            title = "确认开启" .. actionName,
+            message = "开启后，符合条件的" .. RarityName(rarityId) .. "装备会被" .. actionName .. "。",
+            lines = { "该设置会影响后续挂机掉落；神话、已穿戴和已锁定装备仍受保护。" },
+            apply = function()
+                target[rarityId] = true
+                other[rarityId] = false
+                local otherSwitch = switches[kind == "decompose" and ("sell_" .. rarityId) or ("decompose_" .. rarityId)]
+                if otherSwitch then otherSwitch.props.value = false end
+                ApplyPolicy()
+            end,
+        }
+    end
+
+    local function AddSwitch(id, title, description, value, onChange)
+        return CreateIdlePolicySwitchRow(title, value, readOnly, onChange, switches, id, title, description)
+    end
+
+    local function CreateAudioVolumeRow(title, value, onChange)
+        local valueLabel = CompactTxt(string.format("%d%%", math.floor(value * 100 + 0.5)), 20, C.focus, {
+            position = "absolute",
+            right = 24,
+            top = 24,
+            width = 92,
+            height = 38,
+            textAlign = "right",
+            textStroke = { width = 1, color = "#000000" },
+        })
+        local slider = UI.Slider {
+            width = 520,
+            height = 42,
+            value = math.floor(value * 100 + 0.5),
+            min = 0,
+            max = 100,
+            step = 1,
+            trackHeight = 10,
+            thumbSize = 30,
+            trackBgColor = { 22, 35, 56, 255 },
+            trackFillColor = C.focus,
+            thumbColor = C.text,
+            thumbBorderColor = C.focus,
+            thumbBorderWidth = 2,
+            onChange = function(_, sliderValue)
+                local normalized = sliderValue / 100
+                valueLabel:SetText(string.format("%d%%", math.floor(sliderValue + 0.5)))
+                if onChange then onChange(normalized) end
+            end,
+        }
+        return UI.Panel {
+            width = "100%",
+            height = 86,
+            flexShrink = 0,
+            position = "relative",
+            backgroundImage = ASSETS.ui.infoBarBlue,
+            backgroundFit = "sliced",
+            backgroundSlice = { 10, 10, 10, 10 },
+            children = {
+                Txt(title, 22, C.text, {
+                    position = "absolute",
+                    left = 24,
+                    top = 17,
+                    width = 220,
+                    height = 36,
+                    textStroke = { width = 1, color = "#000000" },
+                }),
+                UI.Panel {
+                    position = "absolute",
+                    left = 250,
+                    top = 22,
+                    width = 560,
+                    height = 42,
+                    children = { slider },
+                },
+                valueLabel,
+            },
+        }
+    end
+
+    local body = UI.ScrollView {
+        position = "absolute",
+        left = 58,
+        top = 144,
+        width = 872,
+        height = math.max(500, settingsHeight - 260),
+        scrollY = true,
+        scrollX = false,
+        showScrollbar = false,
+        children = {
+            UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                gap = 16,
+                paddingBottom = 32,
+                children = {
+                    Txt("背包满时的处理规则", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
+                    AddSwitch("pause", "背包满后暂停挂机", "开启后，背包满且没有可自动处理的装备时，挂机会暂停。关闭后将跳过无法处理的掉落并继续挂机。", pauseOnFull, function(value)
+                        pauseOnFull = value
+                        ApplyPolicy()
+                    end),
+                    AddSwitch("decompose", "启用自动分解", "开启后，分解列表中打开的品质。自动分解与自动出售互斥，开启本项会自动关闭自动出售。", autoDecompose, function(value)
+                        if not value then
+                            autoDecompose = false
+                            ApplyPolicy()
+                            return
+                        end
+                        ConfirmPolicyEnable {
+                            switchId = "decompose",
+                            title = "确认启用自动分解",
+                            message = "启用后，挂机过程中符合品质规则的装备会被自动分解。",
+                            lines = { "自动分解与自动出售互斥；已穿戴、已锁定和神话装备仍受保护。" },
+                            apply = function()
+                                autoDecompose = true
+                                autoSell = false
+                                if switches.sell then switches.sell.props.value = false end
+                                ApplyPolicy()
+                            end,
+                        }
+                    end),
+                    AddSwitch("sell", "启用自动出售", "开启后，出售列表中打开的品质并获得金币。自动出售与自动分解互斥，开启本项会自动关闭自动分解。", autoSell, function(value)
+                        if not value then
+                            autoSell = false
+                            ApplyPolicy()
+                            return
+                        end
+                        ConfirmPolicyEnable {
+                            switchId = "sell",
+                            title = "确认启用自动出售",
+                            message = "启用后，挂机过程中符合品质规则的装备会被自动出售。",
+                            lines = { "自动出售与自动分解互斥；已穿戴、已锁定和神话装备仍受保护。" },
+                            apply = function()
+                                autoSell = true
+                                autoDecompose = false
+                                if switches.decompose then switches.decompose.props.value = false end
+                                ApplyPolicy()
+                            end,
+                        }
+                    end),
+                    Txt("声音设置", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
+                    CreateAudioVolumeRow("背景音乐", AudioController.GetMusicVolume(), AudioController.SetMusicVolume),
+                    CreateAudioVolumeRow("音效", AudioController.GetSfxVolume(), AudioController.SetSfxVolume),
+                    Txt("自动分解品质", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
+                    AddSwitch("decompose_common", "分解：普通 / 白色", "价值最低，适合作为第一优先级的自动分解对象。", decomposeRarities.common, function(value) SetRarity("decompose", "common", value) end),
+                    AddSwitch("decompose_advanced", "分解：高级 / 蓝色", "高级装备将按当前规则自动分解。", decomposeRarities.advanced, function(value) SetRarity("decompose", "advanced", value) end),
+                    AddSwitch("decompose_rare", "分解：稀有 / 紫色", "稀有装备价值较高，开启前请确认。", decomposeRarities.rare, function(value) SetRarity("decompose", "rare", value) end),
+                    AddSwitch("decompose_artifact", "分解：神器 / 粉色", "神器装备带有核心词条，开启前请确认。", decomposeRarities.artifact, function(value) SetRarity("decompose", "artifact", value) end),
+                    AddSwitch("decompose_legendary", "分解：传说 / 赤红", "传说装备默认关闭，避免误分解。", decomposeRarities.legendary, function(value) SetRarity("decompose", "legendary", value) end),
+                    AddSwitch("decompose_epic", "分解：史诗 / 橙金", "史诗装备属于套装体系，开启前请确认。", decomposeRarities.epic, function(value) SetRarity("decompose", "epic", value) end),
+                    Txt("自动出售品质", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
+                    AddSwitch("sell_common", "出售：普通 / 白色", "价值最低，适合作为第一优先级的自动出售对象。", sellRarities.common, function(value) SetRarity("sell", "common", value) end),
+                    AddSwitch("sell_advanced", "出售：高级 / 蓝色", "高级装备将按当前规则自动出售并获得金币。", sellRarities.advanced, function(value) SetRarity("sell", "advanced", value) end),
+                    AddSwitch("sell_rare", "出售：稀有 / 紫色", "稀有装备价值较高，开启前请确认。", sellRarities.rare, function(value) SetRarity("sell", "rare", value) end),
+                    AddSwitch("sell_artifact", "出售：神器 / 粉色", "神器装备带有核心词条，开启前请确认。", sellRarities.artifact, function(value) SetRarity("sell", "artifact", value) end),
+                    AddSwitch("sell_legendary", "出售：传说 / 赤红", "传说装备默认关闭，避免误出售。", sellRarities.legendary, function(value) SetRarity("sell", "legendary", value) end),
+                    AddSwitch("sell_epic", "出售：史诗 / 橙金", "史诗装备属于套装体系，开启前请确认。", sellRarities.epic, function(value) SetRarity("sell", "epic", value) end),
+                    CreateIdlePolicySwitchRow("神话品质保护", true, true, nil, switches, "myth", "神话品质保护", "神话品质永久保护，不会被自动分解或出售。需要处理时，请到背包中手动操作。"),
+                },
+            },
+        },
+    }
+    local panel = UI.Panel {
+        position = "relative",
+        width = 996,
+        height = settingsHeight,
+        zIndex = 2100,
+        clickable = true,
+        overflow = "hidden",
+        backgroundImage = ASSETS.ui.panelLarge,
+        backgroundFit = "sliced",
+        backgroundSlice = { 14, 14, 14, 14 },
+        children = {
+            Txt("挂机自动处理设置", 32, C.text, { position = "absolute", left = 90, top = 34, width = 760, height = 48, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
+            UI.Panel {
+                position = "absolute",
+                right = 22,
+                top = 24,
+                width = 64,
+                height = 64,
+                clickable = true,
+                backgroundImage = "image/ui/dialog/close_button.png",
+                backgroundFit = "contain",
+                onClick = CloseIdleSettings,
+            },
+            body,
+        },
+    }
+    idleSettingsOverlay_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        bottom = 0,
+        zIndex = 2000,
+        pointerEvents = "box-none",
+        alignItems = "center",
+        justifyContent = "center",
+        children = {
+            UI.Panel {
+                position = "absolute",
+                left = 0,
+                top = 0,
+                right = 0,
+                bottom = 0,
+                clickable = true,
+                backgroundImage = ASSETS.ui.screenOverlay,
+                backgroundFit = "cover",
+                onClick = CloseIdleSettings,
+            },
+            panel,
+        },
+    }
+    uiRoot_:AddChild(idleSettingsOverlay_)
+end
+
 local function CreateHomePage()
     local stats = game.stats
     local statCardW = 480
@@ -1024,6 +1420,7 @@ local function CreateHomePage()
     local statGridW = statCardW * 2 + statGapX
     local statGridH = statCardH * 3 + statRowGapY * 2
     local statGridX = math.floor((CONFIG.DesignW - statGridW) * 0.5)
+
     return UI.Panel {
         width = "100%",
         height = "100%",
@@ -1059,6 +1456,32 @@ local function CreateHomePage()
                 textAlign = "center",
                 textStroke = { width = 4, color = "#000000" },
             }),
+            UI.Panel {
+                position = "absolute",
+                left = 890,
+                top = 184,
+                width = 64,
+                height = 64,
+                clickable = true,
+                backgroundImage = "image/ui/dialog/help_button.png",
+                backgroundFit = "contain",
+                onClick = function()
+                    CommonPromptDialog.Show {
+                        kind = "rules",
+                        queueKey = "rules:tower-reward",
+                        title = "挂机刷宝说明",
+                        message = "在线战斗收益为100%；离线收益固定按20%结算且只折算一次。",
+                        lines = {
+                            "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
+                            "死亡后回到本层第1场，双方满血，已获得奖励保留。",
+                            "离线金币、经验、碎片及最终掉落概率均为在线效率的1/5。",
+                            "离线时间最多累计 12 小时；背包已满时，未结算时间会保留。",
+                            "当前累计离线：" .. FormatDuration(game.pendingOfflineSeconds),
+                        },
+                        confirmText = "知道了",
+                    }
+                end,
+            },
             MultiTxt("解放双手", 22, C.textSecondary, {
                 position = "absolute",
                 left = 612,
@@ -1075,10 +1498,56 @@ local function CreateHomePage()
                 top = 316,
                 width = 300,
                 height = 168,
+                pointerEvents = "box-none",
                 children = {
-                    UI.Panel { position = "absolute", left = 0, top = 0, width = 300, height = 44, clickable = true, alignItems = "center", justifyContent = "center", onClick = function() SwitchPage("play") end, children = { Txt("进入刷宝", 23, C.text, { position = "absolute", left = -2, top = 15, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
-                    UI.Panel { position = "absolute", left = 0, top = 62, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then SetAutoRun(not game.autoRun) end end, children = { Txt(game.autoRun and "暂停挂机" or "开始挂机", 23, C.text, { position = "absolute", left = -2, top = 11, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
-                    UI.Panel { position = "absolute", left = 0, top = 124, width = 300, height = 44, clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0, alignItems = "center", justifyContent = "center", onClick = function() if not game.readOnly then actionFns_.CollectOffline() end end, children = { Txt("领取离线", 23, C.text, { position = "absolute", left = -4, top = 9, width = "100%", textAlign = "center", textStroke = { width = 3, color = "#000000" } }) } },
+                    UI.Panel {
+                        position = "absolute", left = 0, top = 0, width = 300, height = 44,
+                        clickable = true, alignItems = "center", justifyContent = "center",
+                        onClick = function() SwitchPage("play") end,
+                        children = {
+                            Txt("进入刷宝", 23, C.text, {
+                                position = "absolute", left = -2, top = 15, width = "100%",
+                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
+                    UI.Panel {
+                        position = "absolute", left = 0, top = 62, width = 300, height = 44,
+                        clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0,
+                        alignItems = "center", justifyContent = "center",
+                        onClick = function()
+                            if not game.readOnly and not PlayPresentation.SetAutoRun(not game.autoRun) then
+                                UI.Toast.Show("挂机状态正在同步，请稍候", {
+                                    duration = 1.5,
+                                    variant = "info",
+                                    position = "bottom",
+                                })
+                            end
+                        end,
+                        children = {
+                            Txt(game.autoRun and "暂停挂机" or "开始挂机", 23, C.text, {
+                                position = "absolute", left = -2, top = 11, width = "100%",
+                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
+                    UI.Panel {
+                        position = "absolute", left = 0, top = 124, width = 300, height = 44,
+                        clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0,
+                        alignItems = "center", justifyContent = "center",
+                        onClick = function()
+                            if not game.readOnly then actionFns_.CollectOffline() end
+                        end,
+                        children = {
+                            Txt("领取离线", 23, C.text, {
+                                position = "absolute", left = -4, top = 9, width = "100%",
+                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
                 }
             },
 
@@ -1089,12 +1558,12 @@ local function CreateHomePage()
                 width = statGridW,
                 height = statGridH,
                 children = {
-                    UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", FormatInt(stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", FormatInt(stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", FormatInt(stats.atkBig or stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", FormatInt(stats.defBig or stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
                     UI.Panel { position = "absolute", left = 0, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("暴击", FormatPercent(stats.crit), C.gold, ASSETS.ui.statCrit, statCardW, statCardH) } },
                     UI.Panel { position = "absolute", left = statCardW + statGapX, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("攻速", string.format("%.1f", stats.atkSpeed), C.mp, ASSETS.ui.statSpeed, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", FormatInt(game.hp) .. "/" .. FormatInt(stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", FormatInt(stats.power), C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", FormatInt(game.hpBig or game.hp) .. "/" .. FormatInt(game.playerMaxHp or stats.hpBig or stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
+                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", (game.displayedPower or stats.power) and FormatInt(game.displayedPower or stats.power) or "待评估", C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
                 }
             },
         }
@@ -1124,6 +1593,8 @@ local function BuildInventoryContext()
         setSelectedInventoryId = function(value) selectedInventoryId_ = value end,
         setSelectedSlot = function(value) selectedSlot_ = value end,
         setSelectedCategory = function(value) selectedCategory_ = value end,
+        getInventoryTabScrollX = function() return inventoryTabScrollX_ end,
+        setInventoryTabScrollX = function(value) inventoryTabScrollX_ = value or 0 end,
         getEquipmentScrollY = function() return equipmentScrollY_ end,
         setEquipmentScrollY = function(value) equipmentScrollY_ = value or 0 end,
         getEquipmentPageScrollY = function() return equipmentPageScrollY_ end,
@@ -1132,6 +1603,7 @@ local function BuildInventoryContext()
         equipItem = actionFns_.EquipItem,
         unequipSlot = actionFns_.UnequipSlot,
         decomposeByRank = actionFns_.DecomposeByRank,
+        setEquipmentLock = actionFns_.SetEquipmentLock,
         autoEquipBest = actionFns_.AutoEquipBest,
         strengthenSelected = actionFns_.StrengthenSelected,
         starSelected = actionFns_.StarSelected,
@@ -1140,6 +1612,10 @@ local function BuildInventoryContext()
         rarityName = RarityName,
         slotName = SlotName,
         itemPower = ItemPower,
+        compareItemPower = function(left, right)
+            return BigNumber.Compare(ItemPower(left), ItemPower(right))
+        end,
+        itemPowerText = ItemPowerText,
         itemImage = ItemImage,
         isEquipped = IsEquipped,
         getItemById = GetItemById,
@@ -1151,6 +1627,24 @@ local function BuildInventoryContext()
         pixelPanel = PixelPanel,
         sectionTitle = SectionTitle,
         formatInt = FormatInt,
+        getEquipmentDefinition = EquipmentCatalog.Get,
+        showItemTooltip = function(item, bounds)
+            if item then
+                ItemTooltip.Show({
+                    name = item.name,
+                    rarity = item.rarity,
+                    description = (item.setName and (item.setName .. "；") or "") .. (item.description or ""),
+                    stats = {
+                        ["部位"] = SlotName(item.slot),
+                        ["等级"] = ItemLevelText(item),
+                        ["强化"] = "+" .. tostring(item.enhance or 0),
+                        ["星级"] = tostring(item.star or 0),
+                        ["战力"] = ItemPowerText(item),
+                    },
+                }, bounds)
+            end
+        end,
+        hideItemTooltip = ItemTooltip.Hide,
     }
 end
 
@@ -1162,386 +1656,225 @@ local function BuildEquipmentPage()
     return InventoryView.BuildEquipmentPage(BuildInventoryContext())
 end
 
----@return string, string[], FrameEditorParam
-local function EditorFrameConfig(id)
-    local player = CurrentPlayer()
-    if id == "attackA" then return "攻击A", player.attackFrameSets[1], frameEditorParams_.attackA end
-    if id == "attackB" then return "攻击B", player.attackFrameSets[2], frameEditorParams_.attackB end
-    if id == "attackC" then return "攻击C", player.attackFrameSets[3], frameEditorParams_.attackC end
-    return "跑步", player.run, frameEditorParams_.run
+
+local function BuildFrameEditorPage()
+    return FrameEditorView.Build({
+        assets = ASSETS,
+        currentPlayer = CurrentPlayer,
+        runWidth = RUN_W,
+        runHeight = RUN_H,
+        runFps = RUN_FPS,
+        attackFps = ATTACK_FPS,
+        backgroundTop = BG_TILE_TOP,
+        backgroundWidth = BG_TILE_W,
+        txt = Txt,
+        multiTxt = MultiTxt,
+        pixelPanel = PixelPanel,
+        imageButton = ImageButton,
+        refresh = RefreshCurrentPage,
+        switchPage = SwitchPage,
+    })
 end
 
----@param params FrameEditorParam
----@param key string
----@param step number
-local function AdjustFrameEditorParam(params, key, step)
-    if key == "x" then params.x = params.x + step
-    elseif key == "y" then params.y = params.y + step
-    elseif key == "w" then params.w = params.w + step
-    elseif key == "h" then params.h = params.h + step
-    elseif key == "fps" then params.fps = params.fps + step
-    elseif key == "scale" then params.scale = math.max(0.2, params.scale + step) end
+local function SendStoryDecision(story, action, lineIndex)
+    if not story or not story.storyId then return end
+    ServerClient.AdvanceStory(action, story.storyId, lineIndex, function(response)
+        if not response or not response.ok then ActionResult(response) end
+    end)
 end
 
----@param params FrameEditorParam
-local function ResetFrameEditorParam(params)
-    params.x = 0
-    params.y = 0
-    params.w = RUN_W
-    params.h = RUN_H
-    params.fps = frameEditorSelected_ == "run" and RUN_FPS or ATTACK_FPS
-    params.scale = 1.0
-end
-
-local function ParamsForAttackFrames(frames)
-    local player = CurrentPlayer()
-    if player.attackFrameSets then
-        if frames == player.attackFrameSets[1] then return frameEditorParams_.attackA end
-        if frames == player.attackFrameSets[2] then return frameEditorParams_.attackB end
-        if frames == player.attackFrameSets[3] then return frameEditorParams_.attackC end
-    end
-    return frameEditorParams_.attackA
-end
-
-local function CreateEditorButton(text, onClick, props)
-    props = props or {}
-    local variant = props.variant or "primary"
-    local image = ASSETS.ui.buttonBlue
-    if variant == "secondary" then image = ASSETS.ui.buttonPurple
-    elseif variant == "success" then image = ASSETS.ui.buttonGreen
-    elseif variant == "danger" then image = ASSETS.ui.buttonRed end
-    return ImageButton(text, props.width or 118, props.height or 58, image, onClick, props.disabled == true)
-end
-
-local function CreateEditorAdjustRow(label, key, step)
-    local params = frameEditorParams_[frameEditorSelected_]
-    local valueLabel = Txt(label .. " " .. tostring(params[key]), 24, C.text, { width = 160 })
-    return UI.Panel {
-        width = "100%",
-        flexDirection = "row",
-        alignItems = "center",
-        gap = 10,
-        children = {
-            valueLabel,
-            CreateEditorButton("-" .. tostring(step), function()
-                AdjustFrameEditorParam(params, key, -step)
-                valueLabel:SetText(label .. " " .. tostring(params[key]))
-                UpdateFrameEditorVisuals(0)
-            end, { variant = "secondary" }),
-            CreateEditorButton("+" .. tostring(step), function()
-                AdjustFrameEditorParam(params, key, step)
-                valueLabel:SetText(label .. " " .. tostring(params[key]))
-                UpdateFrameEditorVisuals(0)
-            end, { variant = "primary" }),
-        }
+local function ShowStoryGate(story)
+    if type(story) ~= "table" or type(story.lines) ~= "table" or #story.lines == 0 then return false end
+    return CommonPromptDialog.Show {
+        kind = "story",
+        queueKey = "story:" .. tostring(story.storyId or story.chapter or "unknown") .. ":" .. tostring(story.phase or "gate"),
+        title = story.title or story.speaker or (story.chapter and ("第" .. tostring(story.chapter) .. "章") or "万灵塔记忆"),
+        pages = story.lines,
+        cancelText = "跳过",
+        confirmText = "进入下一幕",
+        closeOnOverlay = false,
+        onPageAdvance = function(index) SendStoryDecision(story, "next", index) end,
+        onConfirm = function() SendStoryDecision(story, "complete", #story.lines) end,
+        onCancel = function() SendStoryDecision(story, "skip") end,
     }
 end
 
-local function CopyFrameEditorSettings()
-    local lines = {
-        "-- frame editor settings",
-        "frameEditorParams = {",
-    }
-    for _, id in ipairs(frameEditorOrder_) do
-        local p = frameEditorParams_[id]
-        lines[#lines + 1] = string.format("    %s = { x = %d, y = %d, w = %d, h = %d, fps = %d, scale = %.2f },", id, p.x, p.y, p.w, p.h, p.fps, p.scale)
-    end
-    lines[#lines + 1] = "}"
-    local text = table.concat(lines, "\n")
-    ui.useSystemClipboard = true
-    ui:SetClipboardText(text)
-    UI.Toast.Show("已复制调帧参数", { duration = 1.6, variant = "success", position = "bottom" })
+local function MetricLine(label, value, suffix)
+    if value == nil then return nil end
+    return label .. FormatInt(value) .. (suffix or "")
 end
 
-local function CreateFrameEditorToggle(item)
-    local visible = frameEditorVisible_[item.id] == true
-    return UI.Panel {
-        width = 170,
-        height = 58,
-        clickable = true,
-        alignItems = "center",
-        justifyContent = "center",
-        backgroundImage = visible and ASSETS.ui.editorToggleOn or ASSETS.ui.editorToggleOff,
-        backgroundFit = "contain",
-        onClick = function()
-            frameEditorVisible_[item.id] = not frameEditorVisible_[item.id]
-            local anyVisible = false
-            for _, id in ipairs(frameEditorOrder_) do
-                if frameEditorVisible_[id] then anyVisible = true; break end
-            end
-            if not anyVisible then frameEditorVisible_[item.id] = true end
-            RefreshCurrentPage()
-        end,
-        children = { Txt((visible and "显示 " or "隐藏 ") .. item.name, 23, visible and C.background or C.textSecondary, { width = "100%", textAlign = "center" }) },
+local function ShowEquipmentUpgrade(value)
+    value = value or {}
+    local lines = {}
+    local candidates = {
+        MetricLine("总战力：", value.newPower or value.displayedPower),
+        MetricLine("战力提升：", value.displayedPowerDeltaBig or value.displayedPowerDelta
+            or value.powerDeltaBig or value.powerDelta,
+            value.powerDeltaPercent and ("（" .. string.format("%.1f%%", value.powerDeltaPercent * 100) .. "）") or ""),
+        MetricLine("Boss DPS：", value.bossDps),
+        MetricLine("有效生命：", value.effectiveHp or value.ehp),
+        MetricLine("预计可推进：", value.estimatedEasyFloor, "层"),
+        value.setChange and ("套装变化：" .. tostring(value.setChange)) or nil,
     }
-end
-
-local function CreateFrameEditorPage()
-    frameEditorRefs_ = { previews = {} }
-    local tabs = {}
-    local toggles = {}
-    local options = {
-        { id = "run", name = "跑步" },
-        { id = "attackA", name = "攻击A" },
-        { id = "attackB", name = "攻击B" },
-        { id = "attackC", name = "攻击C" },
-    }
-    for _, item in ipairs(options) do
-        local active = frameEditorSelected_ == item.id
-        tabs[#tabs + 1] = UI.Panel {
-            width = 170,
-            height = 62,
-            clickable = true,
-            alignItems = "center",
-            justifyContent = "center",
-            backgroundImage = active and ASSETS.ui.editorTabOn or ASSETS.ui.editorTabOff,
-            backgroundFit = "contain",
-            onClick = function()
-                frameEditorSelected_ = item.id
-                frameEditorVisible_[item.id] = true
-                RefreshCurrentPage()
-            end,
-            children = { Txt("编辑 " .. item.name, 24, active and C.background or C.text, { width = "100%", textAlign = "center" }) },
-        }
-        toggles[#toggles + 1] = CreateFrameEditorToggle(item)
-    end
-
-    local title, frames, params = EditorFrameConfig(frameEditorSelected_)
-    for _, id in ipairs(frameEditorOrder_) do
-        local _, itemFrames, itemParams = EditorFrameConfig(id)
-        local preview = UI.Panel {
-            position = "absolute",
-            left = 0,
-            top = 0,
-            width = itemParams.w,
-            height = itemParams.h,
-            backgroundImage = itemFrames[1],
-            backgroundFit = "contain",
-            visible = frameEditorVisible_[id] == true,
-            opacity = id == frameEditorSelected_ and 1.0 or 0.62,
-        }
-        frameEditorRefs_.previews[id] = preview
-    end
-    frameEditorRefs_.preview = frameEditorRefs_.previews[frameEditorSelected_]
-    frameEditorRefs_.reference = UI.Panel { position = "absolute", left = 330, top = 390, width = RUN_W, height = RUN_H, backgroundImage = ASSETS.ui.referenceFrame, backgroundFit = "contain" }
-    frameEditorRefs_.info = Txt("", 24, C.textSecondary, { width = "100%" })
-    frameEditorRefs_.title = Txt(title, 32, C.primary, { width = "100%", textStroke = { width = 2, color = "#000000" } })
-
-    local controls = PixelPanel {
-        width = "100%",
-        gap = 12,
-        children = {
-            frameEditorRefs_.title,
-            frameEditorRefs_.info,
-            UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", gap = 10, children = tabs },
-            UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", gap = 10, children = toggles },
-            UI.Panel { width = "100%", flexDirection = "row", gap = 10, children = {
-                CreateEditorButton(frameEditorPaused_ and "继续" or "暂停", function()
-                    frameEditorPaused_ = not frameEditorPaused_
-                    RefreshCurrentPage()
-                end, { variant = frameEditorPaused_ and "success" or "secondary", width = 150 }),
-                CreateEditorButton("复制参数", function() CopyFrameEditorSettings() end, { variant = "primary", width = 180 }),
-            } },
-            UI.Panel {
+    for _, line in ipairs(candidates) do if line then lines[#lines + 1] = line end end
+    if #lines == 0 then lines[1] = "完整换装收益已由服务端战斗核评估。" end
+    local decisionId = value.decisionId or value.itemId
+    CommonPromptDialog.Show {
+        kind = "equipment",
+        queueKey = decisionId and ("equip:" .. tostring(decisionId)) or nil,
+        title = "发现更强装备",
+        message = "该装备可提升完整配装表现，是否更换？",
+        lines = lines,
+        contentBuilder = function()
+            return UI.Panel {
                 width = "100%",
-                flexDirection = "row",
-                gap = 14,
+                height = 58,
+                flexShrink = 0,
+                alignItems = "center",
+                justifyContent = "center",
                 children = {
-                    UI.Panel { flexGrow = 1, flexBasis = 0, gap = 10, children = {
-                        CreateEditorAdjustRow("X偏移", "x", 5),
-                        CreateEditorAdjustRow("Y偏移", "y", 5),
-                        CreateEditorAdjustRow("宽度", "w", 10),
-                    } },
-                    UI.Panel { flexGrow = 1, flexBasis = 0, gap = 10, children = {
-                        CreateEditorAdjustRow("高度", "h", 10),
-                        CreateEditorAdjustRow("缩放", "scale", 0.1),
-                        CreateEditorAdjustRow("帧率", "fps", 1),
-                        UI.Panel { width = "100%", flexDirection = "row", gap = 10, children = {
-                            CreateEditorButton("重置", function()
-                                ResetFrameEditorParam(params)
-                                RefreshCurrentPage()
-                            end, { variant = "danger", width = 150 }),
-                            CreateEditorButton("去刷宝看效果", function() SwitchPage("play") end, { variant = "success", width = 220 }),
-                        } },
-                    } },
-                }
-            },
-            MultiTxt("提示：先点“编辑”选择要调整的动作，再点“显示/隐藏”同时叠加多套序列帧对比。暂停后画面冻结，方便看大小和位置。点“复制参数”会复制当前全部调帧参数，发给我即可固化到默认代码。", 24, C.textDim, { width = "100%" }),
-        }
-    }
-
-    local sceneChildren = {
-        UI.Panel { position = "absolute", left = 0, top = BG_TILE_TOP, width = BG_TILE_W, bottom = -BG_TILE_TOP, backgroundImage = ASSETS.bg, backgroundFit = "cover", opacity = 0.45 },
-        frameEditorRefs_.reference,
-    }
-    for _, id in ipairs(frameEditorOrder_) do
-        sceneChildren[#sceneChildren + 1] = frameEditorRefs_.previews[id]
-    end
-
-    local scene = UI.Panel {
-        width = "100%",
-        flexGrow = 1,
-        flexBasis = 0,
-        position = "relative",
-        overflow = "hidden",
-        backgroundImage = ASSETS.bg,
-        backgroundFit = "cover",
-        children = sceneChildren,
-    }
-
-    UpdateFrameEditorVisuals(0)
-    return UI.Panel {
-        width = "100%",
-        height = "100%",
-        padding = 24,
-        gap = 14,
-        children = { controls, scene },
+                    CompactTxt(
+                        ShortenText(
+                            value.name or "新装备",
+                            22
+                        ),
+                        26,
+                        RarityColor(
+                            value.rarity or "common"
+                        ),
+                        {
+                            width = "100%",
+                            height = 42,
+                            textAlign = "center",
+                            textStroke = {
+                                width = 2,
+                                color = "#000000",
+                            },
+                            pointerEvents = "none",
+                        }
+                    ),
+                },
+            }
+        end,
+        cancelText = "保留原装",
+        confirmText = "立即更换",
+        onConfirm = function()
+            ServerClient.DecideEquip("equip", value.itemId, ActionResult)
+        end,
+        onCancel = function()
+            ServerClient.DecideEquip("keep", value.itemId, ActionResult)
+        end,
     }
 end
 
-UpdateFrameEditorVisuals = function(dt)
-    if not frameEditorRefs_ or not frameEditorRefs_.previews then return end
-    if not frameEditorPaused_ then animationTime_ = animationTime_ + (dt or 0) end
-    local refLeft = 330
-    local refTop = 390
-    for _, id in ipairs(frameEditorOrder_) do
-        local _, frames, params = EditorFrameConfig(id)
-        local preview = frameEditorRefs_.previews[id]
-        if preview then
-            preview:SetStyle({
-                visible = frameEditorVisible_[id] == true,
-                left = refLeft + params.x,
-                top = refTop + params.y,
-                width = math.max(20, params.w),
-                height = math.max(20, params.h),
-                scale = params.scale,
-                opacity = id == frameEditorSelected_ and 1.0 or 0.62,
-                backgroundImage = FrameAt(frames, params.fps, animationTime_),
-            })
-        end
+local function ShowTowerRules()
+    local function AcknowledgeTowerRules()
+        ServerClient.AcknowledgeRules(StoryCatalog.RULE_ID, function(response)
+            if not response or not response.ok then ActionResult(response) end
+        end)
     end
-    if frameEditorRefs_.reference then
-        frameEditorRefs_.reference:SetStyle({ left = refLeft, top = refTop, width = RUN_W, height = RUN_H })
-    end
-    local title, _, params = EditorFrameConfig(frameEditorSelected_)
-    if frameEditorRefs_.title then frameEditorRefs_.title:SetText(title .. (frameEditorPaused_ and " / 已暂停" or "")) end
-    if frameEditorRefs_.info then
-        frameEditorRefs_.info:SetText(string.format("x=%d  y=%d  w=%d  h=%d  fps=%d  scale=%.1f", params.x, params.y, params.w, params.h, params.fps, params.scale))
-    end
+    CommonPromptDialog.Show {
+        kind = "rules",
+        queueKey = "rules:" .. StoryCatalog.RULE_ID,
+        title = "无尽万灵塔规则",
+        message = "在线战斗收益100%，离线固定奖励与最终掉落概率均为20%，只折算一次。",
+        lines = {
+            "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
+            "死亡后回到本层第1场，双方满血，已获得奖励保留。",
+            "连续失败两次会准备塔灵援助，第三次挑战前可领取定向装备。",
+            "挂机开关只负责运行/暂停，不改变在线收益倍率。",
+        },
+        confirmText = "知道了",
+        onConfirm = AcknowledgeTowerRules,
+        onCancel = AcknowledgeTowerRules,
+    }
+end
+
+local function ShowAidPrompt(value)
+    CommonPromptDialog.Show {
+        kind = "equipment",
+        priority = 500,
+        queueKey = "aid:" .. tostring(value and (value.aidId or value.floor) or "pending"),
+        title = "塔灵援助",
+        message = "连续失败后必须领取最低限度援助，领取后会自动继续挑战。",
+        lines = {
+            "援助只补到当前层可挑战线，不会提供碾压强度。",
+            "援助装备通关前不可出售或分解。",
+        },
+        closeOnOverlay = false,
+        showClose = false,
+        confirmText = "领取并继续",
+        onConfirm = function()
+            ServerClient.ClaimAid(function(response)
+                if not ActionResult(response, response and response.ok and "援助已领取" or nil) then
+                    ShowAidPrompt(value)
+                    return
+                end
+                ServerClient.AutoRun(true, function(autoRunResponse)
+                    ActionResult(autoRunResponse, autoRunResponse and autoRunResponse.ok and "已继续刷宝" or nil)
+                end)
+            end)
+        end,
+    }
+end
+
+local function ConfigurePlayPresentation()
+    PlayPresentation.Configure({
+        UI = UI,
+        colors = C,
+        eventInfo = EVENT_INFO,
+        assets = ASSETS,
+        txt = Txt,
+        compactTxt = CompactTxt,
+        shortenText = ShortenText,
+        formatInt = FormatInt,
+        imageProgress = ImageProgress,
+        setImageProgress = SetImageProgress,
+        getGame = function() return GameStateAdapter.GetViewState() end,
+        getMiddleDesignHeight = function()
+            return math.max(520, CONFIG.DynamicDesignHeight() - TOP_ZONE_HEIGHT - BOTTOM_ZONE_HEIGHT)
+        end,
+        updateTopBar = UpdateTopBar,
+        serverClient = ServerClient,
+        loadingController = LoadingController,
+        actionResult = ActionResult,
+        openIdleSettings = ShowIdleSettings,
+        showStoryGate = ShowStoryGate,
+        showEquipmentUpgrade = ShowEquipmentUpgrade,
+        showTowerRules = ShowTowerRules,
+        showAidPrompt = ShowAidPrompt,
+        itemImage = ItemImage,
+        rarityColor = RarityColor,
+        rarityName = RarityName,
+        rarities = RARITIES,
+        currentPlayer = CurrentPlayer,
+        getRunParams = FrameEditorView.GetRunParams,
+        getAttackParams = FrameEditorView.GetAttackParams,
+        runW = RUN_W,
+        runH = RUN_H,
+        runFps = RUN_FPS,
+        attackFps = ATTACK_FPS,
+        attackDuration = ATTACK_DURATION,
+        playerSize = PLAYER_SIZE,
+        playerScreenX = PLAYER_SCREEN_X,
+        bgTileW = BG_TILE_W,
+        bgTileTop = BG_TILE_TOP,
+        bgTileH = BG_TILE_H,
+        roadY = ROAD_Y,
+        lootSize = LOOT_SIZE,
+        lootFootOffset = LOOT_FOOT_OFFSET,
+        platformPlayerY = PLATFORM_PLAYER_Y,
+        enemySize = ENEMY_SIZE,
+        eventSpacing = EVENT_SPACING,
+        eventTriggerDistance = EVENT_TRIGGER_DISTANCE,
+        eventViewCount = EVENT_VIEW_COUNT,
+        presentationSpeed = PRESENTATION_SPEED,
+    })
 end
 
 local function CreatePlayPage()
-    EnsureRoadEvents()
-    playRefs_ = { objects = {}, bgTiles = {} }
-    currentPlayerImage_ = nil
-    playRefs_.bgTiles[1] = UI.Panel { position = "absolute", left = 0, top = BG_TILE_TOP, width = BG_TILE_W, height = BG_TILE_H, backgroundImage = ASSETS.bg, backgroundFit = "cover" }
-    playRefs_.bgTiles[2] = UI.Panel { position = "absolute", left = BG_TILE_W, top = BG_TILE_TOP, width = BG_TILE_W, height = BG_TILE_H, backgroundImage = ASSETS.bgMirror, backgroundFit = "cover" }
-    playRefs_.bgTiles[3] = UI.Panel { position = "absolute", left = BG_TILE_W * 2, top = BG_TILE_TOP, width = BG_TILE_W, height = BG_TILE_H, backgroundImage = ASSETS.bg, backgroundFit = "cover" }
-    playRefs_.playerShadow = UI.Panel { position = "absolute", left = PLAYER_SCREEN_X + 168, top = ROAD_Y - 12, width = 118, height = 14, backgroundImage = ASSETS.ui.characterShadow, backgroundFit = "contain" }
-    playRefs_.player = UI.Panel { position = "absolute", left = PLAYER_SCREEN_X, top = PLATFORM_PLAYER_Y, width = RUN_W, height = RUN_H, backgroundImage = CurrentPlayer().sprite or CurrentPlayer().icon, backgroundFit = "contain" }
-
-    for i = 1, EVENT_VIEW_COUNT do
-        local obj = UI.Panel { position = "absolute", left = 0, top = 0, width = ENEMY_SIZE, height = ENEMY_SIZE, backgroundImage = ASSETS.enemies.slime, backgroundFit = "contain", visible = true }
-        playRefs_.objects[i] = obj
-    end
-
-    playRefs_.pickup = UI.Panel { position = "absolute", left = 0, top = 0, width = LOOT_SIZE, height = LOOT_SIZE, backgroundImage = ASSETS.items.crystal, backgroundFit = "contain", visible = false }
-    playRefs_.pickupSpark = UI.Panel { position = "absolute", left = 0, top = 0, width = 82, height = 82, backgroundImage = ASSETS.ui.pickupSpark, backgroundFit = "contain", visible = false }
-    playRefs_.floatLabel = Txt("", 30, C.gold, { position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = { width = 2, color = "#000000" } })
-    playRefs_.enemyDamageLabels = {}
-    for i = 1, #ATTACK_HIT_TIMINGS do
-        playRefs_.enemyDamageLabels[i] = Txt("", 34, C.hp, { position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = { width = 3, color = "#000000" } })
-    end
-    playRefs_.event = CompactTxt("向右移动", 20, C.primary, { width = "100%" })
-    playRefs_.progress = CompactTxt("第1层", 20, C.focus, {})
-    playRefs_.lootLabel = CompactTxt(lastLootText_, 18, C.gold, { width = "100%" })
-    local hpProgress
-    hpProgress, playRefs_.hpFill = ImageProgress(310, 24, game.hp or 1, game.stats.hp or 1, ASSETS.ui.progressTrackHp, ASSETS.ui.progressFillHp)
-    playRefs_.hpBar = hpProgress
-    playRefs_.runButtonLabel = CompactTxt(game.autoRun and "刷宝中" or "开始刷宝", 20, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } })
-
-    ---@type table
-    local sceneChildren = { playRefs_.bgTiles[1], playRefs_.bgTiles[2], playRefs_.bgTiles[3] }
-    for i = 1, #playRefs_.objects do sceneChildren[#sceneChildren + 1] = playRefs_.objects[i] end
-    sceneChildren[#sceneChildren + 1] = playRefs_.playerShadow
-    sceneChildren[#sceneChildren + 1] = playRefs_.player
-    sceneChildren[#sceneChildren + 1] = playRefs_.pickup
-    sceneChildren[#sceneChildren + 1] = playRefs_.pickupSpark
-    sceneChildren[#sceneChildren + 1] = playRefs_.floatLabel
-    for i = 1, #playRefs_.enemyDamageLabels do sceneChildren[#sceneChildren + 1] = playRefs_.enemyDamageLabels[i] end
-
-    local runButton = UI.Panel {
-        position = "absolute",
-        right = 26,
-        top = 42,
-        width = 230,
-        height = 72,
-        clickable = true,
-        alignItems = "center",
-        justifyContent = "center",
-        backgroundImage = "image/brawlforge_play_autorun_button_flat_20260718124728.png",
-        backgroundFit = "contain",
-        onClick = function()
-            if not game.readOnly and not playAssetLoading_ and not pendingAutoRun_ then
-                local currentAutoRun = game.autoRun
-                if requestedAutoRun_ ~= nil then currentAutoRun = requestedAutoRun_ end
-                SetAutoRun(not currentAutoRun)
-            end
-        end,
-        children = { playRefs_.runButtonLabel },
-    }
-    playRefs_.runButton = runButton
-
-    local root = UI.Panel {
-        width = "100%",
-        height = "100%",
-        position = "relative",
-        overflow = "hidden",
-        backgroundImage = ASSETS.bg,
-        backgroundFit = "cover",
-        children = sceneChildren,
-    }
-
-    playRefs_.event:SetStyle({ position = "absolute", left = 22, top = 17, width = 406, textAlign = "center" })
-    local statusFrame = UI.Panel {
-        position = "absolute", left = 26, top = 42, width = 448, height = 60,
-        backgroundImage = ASSETS.ui.statusBar, backgroundFit = "contain",
-        children = { playRefs_.event },
-    }
-
-    playRefs_.progress:SetStyle({ position = "absolute", left = 0, top = 19, width = 150, textAlign = "center" })
-    local floorBadge = UI.Panel {
-        position = "absolute", left = 476, top = 42, width = 150, height = 60,
-        backgroundImage = ASSETS.ui.floorBadge, backgroundFit = "contain",
-        children = { playRefs_.progress },
-    }
-
-    playRefs_.lootLabel:SetStyle({ visible = false })
-
-    local hpFrame = UI.Panel {
-        position = "absolute", left = 30, top = 174, width = 545, height = 168,
-        backgroundImage = ASSETS.ui.playHpFrame, backgroundFit = "contain",
-        children = {
-            Txt("生命", 24, C.hp, { position = "absolute", left = 74, top = 55, width = 92, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
-            UI.Panel { position = "absolute", left = 176, top = 66, width = 310, height = 28, children = { playRefs_.hpBar } },
-        }
-    }
-
-    playRefs_.lootTrayIcon = UI.Panel { position = "absolute", left = 10, top = 8, width = 44, height = 44, backgroundImage = lastLootIcon_ or ASSETS.items.chest, backgroundFit = "contain" }
-    playRefs_.lootTrayLabel = CompactTxt(lastLootText_, 18, C.gold, { position = "absolute", left = 68, top = 18, width = 410, textStroke = { width = 2, color = "#000000" } })
-    local lootTray = UI.Panel {
-        position = "absolute", left = 26, bottom = 20, width = 520, height = 60,
-        backgroundImage = ASSETS.ui.lootBarGold, backgroundFit = "contain",
-        children = { playRefs_.lootTrayIcon, playRefs_.lootTrayLabel },
-    }
-
-    root:AddChild(statusFrame)
-    root:AddChild(floorBadge)
-    root:AddChild(hpFrame)
-    root:AddChild(runButton)
-    root:AddChild(lootTray)
-    UpdatePlayVisuals(0)
-    return root
+    return PlayPresentation.BuildPage()
 end
 
 local function CreateMarketPage()
@@ -1584,9 +1917,9 @@ local function CreatePageContent()
         end
         return BuildEquipmentPage()
     end
-    if game.page == "play" then return CreatePlayPage() end
+    if game.page == "play" then return PlayPresentation.BuildPage() end
     if game.page == "market" then return CreateMarketPage() end
-    if game.page == "frameEditor" then return CreateFrameEditorPage() end
+    if game.page == "frameEditor" then return BuildFrameEditorPage() end
     return CreateHomePage()
 end
 
@@ -1610,17 +1943,19 @@ end
 
 SwitchPage = function(pageId)
     local leavingPlay = game.page == "play" and pageId ~= "play"
-    if leavingPlay then ClearCombatPresentation(true) end
+    if leavingPlay then PlayPresentation.ClearCombatPresentation(true) end
     if pageId == "play" then
-        EnsurePlayAssetsReady(function()
+        LoadingController.EnsurePlayAssetsReady(function()
             GameStateAdapter.SetPage(pageId)
             game = GameStateAdapter.GetViewState()
+            AudioController.SetPage(game.page)
             RefreshCurrentPage()
         end)
         return
     end
     GameStateAdapter.SetPage(pageId)
     game = GameStateAdapter.GetViewState()
+    AudioController.SetPage(game.page)
     RefreshCurrentPage()
 end
 
@@ -1704,589 +2039,226 @@ local function CreateBottomNav()
     end
     return UI.Panel {
         width = "100%",
-        height = 170,
+        height = BOTTOM_ZONE_HEIGHT,
         flexShrink = 0,
         position = "relative",
         children = children,
     }
 end
 
-local function CreateLoadingOverlay()
-    loadingDots_ = {}
-    loadingPercentLabel_ = Txt(string.format("%d%%", math.floor(loadingProgress_)), 36, C.primary, { width = "100%", textAlign = "center" })
-    loadingMessageLabel_ = MultiTxt(loadingMessage_, 28, C.textSecondary, { width = "100%", textAlign = "center", maxLines = 2 })
-    local loadingProgress
-    loadingProgress, loadingProgressFill_ = ImageProgress(720, 30, loadingProgress_, 100, ASSETS.ui.progressTrackLoad, ASSETS.ui.progressFillLoad)
-    local dotLayer = UI.Panel { width = 240, height = 240, position = "relative" }
-    for i = 1, 12 do
-        local dot = UI.Panel { position = "absolute", left = 108, top = 108, width = 24, height = 24, backgroundImage = ASSETS.ui.loadingDot, backgroundFit = "contain" }
-        loadingDots_[i] = dot
-        dotLayer:AddChild(dot)
+local function BuildRoot()
+    game = GameStateAdapter.GetViewState()
+    local initialPageChildren = {}
+    if game.connectionState == "ready" then
+        initialPageChildren[1] = CreatePageContent()
     end
-    loadingOverlay_ = UI.Panel {
+    pageContainer_ = UI.Panel {
+        id = "middlePageContainer",
+        width = "100%",
+        height = "100%",
+        overflow = "hidden",
+        children = initialPageChildren,
+    }
+
+    local topZone = UI.Panel {
+        id = "topZone",
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        height = TOP_ZONE_HEIGHT,
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { CreateTopBar() },
+    }
+
+    local middleZone = UI.Panel {
+        id = "middleZone",
+        position = "absolute",
+        left = 0,
+        top = TOP_ZONE_HEIGHT,
+        right = 0,
+        bottom = BOTTOM_ZONE_HEIGHT,
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { pageContainer_ },
+    }
+
+    local bottomZone = UI.Panel {
+        id = "bottomZone",
+        position = "absolute",
+        left = 0,
+        right = 0,
+        bottom = 0,
+        height = BOTTOM_ZONE_HEIGHT,
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { CreateBottomNav() },
+    }
+
+    uiRoot_ = UI.Panel {
+        id = "verticalAnchorPlane",
+        width = CONFIG.DesignW,
+        height = "100%",
+        flexShrink = 0,
+        position = "relative",
+        overflow = "hidden",
+        pointerEvents = "box-none",
+        children = { topZone, middleZone, bottomZone },
+    }
+
+    -- SafeAreaView must fill the physical viewport. Its normal-flow child is
+    -- the anchor plane, so absolute zone coordinates are relative to the safe
+    -- content box rather than to a vertically centered 1920px stage.
+    local safeContent = UI.SafeAreaView {
         position = "absolute",
         left = 0,
         top = 0,
         right = 0,
         bottom = 0,
-        zIndex = 1000,
-        backgroundImage = ASSETS.ui.screenOverlay,
-        backgroundFit = "contain",
+        edges = { "top", "bottom" },
+        nativeMenuInset = true,
         alignItems = "center",
-        justifyContent = "center",
-        paddingLeft = 80,
-        paddingRight = 80,
+        pointerEvents = "box-none",
         children = {
-            PixelPanel {
-                width = 940,
-                height = 760,
-                alignItems = "center",
-                justifyContent = "center",
-                gap = 32,
-                children = {
-                    Txt(CONFIG.Title, 34, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
-                    Txt("资源加载中", 24, C.textDim, { width = "100%", textAlign = "center" }),
-                    dotLayer,
-                    loadingPercentLabel_,
-                    loadingMessageLabel_,
-                    loadingProgress,
-                }
-            }
-        }
-    }
-    if uiRoot_ then
-        uiRoot_:AddChild(loadingOverlay_)
-    end
-end
-
-ShowLoadingOverlay = function(progress, message)
-    loadingActive_ = true
-    loadingHideDelay_ = nil
-    SetLoading(progress or 0, message or "正在加载资源")
-    if loadingOverlay_ then
-        loadingOverlay_:Show()
-    else
-        CreateLoadingOverlay()
-    end
-end
-
-local function HideLoadingOverlay()
-    loadingActive_ = false
-    loadingHideDelay_ = nil
-    if loadingOverlay_ then
-        loadingOverlay_:Hide()
-    end
-end
-
-local function StartDwpLoadingOverlay()
-    ShowLoadingOverlay(5, "正在进入游戏，后台加载资源")
-    PreloadAssets()
-    if dwpObserverId_ then
-        cache:StopObservingDownloads(dwpObserverId_)
-        dwpObserverId_ = nil
-    end
-    dwpObserverId_ = cache:ObserveDownloads(
-        function(completedCount, totalCount, completedBytes)
-            local progress = 20
-            if totalCount and totalCount > 0 then
-                progress = 20 + math.floor((completedCount / totalCount) * 75)
-            end
-            SetLoading(progress, string.format("正在加载资源 %d/%d", completedCount or 0, totalCount or 0))
-        end,
-        function(completedBytes)
-            initialDwpFinished_ = true
-            SetLoading(100, "资源加载完成")
-            if initialSnapshotReceived_ then
-                loadingHideDelay_ = 0.35
-            end
-            if dwpObserverId_ then
-                cache:StopObservingDownloads(dwpObserverId_)
-                dwpObserverId_ = nil
-            end
-        end
-    )
-end
-
-SetLoading = function(progress, message)
-    loadingProgress_ = Clamp(progress or loadingProgress_, 0, 100)
-    loadingMessage_ = message or loadingMessage_
-    if loadingPercentLabel_ then loadingPercentLabel_:SetText(string.format("%d%%", math.floor(loadingProgress_))) end
-    if loadingMessageLabel_ then loadingMessageLabel_:SetText(loadingMessage_) end
-    SetImageProgress(loadingProgressFill_, 720, loadingProgress_, 100)
-end
-
-local function UpdateLoadingSpinner(dt)
-    if not loadingActive_ then return end
-    loadingTimer_ = loadingTimer_ + dt
-    local radius = 84
-    for i, dot in ipairs(loadingDots_) do
-        local angle = loadingTimer_ * 5.2 + (i - 1) * math.pi * 2 / 12
-        local alpha = math.floor(80 + 175 * (i / 12))
-        dot:SetStyle({
-            left = 108 + math.cos(angle) * radius,
-            top = 108 + math.sin(angle) * radius,
-            opacity = alpha / 255,
-            scale = 0.7 + 0.3 * (i / 12),
-        })
-    end
-end
-
-local function SelectAttackFrames(job)
-    local sets = job.attackFrameSets
-    if sets and #sets > 0 then
-        local index = 1
-        if #sets > 1 then
-            index = math.random(1, #sets - 1)
-            if lastAttackSetIndex_ and index >= lastAttackSetIndex_ then index = index + 1 end
-        end
-        lastAttackSetIndex_ = index
-        return sets[index], index
-    end
-    return job.attackFrames or { job.attack or job.sprite or job.icon }, nil
-end
-
-local function TriggerPickupVisual(image, startX, startY, text)
-    pickupFx_ = {
-        age = 0,
-        duration = 0.52,
-        image = image or ASSETS.items.crystal,
-        startX = startX or (PLAYER_SCREEN_X + 280),
-        startY = startY or (ROAD_Y - LOOT_SIZE),
-        endX = PLAYER_SCREEN_X + 76,
-        endY = PLATFORM_PLAYER_Y + 70,
-        text = text or "获得道具",
-    }
-    lastLootText_ = pickupFx_.text
-    lastLootIcon_ = pickupFx_.image
-end
-
-local function AddEnemyDamageBurst(text, baseX, baseY, delay, variant)
-    enemyDamageBursts_[#enemyDamageBursts_ + 1] = {
-        age = -(delay or 0),
-        text = text or "命中",
-        baseX = baseX or (PLAYER_SCREEN_X + 360),
-        baseY = baseY or (ROAD_Y - ENEMY_SIZE - 72),
-        variant = variant or 1,
-    }
-end
-
-local function ScheduleAttackDamageText(text, eventType, isBurst)
-    local damageText = text or "命中"
-    local currentForDamage = roadEvents_[1]
-    local enemyX = currentForDamage and (currentForDamage.x - presentationX_ - 96) or (PLAYER_SCREEN_X + 360)
-    local enemyY = ROAD_Y - ENEMY_SIZE - 72
-    local comboPrefix = eventType == "boss" and "破盾" or (eventType == "elite" and "重击" or "连击")
-    for i, timing in ipairs(ATTACK_HIT_TIMINGS) do
-        local label = damageText
-        if i > 1 then label = comboPrefix .. " " .. FormatInt((game.stats and game.stats.atk) or 0) end
-        if isBurst and i == 1 then label = damageText end
-        AddEnemyDamageBurst(label, enemyX + (i - 3) * 18, enemyY - (i % 2) * 18, timing * ATTACK_DURATION, i)
-    end
-end
-
-local function TriggerCombatVisual(text, eventType, isBurst)
-    if combatTimer_ <= 0 then combatTimer_ = ATTACK_DURATION end
-    hitBurst_ = isBurst == true
-    lastEventType_ = eventType or lastEventType_
-    floatingText_ = { age = 0.0, text = isBurst and (text or "暴击") or "连击" }
-    local hasActiveDamage = false
-    for _, burst in ipairs(enemyDamageBursts_) do
-        if burst.age < 1.05 then hasActiveDamage = true; break end
-    end
-    if not hasActiveDamage then
-        ScheduleAttackDamageText(text or "命中", eventType, isBurst)
-    end
-end
-
-local function BeginEnemyAttack(event)
-    currentEventLocked_ = true
-    currentAttackFrames_ = SelectAttackFrames(CurrentPlayer())
-    combatAnimationTime_ = 0
-    combatTimer_ = ATTACK_DURATION
-    enemyDamageBursts_ = {}
-    TriggerCombatVisual("命中 " .. FormatInt((game.stats and game.stats.atk) or 0), event and event.eventType or "monster", false)
-end
-
-local function HandleDeltaVisual(payload)
-    game = GameStateAdapter.GetViewState()
-    for _, value in ipairs((payload and payload.events) or {}) do
-        if value.kind == "cell_entered" then
-            lastEventType_ = value.eventType or lastEventType_
-        elseif value.kind == "auto_run_changed" then
-            requestedAutoRun_ = nil
-            pendingAutoRun_ = nil
-            if value.enabled == false then ClearCombatPresentation(false) end
-        elseif value.kind == "battle" then
-            local isBurst = value.lucky or value.critical
-            local prefix = value.lucky and "幸运一击" or (value.critical and "暴击" or "命中")
-            TriggerCombatVisual(prefix .. " " .. FormatInt(value.lastDamage or 0), value.eventType, isBurst)
-        elseif value.kind == "battle_reward" then
-            lastLootText_ = "金币+" .. FormatInt(value.gold or 0) .. " 经验+" .. FormatInt(value.exp or 0)
-            lastLootIcon_ = ASSETS.items.gold
-        elseif value.kind == "equipment_drop" then
-            lastLootText_ = tostring(value.name or "装备掉落")
-            lastLootIcon_ = ASSETS.items.sword
-        elseif value.kind == "chest_reward" then
-            lastLootText_ = "宝箱+" .. FormatInt(value.gold or 0)
-            lastLootIcon_ = ASSETS.items.chest
-        end
-    end
-    UpdateTopBar()
-    if game.page == "play" then UpdatePlayVisuals(0) end
-end
-
-UpdatePlayVisuals = function(dt)
-    if not playRefs_ or not playRefs_.player then return end
-    EnsureRoadEvents()
-    animationTime_ = animationTime_ + dt
-    combatTimer_ = math.max(0, combatTimer_ - dt)
-    combatAnimationTime_ = combatTimer_ > 0 and (combatAnimationTime_ + dt) or 0
-    game = GameStateAdapter.GetViewState()
-    if requestedAutoRun_ ~= nil and game.autoRun == requestedAutoRun_ then
-        requestedAutoRun_ = nil
-        pendingAutoRun_ = nil
-    end
-
-    local visualAutoRun = game.autoRun
-    if requestedAutoRun_ ~= nil then visualAutoRun = requestedAutoRun_ end
-    local current = roadEvents_[1]
-    local currentDistance = current and (current.x - presentationX_ - PLAYER_SCREEN_X) or 9999
-    local enemyInRange = current and current.kind == "enemy" and currentDistance <= EVENT_TRIGGER_DISTANCE
-    local shouldStopForEvent = (currentEventLocked_ and current and current.kind == "enemy" and combatTimer_ > 0) or enemyInRange
-    local speed = (visualAutoRun and not shouldStopForEvent) and PRESENTATION_SPEED or 0
-    presentationX_ = presentationX_ + speed * dt
-    currentDistance = current and (current.x - presentationX_ - PLAYER_SCREEN_X) or 9999
-    local inTriggerRange = current and currentDistance <= EVENT_TRIGGER_DISTANCE
-    if current and inTriggerRange and not currentEventLocked_ then
-        if current.kind == "enemy" then
-            BeginEnemyAttack(current)
-        else
-            local pickupText = current.eventType == "chest" and "打开宝箱" or "获得道具"
-            TriggerPickupVisual(current.image, current.x - presentationX_, ROAD_Y - LOOT_SIZE + 4, pickupText)
-            AdvanceRoadEvent()
-        end
-    end
-    if current and currentEventLocked_ and current.kind == "enemy" and combatTimer_ <= 0 then
-        AdvanceRoadEvent()
-        current = roadEvents_[1]
-        currentDistance = current and (current.x - presentationX_ - PLAYER_SCREEN_X) or 9999
-    end
-
-    local bgShift = -(presentationX_ % (BG_TILE_W * 2))
-    if playRefs_.bgTiles then
-        playRefs_.bgTiles[1]:SetStyle({ left = bgShift })
-        playRefs_.bgTiles[2]:SetStyle({ left = bgShift + BG_TILE_W })
-        playRefs_.bgTiles[3]:SetStyle({ left = bgShift + BG_TILE_W * 2 })
-    end
-
-    local currentEvent = roadEvents_[1]
-    local distance = currentEvent and (currentEvent.x - presentationX_ - PLAYER_SCREEN_X) or 9999
-    local isAttacking = currentEventLocked_ and combatTimer_ > 0 and currentEvent and currentEvent.kind == "enemy" and distance <= EVENT_TRIGGER_DISTANCE
-    local isPicking = currentEvent and currentEvent.kind == "loot" and distance <= EVENT_TRIGGER_DISTANCE
-
-    local job = CurrentPlayer()
-    local attackFrames = currentAttackFrames_ or job.attackFrames or { job.attack or job.sprite or job.icon }
-    local movementFrames = visualAutoRun and job.run or job.idle
-    local activeParams = isAttacking and ParamsForAttackFrames(attackFrames) or frameEditorParams_.run
-    local activeFps = isAttacking and activeParams.fps or (visualAutoRun and activeParams.fps or 8)
-    local playerImage = isAttacking and FrameAt(attackFrames, activeFps, combatAnimationTime_) or FrameAt(movementFrames, activeFps)
-    local walkBob = (visualAutoRun and not isAttacking) and math.sin(animationTime_ * 6.0) * 3 or math.sin(animationTime_ * 2.0) * 2
-    local walkLean = (visualAutoRun and not isAttacking) and math.sin(animationTime_ * 6.0) * 4 or 0
-    local attackPulse = isAttacking and math.max(0, math.sin(combatAnimationTime_ * 11.0)) or 0
-    local actionLeft = PLAYER_SCREEN_X - (RUN_W - PLAYER_SIZE) * 0.42
-    local actionTop = ROAD_Y - RUN_H + 20
-    local idleLeft = PLAYER_SCREEN_X
-    local idleTop = PLATFORM_PLAYER_Y
-    local useActionBox = isAttacking or not isPicking
-    local targetLeft = useActionBox and (actionLeft + activeParams.x) or idleLeft
-    local targetTop = useActionBox and (actionTop + activeParams.y) or idleTop
-    local targetW = useActionBox and activeParams.w or PLAYER_SIZE
-    local targetH = useActionBox and activeParams.h or PLAYER_SIZE
-    local targetScale = useActionBox and activeParams.scale or 1.0
-    local playerStyle = {
-        left = targetLeft + walkLean + attackPulse * 3,
-        top = targetTop + walkBob - attackPulse * 2,
-        width = targetW,
-        height = targetH,
-        scale = targetScale + (isAttacking and attackPulse * 0.04 or 0),
-    }
-    if playerImage ~= currentPlayerImage_ then
-        playerStyle.backgroundImage = playerImage
-        currentPlayerImage_ = playerImage
-    end
-    playRefs_.player:SetStyle(playerStyle)
-    if playRefs_.playerShadow then
-        playRefs_.playerShadow:SetStyle({ left = PLAYER_SCREEN_X + 42 + walkLean + attackPulse * 3, top = ROAD_Y - 8 })
-    end
-
-    for i, node in ipairs(playRefs_.objects or {}) do
-        local event = roadEvents_[i]
-        if event then
-            local x = event.x - presentationX_
-            local w = event.kind == "enemy" and ENEMY_SIZE or LOOT_SIZE
-            local h = event.kind == "enemy" and ENEMY_SIZE or LOOT_SIZE
-            local top = event.kind == "enemy" and (ROAD_Y - ENEMY_SIZE + EnemyFootOffset(event.eventType)) or (ROAD_Y - LOOT_SIZE + LOOT_FOOT_OFFSET)
-            local active = i == 1 and (isAttacking or isPicking)
-            local pulse = active and math.sin(animationTime_ * 18) * 5 or 0
-            node:SetStyle({
-                visible = x > -180 and x < 1180,
-                left = x,
-                top = top + pulse,
-                width = w,
-                height = h,
-                backgroundImage = event.image,
-                opacity = (i == 1 and isAttacking) and 0.86 or 1.0,
-                scale = active and 1.05 or 1.0,
-            })
-        else
-            node:SetStyle({ visible = false })
-        end
-    end
-
-    if playRefs_.event then
-        local eventType = currentEvent and currentEvent.eventType or "monster"
-        local actionText = isAttacking and "正在攻击" or (isPicking and "正在拾取" or "向右移动")
-        playRefs_.event:SetText(actionText .. " / " .. ((EVENT_INFO[eventType] and EVENT_INFO[eventType].name) or "前方道路"))
-        playRefs_.event:SetFontColor((EVENT_INFO[eventType] and EVENT_INFO[eventType].color) or C.primary)
-    end
-    if playRefs_.progress then playRefs_.progress:SetText("第" .. tostring(game.floor or 1) .. "层  距离" .. tostring(math.floor(presentationX_ / 10))) end
-    if playRefs_.lootLabel then playRefs_.lootLabel:SetText(lastLootText_) end
-    if playRefs_.lootTrayLabel then playRefs_.lootTrayLabel:SetText(lastLootText_) end
-    if playRefs_.lootTrayIcon and lastLootIcon_ then playRefs_.lootTrayIcon:SetStyle({ backgroundImage = lastLootIcon_ }) end
-    if playRefs_.hpFill then
-        SetImageProgress(playRefs_.hpFill, 310, game.hp or 1, (game.stats and game.stats.hp) or 1)
-    end
-    if playRefs_.runButtonLabel then playRefs_.runButtonLabel:SetText(pendingAutoRun_ and "同步中" or (visualAutoRun and "刷宝中" or "开始刷宝")) end
-    if playRefs_.runButton then
-        playRefs_.runButton:SetStyle({ opacity = (game.readOnly or playAssetLoading_) and 0.45 or 1.0 })
-    end
-
-    if pickupFx_ and playRefs_.pickup then
-        pickupFx_.age = pickupFx_.age + dt
-        local t = Clamp(pickupFx_.age / pickupFx_.duration, 0, 1)
-        local ease = 1 - (1 - t) * (1 - t)
-        local x = pickupFx_.startX + (pickupFx_.endX - pickupFx_.startX) * ease
-        local y = pickupFx_.startY + (pickupFx_.endY - pickupFx_.startY) * ease - math.sin(t * math.pi) * 58
-        local size = LOOT_SIZE * (1.0 - 0.62 * ease)
-        playRefs_.pickup:SetStyle({
-            visible = t < 1,
-            left = x,
-            top = y,
-            width = size,
-            height = size,
-            backgroundImage = pickupFx_.image,
-            opacity = 1.0 - t * 0.12,
-            scale = 1.0 + math.sin(t * math.pi) * 0.28,
-        })
-        if playRefs_.pickupSpark then
-            playRefs_.pickupSpark:SetStyle({
-                visible = t > 0.68 and t < 1,
-                left = pickupFx_.endX - 10,
-                top = pickupFx_.endY - 10,
-                opacity = (1 - t) * 1.8,
-                scale = 0.7 + t * 0.8,
-            })
-        end
-        if t >= 1 then pickupFx_ = nil end
-    else
-        if playRefs_.pickup then playRefs_.pickup:SetStyle({ visible = false }) end
-        if playRefs_.pickupSpark then playRefs_.pickupSpark:SetStyle({ visible = false }) end
-    end
-
-    if playRefs_.enemyDamageLabels then
-        for i = #enemyDamageBursts_, 1, -1 do
-            local burst = enemyDamageBursts_[i]
-            burst.age = burst.age + dt
-            if burst.age >= 1.05 then table.remove(enemyDamageBursts_, i) end
-        end
-        for i, label in ipairs(playRefs_.enemyDamageLabels) do
-            local burst = enemyDamageBursts_[i]
-            if burst and burst.age >= 0 then
-                local age = burst.age
-                local alpha = math.floor(255 * math.max(0, 1 - age / 0.95))
-                local shake = math.sin(age * 22.0 + (burst.variant or 1)) * 7
-                local lift = age * (78 + (burst.variant or 1) * 4)
-                local pop = 1.0 + math.max(0, 1 - age * 4.0) * 0.42
-                label:SetText(burst.text)
-                label:SetStyle({
-                    visible = age < 0.95,
-                    left = burst.baseX + shake,
-                    top = burst.baseY - lift,
-                    fontColor = {255, 83, 93, alpha},
-                    scale = pop,
-                })
-            else
-                label:SetStyle({ visible = false })
-            end
-        end
-    end
-
-    if floatingText_ and playRefs_.floatLabel then
-        floatingText_.age = floatingText_.age + dt
-        local alpha = math.floor(255 * math.max(0, 1 - floatingText_.age / 1.0))
-        playRefs_.floatLabel:SetText(floatingText_.text)
-        playRefs_.floatLabel:SetStyle({ visible = floatingText_.age < 1.0, left = PLAYER_SCREEN_X + 120, top = PLATFORM_PLAYER_Y - 52 - floatingText_.age * 70, fontColor = {255, 217, 61, alpha} })
-        if floatingText_.age >= 1.0 then floatingText_ = nil end
-    elseif playRefs_.floatLabel then
-        playRefs_.floatLabel:SetStyle({ visible = false })
-    end
-end
-
-local function InstallSafeAreaWrapper()
-    if safeAreaInstalled_ then return end
-    local oldSetRoot = UI.SetRoot
-    UI.SetRoot = function(widget, destroyOld)
-        if widget then
-            local padding = SafeAreaPadding()
-            oldSetRoot(UI.Panel {
+            UI.Panel {
                 width = "100%",
-                height = "100%",
+                flexGrow = 1,
+                flexBasis = 0,
+                alignItems = "center",
                 position = "relative",
                 pointerEvents = "box-none",
-                children = {
-                    UI.Panel {
-                        position = "absolute",
-                        left = padding.left,
-                        top = padding.top,
-                        right = padding.right,
-                        bottom = padding.bottom,
-                        alignItems = "center",
-                        justifyContent = "center",
-                        pointerEvents = "box-none",
-                        children = {
-                            UI.Panel {
-                                width = CONFIG.designWidth,
-                                height = CONFIG.designHeight,
-                                flexShrink = 0,
-                                pointerEvents = "box-none",
-                                children = { widget },
-                            },
-                        },
-                    },
-                },
-            }, destroyOld)
-        else
-            oldSetRoot(nil, destroyOld)
-        end
-    end
-    safeAreaInstalled_ = true
-end
+                children = { uiRoot_ },
+            },
+        },
+    }
 
-local function BuildRoot()
-    game = GameStateAdapter.GetViewState()
-    local initialPageChildren = {}
-    if initialSnapshotReceived_ then
-        initialPageChildren[1] = CreatePageContent()
-    end
-    pageContainer_ = UI.Panel { width = "100%", height = "100%", flexGrow = 1, flexBasis = 0, alignSelf = "stretch", overflow = "hidden", children = initialPageChildren }
-    uiRoot_ = UI.Panel {
+    screenRoot_ = UI.Panel {
+        id = "screenRoot",
         width = "100%",
         height = "100%",
-        alignItems = "stretch",
+        position = "relative",
+        overflow = "hidden",
+        backgroundColor = C.background,
         pointerEvents = "box-none",
         children = {
             CreateBackground(),
-            UI.Panel {
-                width = "100%",
-                height = "100%",
-                alignItems = "stretch",
-                flexDirection = "column",
-                children = { CreateTopBar(), pageContainer_, CreateBottomNav() },
-            },
+            safeContent,
         }
     }
-    UI.SetRoot(uiRoot_, true)
+    UI.SetRoot(screenRoot_, true)
+    CommonPromptDialog.Configure {
+        txt = Txt,
+        multiTxt = MultiTxt,
+    }
+    CommonPromptDialog.AttachRoot(screenRoot_)
+    LoadingController.AttachRoot(uiRoot_)
     if game.page == "play" then
-        EnsurePlayAssetsReady(function() UpdatePlayVisuals(0) end)
+        LoadingController.EnsurePlayAssetsReady(function() PlayPresentation.Update(0) end)
     end
 end
 
 local function InitUI()
-    ReadLayoutMetrics()
-    UI.Init({ theme = AppTheme, scale = layoutState_.metrics.scale })
-    InstallSafeAreaWrapper()
+    UI.Init({
+        theme = AppTheme,
+        scale = CONFIG.ViewportScale,
+    })
     UI.SetOverflowWarnings(false)
 end
 
 local function BindServerEvents()
     ServerClient.On("snapshot", function()
         game = GameStateAdapter.GetViewState()
-        if not sessionAutoStartAttempted_ then
-            sessionAutoStartAttempted_ = true
-            if not game.autoRun then
-                requestedAutoRun_ = true
-                pendingAutoRun_ = true
-                print("[Play] authoritative auto-run is off; requesting automatic start")
-                ServerClient.AutoRun(true, function(response)
-                    pendingAutoRun_ = nil
-                    if response and response.ok then
-                        ServerClient.RequestSnapshot()
-                    else
-                        requestedAutoRun_ = nil
-                        print("[Play] automatic start rejected: " .. tostring(response and response.reason or "unknown"))
-                    end
-                end)
-            end
-        end
-        if requestedAutoRun_ ~= nil and game.autoRun == requestedAutoRun_ then
-            requestedAutoRun_ = nil
-            pendingAutoRun_ = nil
-        end
+        PlayPresentation.HandleSnapshot()
         UpdateTopBar()
         if pageContainer_ then
             RefreshCurrentPage()
         else
             BuildRoot()
         end
-        if not initialSnapshotReceived_ then
-            initialSnapshotReceived_ = true
-            if initialDwpFinished_ then
-                loadingHideDelay_ = 0.35
-            end
-        end
-        if loadingActive_ then
-            SetLoading(math.max(loadingProgress_, 80), "常驻服状态已同步，继续加载资源")
+        LoadingController.MarkSnapshotReceived()
+    end)
+    ServerClient.On("snapshotProgress", function(payload)
+        LoadingController.MarkSnapshotProgress(payload and payload.received, payload and payload.total)
+    end)
+    ServerClient.On("delta", function(payload)
+        game = GameStateAdapter.GetViewState()
+        PlayPresentation.HandleDelta(payload)
+        ShowDeltaFeedback(payload)
+        UpdateTopBar()
+        if game.page == "play" then
+            PlayPresentation.Update(0)
+        elseif game.page == "home"
+            or game.page == "equip"
+            or game.page == "bag"
+        then
+            -- These pages render authoritative values as static nodes, so
+            -- rebuild after every accepted server delta.
+            RequestPageRefresh()
         end
     end)
-    ServerClient.On("delta", HandleDeltaVisual)
     ServerClient.On("status", function(payload)
         local state = payload and payload.state or "syncing"
-        if loadingActive_ then
-            if state == "ready" then SetLoading(95, "已完成加载常驻服状态")
-            elseif state == "syncing" then SetLoading(70, "正在加载常驻服状态")
-            else SetLoading(60, "正在连接常驻服") end
-        else
+        if state ~= "ready" then
+            collectingOffline_ = false
+            PlayPresentation.CancelPendingAutoRun()
+        end
+        LoadingController.HandleStatus(state)
+        if not LoadingController.IsActive() then
             game = GameStateAdapter.GetViewState()
             UpdateTopBar()
-            if game.page == "play" then UpdatePlayVisuals(0) end
+            if game.page == "play" then PlayPresentation.Update(0) end
         end
     end)
     ServerClient.On("adminResult", function(result) AdminPanel.HandleResult(result, RequestPageRefresh) end)
     ServerClient.On("disconnected", function()
-        if loadingActive_ then SetLoading(45, "正在重连常驻服")
-        else game = GameStateAdapter.GetViewState(); UpdateTopBar(); if game.page == "play" then UpdatePlayVisuals(0) end end
+        collectingOffline_ = false
+        PlayPresentation.CancelPendingAutoRun()
+        LoadingController.HandleDisconnected()
+        if not LoadingController.IsActive() then
+            game = GameStateAdapter.GetViewState()
+            UpdateTopBar()
+            if game.page == "play" then PlayPresentation.Update(0) end
+        end
     end)
     ServerClient.On("error", function(error)
         UI.Toast.Show(error.reason or "网络数据错误", { duration = 2, variant = "error", position = "bottom" })
-        if loadingActive_ then SetLoading(45, "正在重试加载网络数据")
-        else game = GameStateAdapter.GetViewState(); UpdateTopBar(); if game.page == "play" then UpdatePlayVisuals(0) end end
+        LoadingController.HandleError(error.reason)
+        if not LoadingController.IsActive() then
+            game = GameStateAdapter.GetViewState()
+            UpdateTopBar()
+            if game.page == "play" then PlayPresentation.Update(0) end
+        end
     end)
 end
 
 function GameView.Start()
     graphics.windowTitle = CONFIG.Title
-    initialSnapshotReceived_ = false
-    initialDwpFinished_ = false
-    loadingHideDelay_ = nil
+    LoadingController.Configure({
+        title = CONFIG.Title,
+        assets = ASSETS,
+        currentPlayer = CurrentPlayer,
+        txt = Txt,
+        multiTxt = MultiTxt,
+        pixelPanel = PixelPanel,
+        imageProgress = ImageProgress,
+        setImageProgress = SetImageProgress,
+    })
+    ConfigurePlayPresentation()
     InitUI()
+    AudioController.Start()
+    viewportWidth_ = graphics:GetWidth()
+    viewportHeight_ = graphics:GetHeight()
     ProbeOptionalFonts()
     game = GameStateAdapter.GetViewState()
     BuildRoot()
-    StartDwpLoadingOverlay()
+    AudioController.SetPage(game.page)
+    LoadingController.Start(uiRoot_)
     BindServerEvents()
     local ok, reason = ServerClient.Start()
     if not ok then
-        SetLoading(45, reason or "正在重试连接常驻服")
+        LoadingController.HandleError()
+        print("[GameView] server start failed: " .. tostring(reason))
     end
     SubscribeToEvent("Update", function(eventType, eventData) GameView.HandleUpdate(eventType, eventData) end)
     print("=== " .. CONFIG.Title .. " client started with DWP loading ===")
@@ -2294,19 +2266,12 @@ end
 
 function GameView.Stop()
     UnsubscribeFromEvent("Update")
-    ClearCombatPresentation(false)
-    initialSnapshotReceived_ = false
-    initialDwpFinished_ = false
-    loadingHideDelay_ = nil
-    requestedAutoRun_ = nil
-    pendingAutoRun_ = nil
-    sessionAutoStartAttempted_ = false
-    pickupFx_ = nil
-    if dwpObserverId_ then
-        cache:StopObservingDownloads(dwpObserverId_)
-        dwpObserverId_ = nil
-    end
+    PlayPresentation.Reset()
+    CommonPromptDialog.Reset()
+    DialogCoordinator.Clear(false)
+    LoadingController.Stop()
     ServerClient.Stop()
+    AudioController.Stop()
     UI.Shutdown()
 end
 
@@ -2314,20 +2279,19 @@ end
 ---@param eventData VariantMap
 function GameView.HandleUpdate(eventType, eventData)
     local dt = eventData:GetFloat("TimeStep")
-    CheckLayoutMetrics(dt)
-    if loadingActive_ then
-        UpdateLoadingSpinner(dt)
-        if loadingHideDelay_ then
-            loadingHideDelay_ = loadingHideDelay_ - dt
-            if loadingHideDelay_ <= 0 then
-                HideLoadingOverlay()
-            end
-        end
-    end
+    ServerClient.Update(dt)
+    LoadingController.Update(dt)
     local state = GameStateAdapter.GetViewState()
     game = state
-    if game.page == "play" then UpdatePlayVisuals(dt) end
-    if game.page == "frameEditor" then UpdateFrameEditorVisuals(dt) end
+    if game.page == "play" then PlayPresentation.Update(dt) end
+    if game.page == "frameEditor" then FrameEditorView.Update(dt) end
+    local physicalWidth = graphics:GetWidth()
+    local physicalHeight = graphics:GetHeight()
+    if physicalWidth ~= viewportWidth_ or physicalHeight ~= viewportHeight_ then
+        viewportWidth_ = physicalWidth
+        viewportHeight_ = physicalHeight
+        RequestFullRebuild()
+    end
     if needsFullRebuild_ then
         needsFullRebuild_ = false
         needsPageRefresh_ = false

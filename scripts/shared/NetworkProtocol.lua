@@ -4,6 +4,9 @@ local NetworkProtocol = {}
 
 NetworkProtocol.VERSION = 1
 NetworkProtocol.MAX_PAYLOAD_BYTES = 16 * 1024
+NetworkProtocol.MAX_SERVER_PAYLOAD_BYTES = 60 * 1024
+NetworkProtocol.SNAPSHOT_CHUNK_TARGET_BYTES = 56 * 1024
+NetworkProtocol.SNAPSHOT_ITEMS_PER_CHUNK = 50
 NetworkProtocol.MAX_REQUEST_ID_LENGTH = 96
 NetworkProtocol.MAX_COMMAND_LENGTH = 64
 
@@ -122,7 +125,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
     path = path or "$"
 
     if value == nil then
-        if schema.required then
+        if schema.required == true then
             return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Required value is missing", path)
         end
         return true, nil
@@ -219,7 +222,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
             end
             if fields ~= nil then
                 for fieldName, fieldSchema in pairs(fields) do
-                    if required[fieldName] or fieldSchema.required then
+                    if required[fieldName] or fieldSchema.required == true then
                         if value[fieldName] == nil then
                             return false, makeError(
                                 ErrorCodes.INVALID_PAYLOAD,

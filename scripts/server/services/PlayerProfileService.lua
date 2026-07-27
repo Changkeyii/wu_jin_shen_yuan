@@ -11,6 +11,15 @@ local function Result(ok, data, code, reason)
     return { ok = ok == true, data = data or {}, code = code or (ok and 0 or -1), reason = tostring(reason or "") }
 end
 
+local function PrintValidationFailure(userId, stage, validationError)
+    local details = validationError and validationError.details or nil
+    print("[ProfileDiag] uid=" .. tostring(userId)
+        .. " validationStage=" .. tostring(stage)
+        .. " code=" .. tostring(validationError and validationError.code or nil)
+        .. " reason=" .. tostring(validationError and validationError.reason or nil)
+        .. " path=" .. tostring(details and details.path or nil))
+end
+
 function PlayerProfileService.New(options)
     options = options or {}
     assert(options.repository, "PlayerProfileService requires repository")
@@ -24,24 +33,44 @@ end
 PlayerProfileService.new = PlayerProfileService.New
 
 function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplete)
+    print("[ProfileDiag] uid=" .. tostring(userId) .. " validateLoadedStateBegin")
     local valid, validationError = GameStateSchema.ValidateState(state)
     if not valid then
+        PrintValidationFailure(userId, "loaded_state", validationError)
         onComplete(Result(false, {}, validationError.code, validationError.reason))
         return
     end
-    local proposal = GameEngine.AccrueOffline(state, self.clock())
+    print("[ProfileDiag] uid=" .. tostring(userId) .. " validateLoadedStateComplete")
+    local proposalOk, proposalOrError = pcall(GameEngine.AccrueOffline, state, self.clock())
+    if not proposalOk then
+        onComplete(Result(false, {}, "OFFLINE_ACCRUAL_FAILED", tostring(proposalOrError)))
+        return
+    end
+    local proposal = proposalOrError
+    print("[ProfileDiag] uid=" .. tostring(userId)
+        .. " offlineAccrualComplete commit=" .. tostring(proposal.commit and proposal.commit.kind))
     if proposal.ok then
         local proposalValid, proposalError = GameStateSchema.ValidateState(proposal.state)
         if not proposalValid then
+            PrintValidationFailure(userId, "offline_accrual", proposalError)
             onComplete(Result(false, {}, proposalError.code, proposalError.reason))
             return
         end
     end
     if proposal.ok and proposal.commit and proposal.commit.kind ~= "none" then
-        self.repository:Commit(userId, state, proposal.state, "abyss offline accrual", function(commitResult)
-            if not commitResult.ok then onComplete(commitResult); return end
-            onComplete(Result(true, { state = proposal.state, ban = ban, warning = warning }))
-        end)
+        -- 登录不能等待云写回。离线秒数先放入当前权威会话，之后由正常玩法提交或断线检查点持久化。
+        proposal.state.revision = state.revision
+        proposal.state.updatedAt = state.updatedAt
+        print("[ProfileDiag] uid=" .. tostring(userId)
+            .. " offlineAccrualAttachedWithoutBlocking"
+            .. " pendingOfflineSeconds=" .. tostring(proposal.state.pendingOfflineSeconds))
+        onComplete(Result(true, {
+            state = proposal.state,
+            persistedState = state,
+            ban = ban,
+            warning = warning,
+            offlineAccrualPending = true,
+        }))
         return
     end
     if not proposal.ok then
@@ -52,8 +81,15 @@ function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplet
 end
 
 function PlayerProfileService:Load(userId, onComplete)
+    print("[ProfileDiag] uid=" .. tostring(userId) .. " loadBegin")
     self.repository:Load(userId, function(loadResult)
-        if not loadResult.ok then onComplete(loadResult); return end
+        if not loadResult.ok then
+            print("[ProfileDiag] uid=" .. tostring(userId)
+                .. " repositoryFailure code=" .. tostring(loadResult.code)
+                .. " reason=" .. tostring(loadResult.reason))
+            onComplete(loadResult)
+            return
+        end
         if loadResult.data.missing then
             local initial = StateFactory.Create(self.clock())
             self.repository:Create(userId, initial, function(createResult)
@@ -83,6 +119,7 @@ function PlayerProfileService:Attach(userId, connection, generation, loadData)
         connection = connection,
         generation = generation,
         state = loadData.state,
+        persistedState = TableUtils.DeepCopy(loadData.persistedState or loadData.state),
         ban = loadData.ban,
         ready = false,
         loadedAt = self.clock(),
@@ -158,6 +195,7 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
         return
     end
     local before = session.state
+    local persistedBefore = session.persistedState or before
     if commandId and HasAppliedGmCommand(before, commandId) then
         onComplete(Result(true, {
             state = before,
@@ -202,7 +240,7 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
         return
     end
 
-    self.repository:Commit(userId, before, proposal.state, "abyss " .. tostring(operationName), function(commitResult)
+    self.repository:Commit(userId, persistedBefore, proposal.state, "abyss " .. tostring(operationName), function(commitResult)
         if not commitResult.ok then
             onComplete(Result(false, { rollbackRevision = before.revision }, commitResult.code, commitResult.reason))
             return
@@ -213,6 +251,7 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
             return
         end
         session.state = proposal.state
+        session.persistedState = TableUtils.DeepCopy(proposal.state)
         onComplete(Result(true, {
             state = session.state,
             delta = proposal.delta,
@@ -220,6 +259,44 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
             alreadyApplied = false,
         }))
     end)
+end
+
+function PlayerProfileService:ApplyRuntime(userId, operationName, mutator, onComplete)
+    local session = self.sessions[userId]
+    if not session or not session.state then
+        onComplete(Result(false, {}, "PROFILE_NOT_LOADED", "玩家存档尚未加载"))
+        return
+    end
+    local before = session.state
+    local ok, proposal = pcall(mutator, before, self.clock())
+    if not ok then
+        onComplete(Result(false, {}, "DOMAIN_ERROR", proposal))
+        return
+    end
+    if type(proposal) ~= "table" or not proposal.ok then
+        local errorValue = type(proposal) == "table" and proposal.error or nil
+        onComplete(Result(false, {},
+            errorValue and errorValue.code or "INVALID_PROPOSAL",
+            errorValue and errorValue.reason or "运行时状态更新失败"))
+        return
+    end
+    local valid, validationError = GameStateSchema.ValidateState(proposal.state)
+    if not valid then
+        onComplete(Result(false, {}, validationError.code, validationError.reason))
+        return
+    end
+    if self.sessions[userId] ~= session then
+        onComplete(Result(false, {}, "STALE_SESSION", "玩家会话已变化"))
+        return
+    end
+    session.state = proposal.state
+    onComplete(Result(true, {
+        state = session.state,
+        delta = proposal.delta,
+        committed = false,
+        runtimeOnly = true,
+        operation = operationName,
+    }))
 end
 
 function PlayerProfileService:Apply(userId, operationName, mutator, onComplete)
@@ -251,13 +328,14 @@ function PlayerProfileService:TouchAndDetach(userId, generation, onComplete)
         return
     end
     local before = session.state
+    local persistedBefore = session.persistedState or before
     local proposal = touch(before, self.clock())
     if not proposal.ok or not proposal.commit or proposal.commit.kind == "none" then
         self.sessions[userId] = nil
         onComplete(Result(proposal.ok, { detached = true, persisted = false }, proposal.error and proposal.error.code, proposal.error and proposal.error.reason))
         return
     end
-    self.repository:Commit(userId, before, proposal.state, "abyss disconnect checkpoint", function(result)
+    self.repository:Commit(userId, persistedBefore, proposal.state, "abyss disconnect checkpoint", function(result)
         if self.sessions[userId] == session then self.sessions[userId] = nil end
         if result.ok then
             onComplete(Result(true, { detached = true, persisted = true }))

@@ -3,22 +3,21 @@ local GameEngine = require("server.domain.GameEngine")
 local StateFactory = require("server.domain.StateFactory")
 local StateNormalizer = require("server.domain.StateNormalizer")
 local TableUtils = require("server.domain.TableUtils")
+local GameStateSchema = require("shared.GameStateSchema")
+local BigNumber = require("shared.BigNumber")
+local LargeNumber = require("shared.LargeNumber")
+local PowerEvaluator = require("shared.PowerEvaluator")
+local StoryCatalog = require("shared.StoryCatalog")
+local FloorRoute = require("shared.FloorRoute")
 
 local Spec = {}
 
 local function queueRng(integers, floats)
-    local rng = {
-        integers = integers or {},
-        floats = floats or {},
-        integerIndex = 1,
-        floatIndex = 1,
-    }
+    local rng = { integers = integers or {}, floats = floats or {}, integerIndex = 1, floatIndex = 1 }
     function rng:Int(minimum, maximum)
         local value = self.integers[self.integerIndex]
         self.integerIndex = self.integerIndex + 1
-        if value == nil then
-            return maximum
-        end
+        if value == nil then return minimum end
         return math.max(minimum, math.min(maximum, value))
     end
     function rng:Float()
@@ -36,254 +35,545 @@ local function assertEqual(actual, expected, message)
 end
 
 local function assertTrue(value, message)
-    if not value then
-        error(message or "expected truthy value", 2)
-    end
+    if not value then error(message or "expected truthy value", 2) end
 end
 
-local function assertDeepEqual(actual, expected, message)
-    if not TableUtils.DeepEqual(actual, expected) then
-        error(message or "tables differ", 2)
+local function eventCount(events, kind)
+    local count = 0
+    for _, value in ipairs(events or {}) do
+        if value.kind == kind or value.type == kind then count = count + 1 end
     end
+    return count
 end
 
-function Spec.InitialStateRepairsDemoData()
+local function findEvent(events, kind)
+    for _, value in ipairs(events or {}) do
+        if value.kind == kind or value.type == kind then return value end
+    end
+    return nil
+end
+
+local function currency(value)
+    value = LargeNumber.Normalize(value)
+    return value.high * LargeNumber.BASE * LargeNumber.BASE
+        + value.mid * LargeNumber.BASE + value.low
+end
+
+local function skipIntro(state)
+    state.storyProgress.introCompleted = true
+    state.pendingStoryGate = nil
+    state.pauseReason = nil
+    return state
+end
+
+local function enterNextEncounter(state, rng, now)
+    local room = math.min(10, (state.position or 0) + 1)
+    return GameEngine.EnterEncounter(state, {
+        routeId = FloorRoute.RouteId(state.floor),
+        encounterId = FloorRoute.EncounterId(state.floor, room),
+        room = room,
+    }, rng or queueRng(), now)
+end
+
+local function highFloorLoadout(floor)
+    local state = skipIntro(StateFactory.Create(1000))
+    state.floor = floor
+    state.maxFloor = floor
+    state.position = 1
+    state.inventory = {}
+    state.equipped = {}
+    local definitionsBySlot = {}
+    for _, definition in ipairs(Catalog.EQUIPMENT_DEFINITIONS) do
+        if not definitionsBySlot[definition.slot] then definitionsBySlot[definition.slot] = definition end
+    end
+    for index, slot in ipairs(Catalog.SLOTS) do
+        local definition = assert(definitionsBySlot[slot.id])
+        local generated = Catalog.CreateItemStats(definition, floor, "myth", 1.05, 0, 0)
+        local item = {
+            id = string.format("00000000-0000-4000-8000-%012x", index),
+            equipmentId = definition.id,
+            name = definition.name,
+            slot = definition.slot,
+            category = definition.category,
+            rarity = "myth",
+            level = floor,
+            enhance = 0,
+            star = 0,
+            locked = false,
+            acquiredAt = 1000 + index,
+            source = "high_floor_spec",
+            investedGold = 0,
+            investedFragments = 0,
+            coreAffixes = {},
+        }
+        for key, value in pairs(generated) do item[key] = TableUtils.DeepCopy(value) end
+        state.inventory[#state.inventory + 1] = item
+        state.equipped[slot.id] = item.id
+    end
+    state.nextItemId = #state.inventory + 1
+    state.stats = Catalog.CalculateStats(state)
+    state.hp = nil
+    state.hpBig = BigNumber.Clone(state.stats.hpBig)
+    return state
+end
+
+function Spec.InitialStateIsACompleteEasyLoadout()
     local state = StateFactory.Create(1000)
-    assertEqual(state.level, 21)
-    assertEqual(state.exp, 464)
-    assertEqual(state.nextExp, 1636)
-    assertEqual(#state.inventory, 17)
-    assertEqual(state.nextItemId, 18)
-    assertEqual(state.equipped.pants, "eq-000010")
-    local pants = TableUtils.FindById(state.inventory, state.equipped.pants)
-    assertEqual(pants.slot, "pants")
-    assertEqual(state.fragments, 520)
-    for _, item in ipairs(state.inventory) do
-        assertTrue(item.slot ~= nil, "inventory must only contain equipment")
-        assertTrue(type(item.id) == "string", "equipment ids must be stable strings")
-    end
-    assertEqual(state.consumables.healthPotion, 12)
+    assertEqual(state.schemaVersion, 5)
+    assertEqual(#state.inventory, 12)
+    assertEqual(state.nextItemId, 13)
+    for _, slot in ipairs(Catalog.SLOTS) do assertTrue(state.equipped[slot.id] ~= nil, slot.id) end
+    assertTrue(state.stats.powerRatio >= 1.05 and state.stats.powerRatio <= 1.20)
+    local valid, reason = GameStateSchema.ValidateState(state)
+    assertTrue(valid, reason and reason.reason)
 end
 
-function Spec.NormalizerMigratesLegacyReferencesWithoutDuplicateMaterials()
-    local coat = { id = 1, name = "legacy coat", slot = "coat", rarity = "epic", hp = 10 }
+function Spec.NormalizerMigratesV3WithoutWeakeningOrKeepingInflightCombat()
+    local definition = Catalog.EQUIPMENT_DEFINITIONS[1]
     local normalized = StateNormalizer.Normalize({
-        level = 18,
-        exp = 4200,
-        fragments = 520,
-        mythShards = 12,
-        inventory = {
-            coat,
-            { id = 2, name = "深渊碎片", category = "material", rarity = "purple", quantity = 520 },
-            { id = 3, name = "神话碎片", category = "material", rarity = "epic", quantity = 12 },
-        },
-        equipped = { pants = coat },
+        schemaVersion = 3,
+        floor = 20,
+        maxFloor = 20,
+        position = 7,
+        currentMonster = { eventType = "boss", hp = 1, maxHp = 1 },
+        nextItemId = 2,
+        inventory = {{
+            id = 1,
+            equipmentId = definition.id,
+            rarity = "blue",
+            level = 10,
+            enhance = 3,
+            star = 1,
+        }},
+        equipped = { [definition.slot] = 1 },
     }, 1000)
-    assertEqual(normalized.level, 21)
-    assertEqual(normalized.exp, 464)
-    assertEqual(#normalized.inventory, 1)
-    assertEqual(normalized.fragments, 520)
-    assertEqual(normalized.mythShards, 12)
-    local item = normalized.inventory[1]
-    assertEqual(item.slot, "pants")
-    assertEqual(normalized.equipped.pants, item.id)
+    assertEqual(normalized.schemaVersion, 5)
+    assertEqual(normalized.position, 0)
+    assertTrue(normalized.currentMonster == nil)
+    assertEqual(normalized.inventory[1].rarity, "advanced")
+    assertEqual(normalized.inventory[1].statVersion, 5)
+    assertTrue(normalized.inventory[1].atk > 0 or normalized.inventory[1].hp > 0)
+    assertTrue(normalized.storyProgress.introCompleted)
+    assertTrue(GameStateSchema.ValidateState(normalized))
 end
 
-function Spec.MutationsDoNotModifyInputAndBuildBatchCommit()
+function Spec.NormalizerMigratesV4ScalarMagnitudesWithoutChangingTheirValues()
+    local original = skipIntro(StateFactory.Create(1000))
+    local raw = StateNormalizer.ToPersisted(original)
+    raw.schemaVersion = 4
+    local expectedHp = raw.hp
+    raw.hpBig = nil
+    local expectedItems = {}
+    for index, item in ipairs(raw.inventory) do
+        expectedItems[index] = {
+            budget = item.budget,
+            atk = item.atk,
+            def = item.def,
+            hp = item.hp,
+        }
+        item.statVersion = 4
+        item.budgetBig = nil
+        item.atkBig = nil
+        item.defBig = nil
+        item.hpBig = nil
+    end
+
+    local migrated = StateNormalizer.Normalize(raw, 1001)
+    assertEqual(migrated.schemaVersion, 5)
+    assertEqual(BigNumber.Compare(migrated.hpBig, BigNumber.FromNumber(expectedHp)), 0)
+    for index, item in ipairs(migrated.inventory) do
+        local expected = expectedItems[index]
+        assertEqual(BigNumber.Compare(item.budgetBig, BigNumber.FromNumber(expected.budget)), 0)
+        assertEqual(BigNumber.Compare(item.atkBig, BigNumber.FromNumber(expected.atk)), 0)
+        assertEqual(BigNumber.Compare(item.defBig, BigNumber.FromNumber(expected.def)), 0)
+        assertEqual(BigNumber.Compare(item.hpBig, BigNumber.FromNumber(expected.hp)), 0)
+    end
+    assertTrue(GameStateSchema.ValidateState(migrated))
+end
+
+function Spec.PrologueGatePausesCombatWithoutMutatingInput()
     local state = StateFactory.Create(1000)
     local before = TableUtils.DeepCopy(state)
-    local proposal = GameEngine.SetAutoRun(state, false, 1001)
-    assertTrue(proposal.ok)
-    assertDeepEqual(state, before, "engine mutated its input")
-    assertEqual(proposal.state.autoRun, false)
-    assertEqual(proposal.state.revision, 1)
-    assertEqual(proposal.commit.kind, "BatchCommit")
-    assertEqual(proposal.commit.expectedRevision, 0)
-    assertEqual(proposal.commit.scores.abyss_revision, 1)
-    assertTrue(proposal.commit.lists.abyss_inventory ~= state.inventory)
-    assertTrue(proposal.delta.changes == proposal.delta.changed)
+    local enabled = GameEngine.SetAutoRun(state, true, 1001)
+    assertTrue(enabled.ok)
+    assertTrue(TableUtils.DeepEqual(state, before), "engine mutated input")
+    assertTrue(enabled.state.pendingStoryGate ~= nil)
+    assertEqual(enabled.state.pendingStoryGate.phase, "prologue")
+    local blocked = GameEngine.AdvanceCombatTick(enabled.state, queueRng(), 1002, 1)
+    assertTrue(blocked.ok)
+    assertEqual(blocked.state.position, 0)
+    assertEqual(blocked.delta.kind, "GameDelta")
+    assertEqual(blocked.delta.operation, "story_gate")
+    local skipped = GameEngine.AdvanceStory(blocked.state, { action = "skip" }, 1003)
+    assertTrue(skipped.ok)
+    assertTrue(skipped.state.storyProgress.introCompleted)
 end
 
-function Spec.EquipUsesLogicalItemIds()
-    local state = StateFactory.Create(1000)
-    local proposal = GameEngine.Equip(state, "eq-000016", 1001)
-    assertTrue(proposal.ok)
-    assertEqual(proposal.state.equipped.weapon, "eq-000016")
-    assertEqual(type(proposal.state.equipped.weapon), "string")
-    assertEqual(proposal.delta.changes.equipped.weapon, "eq-000016")
-    assertDeepEqual(state.equipped, StateFactory.Create(1000).equipped)
+function Spec.EnterEncounterRejectsStaleOrSkippedRouteTargets()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+
+    local stale = GameEngine.EnterEncounter(state, {
+        routeId = FloorRoute.RouteId(2),
+        encounterId = FloorRoute.EncounterId(2, 1),
+        room = 1,
+    }, queueRng(), 1001)
+    assertTrue(not stale.ok)
+    assertEqual(stale.error.code, "STALE_ENCOUNTER")
+
+    local skipped = GameEngine.EnterEncounter(state, {
+        routeId = FloorRoute.RouteId(1),
+        encounterId = FloorRoute.EncounterId(1, 2),
+        room = 2,
+    }, queueRng(), 1002)
+    assertTrue(not skipped.ok)
+    assertEqual(skipped.error.code, "STALE_ENCOUNTER")
+
+    local started = enterNextEncounter(state, queueRng(), 1003)
+    assertTrue(started.ok)
+    assertEqual(started.state.position, 1)
+    assertEqual(started.state.currentMonster.id, FloorRoute.EncounterId(1, 1))
 end
 
-function Spec.AutoEquipSelectsHigherPowerItem()
-    local state = StateFactory.Create(1000)
-    local grant = GameEngine.GrantEquipment(state, {
-        name = "test ultimate weapon",
-        slot = "weapon",
-        rarity = "myth",
-        atk = 99999,
-    }, 1001)
-    assertTrue(grant.ok)
-    local itemId = grant.state.inventory[#grant.state.inventory].id
-    local proposal = GameEngine.AutoEquip(grant.state, 1002)
-    assertTrue(proposal.ok)
-    assertEqual(proposal.state.equipped.weapon, itemId)
+function Spec.OnlineAttackAlwaysSettlesFourConfiguredHits()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(started.ok and started.state.currentMonster ~= nil)
+    local won = GameEngine.AdvanceCombatTick(started.state, queueRng(), 1002, 60)
+    assertTrue(won.ok)
+    local hitCount = eventCount(won.delta.events, "player_attack_hit")
+    assertTrue(hitCount >= 4 and hitCount % 4 == 0)
+    assertEqual(eventCount(won.delta.events, "monster_defeated"), 1)
+    assertEqual(won.state.transitionRemaining, 0)
+    assertTrue(won.state.currentMonster == nil)
 end
 
-function Spec.DecomposeSkipsEquippedAndAwardsFragments()
-    local state = StateFactory.Create(1000)
-    local grant = GameEngine.GrantEquipment(state, {
-        name = "test common weapon",
-        slot = "weapon",
-        rarity = "common",
-        atk = 1,
-    }, 1001)
-    local grantedId = grant.state.inventory[#grant.state.inventory].id
-    local proposal = GameEngine.Decompose(grant.state, 1, 1002)
-    assertTrue(proposal.ok)
-    assertTrue(TableUtils.FindById(proposal.state.inventory, grantedId) == nil)
-    assertTrue(TableUtils.FindById(proposal.state.inventory, proposal.state.equipped.magicstone) ~= nil)
-    assertEqual(proposal.state.fragments, grant.state.fragments + 1)
+function Spec.LevelUpDoesNotHealPlayer()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+    state.exp = Catalog.NextExp(state.level) - 1
+    state.hp = math.floor(state.stats.hp * 0.50)
+    local levelBefore = state.level
+
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(started.ok and started.state.currentMonster ~= nil)
+    local won = GameEngine.AdvanceCombatTick(started.state, queueRng(), 1002, 60)
+
+    assertTrue(won.ok)
+    assertTrue(won.state.level > levelBefore)
+    assertTrue(won.state.hp < won.state.stats.hp, "level-up must not restore player HP")
+    assertEqual(eventCount(won.delta.events, "player_healed"), 0)
 end
 
-function Spec.StrengthenPaysExactCostAndHonorsLimit()
-    local state = StateFactory.Create(1000)
-    local itemBefore = TableUtils.FindById(state.inventory, state.equipped.belt)
-    assertEqual(itemBefore.enhance, 0)
-    local proposal = GameEngine.Strengthen(state, "belt", 1001)
-    assertTrue(proposal.ok)
-    local itemAfter = TableUtils.FindById(proposal.state.inventory, proposal.state.equipped.belt)
-    assertEqual(itemAfter.enhance, 1)
-    assertEqual(proposal.state.gold, state.gold - 1200)
-    assertEqual(proposal.state.fragments, state.fragments - 8)
-    local rejected = GameEngine.Strengthen(proposal.state, "belt", 1002)
-    assertEqual(rejected.ok, false)
-    assertEqual(rejected.error.code, "ENHANCE_LIMIT")
-    assertEqual(rejected.commit.kind, "none")
+function Spec.LevelUpEmitsNormalizedProgressPayload()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+    state.exp = Catalog.NextExp(state.level) - 1
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(started.ok)
+    local won = GameEngine.AdvanceCombatTick(started.state, queueRng(), 1002, 60)
+    assertTrue(won.ok)
+    local levelUp = findEvent(won.delta.events, "level_up")
+    assertTrue(levelUp ~= nil)
+    assertTrue(levelUp.levelsGained >= 1)
+    assertEqual(levelUp.level, won.state.level)
+    assertEqual(levelUp.exp, won.state.exp)
+    assertEqual(levelUp.nextExp, won.state.nextExp)
+    assertTrue(won.state.exp < Catalog.NextExp(won.state.level))
 end
 
-function Spec.StarConsumesUnequippedDuplicate()
-    local state = StateFactory.Create(1000)
-    local countBefore = #state.inventory
-    local proposal = GameEngine.Star(state, "weapon", 1001)
-    assertTrue(proposal.ok)
-    assertEqual(#proposal.state.inventory, countBefore - 1)
-    local weapon = TableUtils.FindById(proposal.state.inventory, proposal.state.equipped.weapon)
-    assertEqual(weapon.star, 1)
-    assertTrue(TableUtils.FindById(proposal.state.inventory, "eq-000017") == nil)
+function Spec.CurrentMonsterRoundTripsWithChapterBossIdentity()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.floor = 10
+    state.maxFloor = 10
+    state.position = 9
+    state.ruleAcknowledgements["story:1:boss"] = true
+    state.ruleAcknowledgements["story:1:opening"] = true
+    state.autoRun = true
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(started.ok and started.state.currentMonster ~= nil)
+    assertEqual(started.state.currentMonster.encounter, "chapterBoss")
+    local restored = StateNormalizer.Normalize(StateNormalizer.ToPersisted(started.state), 1002)
+    assertEqual(restored.currentMonster.encounter, "chapterBoss")
+    assertTrue(restored.currentMonster.isChapterBoss)
+    assertTrue(GameStateSchema.ValidateState(restored))
 end
 
-function Spec.AdvanceResolvesChestDeterministically()
-    local state = StateFactory.Create(1000)
-    local proposal = GameEngine.AdvanceOneCell(state, queueRng({ 80, 3, 100 }), 1003)
-    assertTrue(proposal.ok)
-    assertEqual(proposal.state.position, 88)
-    assertEqual(proposal.state.currentEvent, "chest")
-    assertEqual(proposal.state.gold, state.gold + 100)
-    assertEqual(proposal.state.fragments, state.fragments + 3)
-    assertEqual(#proposal.state.inventory, #state.inventory)
+function Spec.TwoOnlineDeathsResetFloorAndExposeAid()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+    state.floorKillBonus = 0.20
+    for defeat = 1, 2 do
+        local started = enterNextEncounter(state, queueRng(), 1010 + defeat * 2)
+        assertTrue(started.ok)
+        started.state.currentMonster.atk = 1e9
+        started.state.currentMonster.def = 1e9
+        started.state.currentMonster.hp = 1e9
+        started.state.currentMonster.maxHp = 1e9
+        started.state.currentMonster.atkBig = BigNumber.FromNumber(1e9)
+        started.state.currentMonster.defBig = BigNumber.FromNumber(1e9)
+        started.state.currentMonster.hpBig = BigNumber.FromNumber(1e9)
+        started.state.currentMonster.maxHpBig = BigNumber.FromNumber(1e9)
+        started.state.currentMonster.nextMonsterAttackSeconds = 0
+        local lost = GameEngine.AdvanceCombatTick(started.state, queueRng(), 1011 + defeat * 2, 60)
+        assertTrue(lost.ok)
+        state = lost.state
+        assertEqual(state.position, 0)
+        assertEqual(state.floorDefeats, defeat)
+        assertEqual(state.floorKillBonus, 0)
+        assertTrue(state.currentMonster == nil)
+        assertEqual(eventCount(lost.delta.events, "player_died"), 1)
+    end
+    assertTrue(state.aidPending)
+    assertEqual(state.pauseReason, "tower_aid")
+    local aided = GameEngine.ClaimAid(state, queueRng(), 1020)
+    assertTrue(aided.ok)
+    assertTrue(not aided.state.aidPending)
+    assertEqual(aided.state.aidGrantedFloors[1], 1)
+    assertTrue(eventCount(aided.delta.events, "aid_granted") == 1)
+    local claimed = findEvent(aided.delta.events, "tower_aid_claimed")
+    assertTrue(claimed ~= nil)
+    assertTrue(claimed.itemCount >= 1 and claimed.itemCount <= 2)
+    assertTrue(claimed.targetMet == true)
+    assertTrue(BigNumber.Compare(
+        claimed.displayedPowerBig or claimed.displayedPower,
+        claimed.targetPowerBig or claimed.targetPower
+    ) >= 0)
 end
 
-function Spec.BattleIsServerDeterministicWhenRngIsInjected()
-    local state = StateFactory.Create(1000)
-    state.position = 0
-    local first = GameEngine.AdvanceOneCell(state, queueRng(), 1003)
-    local second = GameEngine.AdvanceOneCell(state, queueRng(), 1003)
-    assertTrue(first.ok and second.ok)
-    assertDeepEqual(first.state, second.state)
-    assertDeepEqual(first.delta.events, second.delta.events)
-    assertEqual(first.state.position, 1)
-    assertTrue(first.state.gold > state.gold)
-end
-
-function Spec.FullInventoryPausesWithoutAdvancingOrDropping()
-    local state = StateFactory.Create(1000)
+function Spec.FullInventoryMovesBossDropToTemporaryLoot()
+    local state = skipIntro(StateFactory.Create(1000))
     local template = TableUtils.DeepCopy(state.inventory[1])
     while #state.inventory < Catalog.INVENTORY_CAP do
-        local id = string.format("eq-%06d", state.nextItemId)
-        state.nextItemId = state.nextItemId + 1
         local item = TableUtils.DeepCopy(template)
-        item.id = id
-        item.name = "capacity filler " .. id
+        item.id = string.format("00000000-0000-4000-9000-%012x", #state.inventory + 1000)
+        item.locked = false
+        item.aidLocked = false
         state.inventory[#state.inventory + 1] = item
     end
+    state.inventoryPolicy.pauseOnFull = false
+    state.position = 9
     state.autoRun = true
-    local before = TableUtils.DeepCopy(state)
-    local proposal = GameEngine.AdvanceOneCell(state, queueRng(), 1003)
-    assertTrue(proposal.ok)
-    assertEqual(proposal.state.position, before.position)
-    assertEqual(#proposal.state.inventory, Catalog.INVENTORY_CAP)
-    assertEqual(proposal.state.autoRun, false)
-    assertEqual(proposal.state.pauseReason, "inventory_full")
-    assertDeepEqual(state, before)
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    local won = GameEngine.AdvanceCombatTick(started.state, queueRng(), 1002, 60)
+    assertTrue(won.ok)
+    assertEqual(#won.state.inventory, Catalog.INVENTORY_CAP)
+    assertEqual(#won.state.overflowLoot, 1)
+    assertEqual(won.state.pauseReason, "inventory_full")
+    assertTrue(not won.state.autoRun)
+    local settled = findEvent(won.delta.events, "loot_settled")
+    assertTrue(settled ~= nil)
+    assertEqual(settled.outcome, "temporary_box")
 end
 
-function Spec.MultiDropOverflowRollsBackTheWholeCell()
-    local state = StateFactory.Create(1000)
-    local template = TableUtils.DeepCopy(state.inventory[1])
-    while #state.inventory < Catalog.INVENTORY_CAP - 1 do
-        local id = string.format("eq-%06d", state.nextItemId)
-        state.nextItemId = state.nextItemId + 1
-        local item = TableUtils.DeepCopy(template)
-        item.id = id
-        item.name = "boss overflow filler " .. id
-        state.inventory[#state.inventory + 1] = item
-    end
+function Spec.OfflineRewardsApplyTwentyPercentExactlyOnce()
+    local onlineState = skipIntro(StateFactory.Create(1000))
+    local online = GameEngine.AdvanceOneCell(onlineState, queueRng({}, { 0.99, 0.99 }), 1001)
+    assertTrue(online.ok)
+    local onlineGold = currency(online.state.gold) - currency(onlineState.gold)
+
+    local offlineState = skipIntro(StateFactory.Create(1000))
+    offlineState.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS
+    local offline = GameEngine.CollectOffline(offlineState, 1001)
+    assertTrue(offline.ok)
+    local offlineGold = currency(offline.state.gold) - currency(offlineState.gold)
+    assertEqual(offlineGold, math.floor(onlineGold * Catalog.OFFLINE_REWARD_RATE))
+    assertEqual(offline.state.pendingOfflineSeconds, 0)
+    local collected = findEvent(offline.delta.events, "offline_collected")
+    assertTrue(collected ~= nil)
+    assertEqual(collected.rewardRate, Catalog.OFFLINE_REWARD_RATE)
+    assertEqual(collected.floor, offlineState.floor)
+    assertTrue(collected.fixedFloor)
+    assertTrue(type(collected.equipmentItems) == "table")
+end
+
+function Spec.OfflineRewardsRepeatCurrentFloorWithoutAdvancing()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.floor = 10
+    state.maxFloor = 10
+    state.position = 9
+    state.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS * 12
+    state.pendingStoryGate = nil
+    state.pauseReason = nil
+    state.ruleAcknowledgements = {}
+
+    local offline = GameEngine.CollectOffline(state, 1001)
+    assertTrue(offline.ok)
+    assertEqual(offline.state.floor, 10)
+    assertEqual(offline.state.maxFloor, 10)
+    assertTrue(offline.state.position >= 0 and offline.state.position <= 9)
+    assertTrue(findEvent(offline.delta.events, "floor_advanced") == nil)
+    assertTrue(offline.state.pendingStoryGate == nil)
+    local collected = findEvent(offline.delta.events, "offline_collected")
+    assertTrue(collected ~= nil)
+    assertEqual(collected.floor, 10)
+    assertTrue(collected.fixedFloor)
+end
+
+function Spec.ChapterOpeningAndBossStoryGatesAreAuthoritative()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.floor = 10
+    state.maxFloor = 10
+    state.position = 0
+    state.autoRun = true
+    local opening = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(opening.ok)
+    assertEqual(opening.state.pendingStoryGate.phase, "opening")
+    local skipped = GameEngine.AdvanceStory(opening.state, { action = "skip" }, 1002)
+    assertTrue(skipped.ok)
+    skipped.state.position = 9
+    skipped.state.currentMonster = nil
+    skipped.state.transitionRemaining = 0
+    local boss = enterNextEncounter(skipped.state, queueRng(), 1003)
+    assertTrue(boss.ok)
+    assertEqual(boss.state.pendingStoryGate.phase, "boss")
+end
+
+function Spec.StoryCatalogKeepsChapterAndFloorLookupsDistinct()
+    local chapterSix = StoryCatalog.GetChapter(6)
+    assertEqual(chapterSix.id, "chapter_0006")
+    assertEqual(chapterSix.floor, 60)
+
+    local chapterTen = StoryCatalog.GetChapter(10)
+    assertEqual(chapterTen.id, "chapter_0010")
+    assertEqual(chapterTen.floor, 100)
+
+    local floorOneHundred = StoryCatalog.GetChapterForFloor(100)
+    assertEqual(floorOneHundred.id, chapterTen.id)
+    assertEqual(floorOneHundred.floor, chapterTen.floor)
+
+    local gate = StoryCatalog.GetGateForFloor(100, "opening")
+    assertEqual(gate.storyId, "chapter_0010:opening")
+    assertEqual(gate.chapter, 10)
+    assertEqual(gate.floor, 100)
+end
+
+function Spec.HighChapterStoryGateUsesTheProductionChapterNumber()
+    local state = skipIntro(StateFactory.Create(1000))
     state.floor = 100
     state.maxFloor = 100
-    state.position = 99
-    state.permanentBonus = 1000
-    state.hp = 1000000000
+    state.position = 0
+    state.autoRun = true
 
-    local rng = { hundredRolls = 0 }
-    function rng:Int(minimum, maximum)
-        if minimum == 1 and maximum == 100 then
-            self.hundredRolls = self.hundredRolls + 1
-            return self.hundredRolls == 2 and 1 or 100
-        end
-        return maximum
-    end
-    function rng:Float()
-        return 0.99
-    end
+    local opening = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(opening.ok)
+    assertEqual(opening.state.pendingStoryGate.storyId, "chapter_0010:opening")
+    assertEqual(opening.state.pendingStoryGate.chapter, 10)
+    assertEqual(opening.state.pendingStoryGate.floor, 100)
 
-    local proposal = GameEngine.AdvanceOneCell(state, rng, 1003)
-    assertTrue(proposal.ok)
-    assertEqual(proposal.state.position, 99)
-    assertEqual(proposal.state.floor, 100)
-    assertEqual(#proposal.state.inventory, Catalog.INVENTORY_CAP - 1)
-    assertEqual(proposal.state.autoRun, false)
-    assertEqual(proposal.state.pauseReason, "inventory_full")
-    assertEqual(proposal.delta.events[1].rollback, "cell_settlement")
+    local restored = StateNormalizer.Normalize(StateNormalizer.ToPersisted(opening.state), 1002)
+    assertEqual(restored.pendingStoryGate.storyId, "chapter_0010:opening")
+    assertEqual(restored.pendingStoryGate.chapter, 10)
+    assertEqual(restored.pendingStoryGate.floor, 100)
 end
 
-function Spec.OfflineAccrualCapsAtTwelveHoursAndCollectsOnce()
-    local state = StateFactory.Create(1000)
-    state.pendingOfflineSeconds = 0
-    state.lastActiveAt = 1000
-    local accrued = GameEngine.AccrueOffline(state, 1000 + Catalog.OFFLINE_MAX_SECONDS + 5000)
-    assertTrue(accrued.ok)
-    assertEqual(accrued.state.pendingOfflineSeconds, Catalog.OFFLINE_MAX_SECONDS)
-    local collected = GameEngine.CollectOffline(accrued.state, 50001)
-    assertTrue(collected.ok)
-    assertEqual(collected.state.pendingOfflineSeconds, 0)
-    assertTrue(collected.state.gold > accrued.state.gold)
-    assertTrue(collected.state.level >= accrued.state.level)
-    local duplicate = GameEngine.CollectOffline(collected.state, 50002)
-    assertEqual(duplicate.ok, false)
-    assertEqual(duplicate.error.code, "NO_OFFLINE_REWARD")
+function Spec.HighFloorCombatUsesBigNumberStateWithoutScalarFallback()
+    local definition = Catalog.EQUIPMENT_DEFINITIONS[1]
+    local generated = Catalog.CreateItemStats(definition, 100000, "myth", 1.05, 0, 0)
+    assertEqual(generated.statVersion, 5)
+    assertTrue(generated.atk == nil, "high-floor attack must not use a zero scalar alias")
+    assertTrue(BigNumber.Compare(generated.atkBig, BigNumber.Zero()) > 0)
+    assertTrue(generated.atkBig.exponent > 300)
+
+    local state = highFloorLoadout(100000)
+    state.ruleAcknowledgements["story:10000:opening"] = true
+    state.ruleAcknowledgements["story:10000:boss"] = true
+    local adjusted = GameEngine.AdjustProgress(state, {
+        floor = 100000,
+        maxFloor = 100000,
+        position = 9,
+    }, 1001)
+    assertTrue(adjusted.ok)
+    assertTrue(adjusted.state.hp == nil)
+    assertTrue(adjusted.state.stats.atk == nil)
+    assertTrue(BigNumber.Compare(adjusted.state.hpBig, BigNumber.Zero()) > 0)
+    assertEqual(#adjusted.state.inventory, #Catalog.SLOTS)
+    for _, item in ipairs(adjusted.state.inventory) do
+        assertTrue(item.budget == nil and item.atk == nil and item.def == nil and item.hp == nil)
+        assertTrue(BigNumber.ValidateCanonical(item.budgetBig))
+        assertTrue(BigNumber.ValidateCanonical(item.atkBig))
+        assertTrue(BigNumber.ValidateCanonical(item.defBig))
+        assertTrue(BigNumber.ValidateCanonical(item.hpBig))
+    end
+    for _, slot in ipairs(Catalog.SLOTS) do
+        assertTrue(adjusted.state.equipped[slot.id] ~= nil)
+    end
+    assertTrue(GameStateSchema.ValidateState(adjusted.state))
+
+    adjusted.state.autoRun = true
+    local started = enterNextEncounter(adjusted.state, queueRng(), 1002)
+    assertTrue(started.ok and started.state.currentMonster ~= nil)
+    assertTrue(started.state.currentMonster.hp == nil)
+    assertTrue(started.state.currentMonster.atk == nil)
+    assertTrue(started.state.currentMonster.hpBig.exponent > 300)
+
+    local persisted = StateNormalizer.ToPersisted(started.state)
+    local restored = StateNormalizer.Normalize(persisted, 1003)
+    assertEqual(BigNumber.Compare(
+        restored.currentMonster.hpBig, started.state.currentMonster.hpBig), 0)
+    local restoredById = {}
+    for _, item in ipairs(restored.inventory) do restoredById[item.id] = item end
+    for _, item in ipairs(started.state.inventory) do
+        local restoredItem = restoredById[item.id]
+        assertTrue(restoredItem ~= nil)
+        assertEqual(BigNumber.Compare(restoredItem.budgetBig, item.budgetBig), 0)
+        assertEqual(BigNumber.Compare(restoredItem.atkBig, item.atkBig), 0)
+        assertEqual(BigNumber.Compare(restoredItem.defBig, item.defBig), 0)
+        assertEqual(BigNumber.Compare(restoredItem.hpBig, item.hpBig), 0)
+    end
+    for _, slot in ipairs(Catalog.SLOTS) do
+        assertEqual(restored.equipped[slot.id], started.state.equipped[slot.id])
+    end
+    assertTrue(GameStateSchema.ValidateState(restored))
+
+    local advanced = GameEngine.AdvanceCombatTick(restored, queueRng(), 1004, 60)
+    assertTrue(advanced.ok)
+    assertTrue(GameStateSchema.ValidateState(advanced.state))
+    local damageEvent = findEvent(advanced.delta.events, "player_damaged")
+    assertTrue(damageEvent and BigNumber.IsBigNumber(damageEvent.amountBig))
 end
 
-function Spec.TouchActivePersistsDisconnectTimeWithoutChangingAutoRun()
+function Spec.FullModelAutoEquipAndUndoUseOneAuthoritativeLoadout()
+    local state = skipIntro(StateFactory.Create(1000))
+    local definition = Catalog.GetEquipmentDefinition(state.inventory[1].equipmentId)
+    local granted = GameEngine.GrantEquipment(state, {
+        equipmentId = definition.id,
+        rarity = "myth",
+        atk = 10000,
+        level = 1,
+    }, 1001)
+    assertTrue(granted.ok)
+    local itemId = granted.state.inventory[#granted.state.inventory].id
+    local equipped = GameEngine.AutoEquip(granted.state, 1002)
+    assertTrue(equipped.ok)
+    assertEqual(equipped.state.equipped[definition.slot], itemId)
+    assertTrue(equipped.state.previousLoadout.available)
+    local undone = GameEngine.UndoEquip(equipped.state, 1003)
+    assertTrue(undone.ok)
+    assertTrue(undone.state.equipped[definition.slot] ~= itemId)
+    assertEqual(eventCount(undone.delta.events, "equipment_reverted"), 1)
+end
+
+function Spec.StoryLineIndexAndRuleIdsAreAuthoritative()
     local state = StateFactory.Create(1000)
-    local touched = GameEngine.TouchActive(state, 1005)
-    assertTrue(touched.ok)
-    assertEqual(touched.state.lastActiveAt, 1005)
-    assertEqual(touched.state.autoRun, state.autoRun)
-    assertEqual(touched.commit.kind, "BatchCommit")
-    local unchanged = GameEngine.TouchActive(touched.state, 1005)
-    assertTrue(unchanged.ok)
-    assertEqual(unchanged.commit.kind, "none")
-    assertTrue(unchanged.delta.changes == unchanged.delta.changed)
+    local enabled = GameEngine.SetAutoRun(state, true, 1001)
+    local gate = enabled.state.pendingStoryGate
+    local advanced = GameEngine.AdvanceStory(enabled.state, {
+        action = "next", storyId = gate.storyId, lineIndex = 2,
+    }, 1002)
+    assertTrue(advanced.ok)
+    assertEqual(advanced.state.pendingStoryGate.lineIndex, 2)
+
+    local stale = GameEngine.AdvanceStory(advanced.state, {
+        action = "next", storyId = gate.storyId, lineIndex = 2,
+    }, 1003)
+    assertTrue(not stale.ok)
+    assertEqual(stale.error.code, "STALE_STORY_GATE")
+
+    local acknowledged = GameEngine.AcknowledgeRules(state, "tower-v2", 1004)
+    assertTrue(acknowledged.ok)
+    assertTrue(acknowledged.state.ruleAcknowledgements[StoryCatalog.RULE_ID])
 end
 
 return Spec

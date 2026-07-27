@@ -1,6 +1,8 @@
 local FakeGateway = require("integration.FakeGateway")
 local GameEngine = require("server.domain.GameEngine")
 local GameStateSchema = require("shared.GameStateSchema")
+local LargeNumber = require("shared.LargeNumber")
+local Catalog = require("server.domain.Catalog")
 local PlayerProfileRepository = require("server.repositories.PlayerProfileRepository")
 local PlayerProfileService = require("server.services.PlayerProfileService")
 local StateFactory = require("server.domain.StateFactory")
@@ -21,6 +23,21 @@ end
 
 local function AssertDeepEqual(actual, expected, message)
     if not TableUtils.DeepEqual(actual, expected) then error(message or "tables differ", 2) end
+end
+
+local function AssertLargeEqual(actual, expected, message)
+    if LargeNumber.Compare(actual, expected) ~= 0 then
+        error((message or "large numbers differ")
+            .. ": expected " .. LargeNumber.ToString(expected)
+            .. ", got " .. LargeNumber.ToString(actual), 2)
+    end
+end
+
+local function EquipmentDefinition(slot)
+    for _, definition in ipairs(Catalog.EQUIPMENT_DEFINITIONS) do
+        if definition.slot == slot then return definition end
+    end
+    error("missing equipment definition for slot " .. tostring(slot), 2)
 end
 
 local function NewStack(gateway, now)
@@ -49,33 +66,79 @@ local function HasKind(operations, kind)
     return false
 end
 
-function Spec.FirstLoadCreatesScoreMoneyListAndItemProjection()
+local function HasScoreInt(operations, kind, key, value)
+    for _, operation in ipairs(operations or {}) do
+        if operation.kind == kind and operation.key == key and operation.value == value then
+            return true
+        end
+    end
+    return false
+end
+
+function Spec.FirstLoadCreatesV5ProfileAndStarterLoadoutProjection()
     local gateway = FakeGateway.New()
     local now = { value = 1000 }
     local repository, service = NewStack(gateway, now)
     local loaded = Load(service, 101)
 
     AssertTrue(loaded.ok and loaded.data.created, "first load should create a profile")
-    AssertEqual(loaded.data.state.level, 21)
-    AssertEqual(loaded.data.state.exp, 464)
-    AssertEqual(loaded.data.state.equipped.pants, "eq-000010")
-    AssertEqual(#loaded.data.state.inventory, 17)
-    AssertEqual(loaded.data.state.consumables.healthPotion, 12)
+    AssertEqual(loaded.data.state.schemaVersion, 5)
+    AssertEqual(loaded.data.state.level, 1)
+    AssertEqual(loaded.data.state.exp, 0)
+    AssertEqual(loaded.data.state.floor, 1)
+    AssertEqual(#loaded.data.state.inventory, 12)
+    AssertEqual(loaded.data.state.consumables.healthPotion, 0)
+    for _, slot in ipairs(GameStateSchema.SLOTS) do
+        AssertTrue(loaded.data.state.equipped[slot] ~= nil, "starter slot is not equipped: " .. slot)
+    end
+    for _, item in ipairs(loaded.data.state.inventory) do
+        AssertEqual(item.rarity, "rare", "starter equipment must use the V5 rare baseline")
+        AssertEqual(item.statVersion, 5, "starter equipment must preserve rolled V5 stats")
+    end
+    AssertTrue(GameStateSchema.ValidateState(loaded.data.state), "created V5 state is invalid")
 
     local initialCommit = gateway.commits[1]
     AssertTrue(initialCommit ~= nil, "initial profile did not use BatchCommit")
     local op = repository.gateway.CommitOperation
     AssertTrue(HasKind(initialCommit.operations, op.SCORE_SET), "initial transaction is missing Score")
-    AssertTrue(HasKind(initialCommit.operations, op.MONEY_ADD), "initial transaction is missing Money")
+    for _, key in ipairs({
+        repository.Keys.GOLD_HIGH, repository.Keys.GOLD_MID, repository.Keys.GOLD_LOW,
+        repository.Keys.FRAGMENTS_HIGH, repository.Keys.FRAGMENTS_MID, repository.Keys.FRAGMENTS_LOW,
+        repository.Keys.MYTH_SHARDS_HIGH, repository.Keys.MYTH_SHARDS_MID, repository.Keys.MYTH_SHARDS_LOW,
+    }) do
+        AssertTrue(HasScoreInt(initialCommit.operations, op.SCORE_SET_INT, key, 0),
+            "initial transaction is missing zeroed currency segment: " .. key)
+    end
     AssertTrue(HasKind(initialCommit.operations, op.LIST_ADD), "initial transaction is missing List")
-    AssertEqual(#gateway.items, 1, "health potion Item projection was not created")
-    AssertEqual(gateway.items[1].count, 12)
+    AssertEqual(#gateway.lists, 12, "starter loadout was not projected to the cloud list")
+    AssertEqual(#gateway.items, 0, "zero-count consumables should not create cloud items")
 
     local _, reloadedService = NewStack(gateway, now)
     local reloaded = Load(reloadedService, 101)
     AssertTrue(reloaded.ok and not reloaded.data.created, "second load should use persisted data")
-    AssertEqual(reloaded.data.state.consumables.healthPotion, 12, "Item count was not restored")
-    AssertEqual(#reloaded.data.state.inventory, 17, "List inventory was not restored")
+    AssertEqual(reloaded.data.state.consumables.healthPotion, 0, "Item count was not restored")
+    AssertEqual(#reloaded.data.state.inventory, 12, "starter inventory was not restored")
+    AssertDeepEqual(reloaded.data.state.equipped, loaded.data.state.equipped,
+        "starter equipment mapping was not restored")
+    AssertTrue(GameStateSchema.ValidateState(reloaded.data.state), "reloaded V5 state is invalid")
+end
+
+function Spec.CorruptV5BigNumbersAreRejectedBeforeNormalization()
+    local gateway = FakeGateway.New()
+    local now = { value = 1500 }
+    local _, service = NewStack(gateway, now)
+    local created = Load(service, 151)
+    AssertTrue(created.ok and created.data.created)
+
+    local commitsBeforeReload = #gateway.commits
+    gateway.lists[1].value.atkBig = nil
+    local _, reloadedService = NewStack(gateway, now)
+    local corrupted = Load(reloadedService, 151)
+    AssertTrue(not corrupted.ok)
+    AssertEqual(corrupted.code, "CORRUPT_INVENTORY")
+    AssertTrue(string.find(corrupted.reason, "inventory%[1%]%.atkBig") ~= nil)
+    AssertEqual(#gateway.commits, commitsBeforeReload,
+        "corrupt V5 data must be rejected without a normalization writeback")
 end
 
 function Spec.ApplyDoesNotPublishMemoryUntilCommitSucceeds()
@@ -93,11 +156,11 @@ function Spec.ApplyDoesNotPublishMemoryUntilCommitSucceeds()
 
     AssertEqual(completed, nil, "Apply completed before the cloud callback")
     AssertTrue(service:GetState(202) == initial, "session state changed before commit success")
-    AssertEqual(service:GetState(202).gold, initial.gold)
+    AssertLargeEqual(service:GetState(202).gold, initial.gold)
 
     gateway:ResolveNextCommit(true)
     AssertTrue(completed and completed.ok, "successful cloud commit was not published")
-    AssertEqual(service:GetState(202).gold, initial.gold + 25)
+    AssertLargeEqual(service:GetState(202).gold, LargeNumber.Add(initial.gold, 25))
     AssertEqual(service:GetState(202).revision, initial.revision + 1)
 end
 
@@ -111,12 +174,11 @@ function Spec.FailedCommitRollsBackMemoryInventoryAndListMapping()
 
     gateway:FailNextCommit("WRITE_FAILED", "injected atomic failure")
     local completed = nil
+    local definition = EquipmentDefinition("weapon")
     service:Apply(303, "grant equipment", function(state, timestamp)
         return GameEngine.GrantEquipment(state, {
-            name = "rollback test weapon",
-            slot = "weapon",
+            equipmentId = definition.id,
             rarity = "epic",
-            atk = 999,
         }, timestamp)
     end, function(result) completed = result end)
 
@@ -124,7 +186,7 @@ function Spec.FailedCommitRollsBackMemoryInventoryAndListMapping()
     AssertEqual(completed.code, "WRITE_FAILED")
     AssertDeepEqual(service:GetState(303), before, "session memory changed after cloud failure")
     AssertEqual(#service:GetState(303).inventory, #before.inventory)
-    AssertEqual(repository.listIds[303] and repository.listIds[303]["eq-000018"], nil,
+    AssertTrue(repository.listIds[303] == nil or next(repository.listIds[303]) == nil,
         "failed ListAdd leaked into repository mapping")
     AssertEqual(#gateway.lists, 0, "failed transaction changed fake cloud inventory")
 end
@@ -144,7 +206,7 @@ function Spec.FailedApplyOnceDoesNotConsumeCommandId()
     end, function(result) failed = result end)
     AssertTrue(failed and not failed.ok, "first idempotent commit should fail")
     AssertEqual(#service:GetState(353).appliedGmCommandIds, 0)
-    AssertEqual(service:GetState(353).gold, initial.gold)
+    AssertLargeEqual(service:GetState(353).gold, initial.gold)
 
     local retried = nil
     service:ApplyOnce(353, commandId, "GM retry test", function(state, timestamp)
@@ -152,7 +214,7 @@ function Spec.FailedApplyOnceDoesNotConsumeCommandId()
     end, function(result) retried = result end)
     AssertTrue(retried and retried.ok and not retried.data.alreadyApplied,
         "retry after failed transaction did not apply")
-    AssertEqual(service:GetState(353).gold, initial.gold + 31)
+    AssertLargeEqual(service:GetState(353).gold, LargeNumber.Add(initial.gold, 31))
     AssertEqual(service:GetState(353).appliedGmCommandIds[1], commandId)
 end
 
@@ -164,13 +226,12 @@ function Spec.ApplyOnceEquipmentReplayDoesNotDuplicateCloudList()
     Attach(service, 363, 1, initial)
     local commandId = "gm-equipment-once"
     local mutatorCalls = 0
+    local definition = EquipmentDefinition("weapon")
     local function grant(state, timestamp)
         mutatorCalls = mutatorCalls + 1
         return GameEngine.GrantEquipment(state, {
-            name = "idempotent equipment",
-            slot = "weapon",
+            equipmentId = definition.id,
             rarity = "epic",
-            atk = 777,
         }, timestamp)
     end
 

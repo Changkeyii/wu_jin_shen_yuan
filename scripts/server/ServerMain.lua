@@ -1,6 +1,8 @@
 local Protocol = require("shared.NetworkProtocol")
 local ErrorCodes = require("shared.ErrorCodes")
 local GameStateSchema = require("shared.GameStateSchema")
+local GameEventSchema = require("shared.GameEventSchema")
+local FloorRoute = require("shared.FloorRoute")
 local ServerConfig = require("server.ServerConfig")
 local PlayerRegistry = require("server.core.PlayerRegistry")
 local AdmissionGuard = require("server.core.AdmissionGuard")
@@ -29,6 +31,24 @@ local profileService_ = nil
 local idleService_ = nil
 local adminService_ = nil
 local adminPolicy_ = nil
+local snapshotTransferId_ = 0
+
+local POWER_SNAPSHOT_FIELDS = {
+    "displayedPower",
+    "recommendedPower",
+    "nextChapterRecommendedPower",
+    "powerRatio",
+    "headroomFloors",
+    "difficultyLabel",
+    "bossScore",
+    "eliteScore",
+    "estimatedEasyFloor",
+}
+
+local function NextSnapshotTransferId()
+    snapshotTransferId_ = snapshotTransferId_ + 1
+    return string.format("s-%d-%d", os.time(), snapshotTransferId_)
+end
 
 local function SeedAuthoritativeRandom()
     local seed = os.time()
@@ -64,6 +84,12 @@ local function SendPayload(connection, eventName, command, payload, requestId)
         print("[Server] JSON envelope error: " .. tostring(encodeError and encodeError.reason))
         return false
     end
+    if #envelope.payloadJson > Protocol.MAX_SERVER_PAYLOAD_BYTES then
+        print("[Server] outbound payload rejected command=" .. tostring(command)
+            .. " bytes=" .. tostring(#envelope.payloadJson)
+            .. " limit=" .. tostring(Protocol.MAX_SERVER_PAYLOAD_BYTES))
+        return false
+    end
     local ok, reason = pcall(function()
         connection:SendRemoteEvent(eventName, true, Protocol.ToVariantMap(envelope))
     end)
@@ -71,12 +97,46 @@ local function SendPayload(connection, eventName, command, payload, requestId)
     return ok
 end
 
-local function SendStatus(connection, state, code, reason, extra)
-    local payload = extra or {}
+local function BuildStatusPayload(state, code, reason, extra)
+    local payload = extra and GameStateSchema.DeepCopy(extra) or {}
     payload.state = state
     payload.code = code or ErrorCodes.OK
     payload.reason = reason or ""
+    return payload
+end
+
+local function SendStatus(connection, state, code, reason, extra)
+    local payload = BuildStatusPayload(state, code, reason, extra)
+    local entry = registry_ and registry_:GetByConnection(connection) or nil
+    if not entry or not entry.ready then
+        local terminal = state == "rejected" or state == "error" or state == "banned"
+        if terminal then
+            return SendPayload(connection, Protocol.EVENTS.STATUS, "Status", payload)
+        end
+        if entry then
+            entry.metadata = entry.metadata or {}
+            entry.metadata.pendingStatuses = entry.metadata.pendingStatuses or {}
+            local pending = entry.metadata.pendingStatuses
+            pending[#pending + 1] = payload
+            while #pending > 4 do table.remove(pending, 1) end
+        end
+        print("[Server] status queued until ClientReady state=" .. tostring(state)
+            .. " code=" .. tostring(payload.code)
+            .. " reason=" .. tostring(payload.reason))
+        return false
+    end
     return SendPayload(connection, Protocol.EVENTS.STATUS, "Status", payload)
+end
+
+local function FlushPendingStatuses(entry)
+    if not entry or not entry.ready or not entry.connection then return end
+    local metadata = entry.metadata or {}
+    local pending = metadata.pendingStatuses or {}
+    metadata.pendingStatuses = {}
+    entry.metadata = metadata
+    for _, payload in ipairs(pending) do
+        SendPayload(entry.connection, Protocol.EVENTS.STATUS, "Status", payload)
+    end
 end
 
 local function CurrentEntry(userId)
@@ -85,7 +145,90 @@ local function CurrentEntry(userId)
     return nil
 end
 
-local function SendSnapshot(userId)
+local function CanonicalizeGameEvents(events)
+    local result = {}
+    for _, source in ipairs(type(events) == "table" and events or {}) do
+        if type(source) ~= "table" then
+            return nil, "game event must be a table"
+        end
+        local value = GameStateSchema.DeepCopy(source)
+        local eventType = value.type or value.kind
+        if type(eventType) ~= "string" or eventType == "" then
+            return nil, "game event is missing its type"
+        end
+        value.type = eventType
+        value.kind = value.kind or eventType
+
+        -- Domain V3 events used explicit player/monster prefixes. Preserve
+        -- those fields and add the V5 scalar/big aliases at the network edge.
+        if eventType == "player_damaged" or eventType == "player_healed" then
+            value.amount = value.amount or value.damage
+            value.amountBig = value.amountBig or value.damageBig
+            value.hp = value.hp or value.playerHp
+            value.maxHp = value.maxHp or value.playerMaxHp
+            value.hpBig = value.hpBig or value.playerHpBig
+            value.maxHpBig = value.maxHpBig or value.playerMaxHpBig
+        elseif eventType == "player_attack_hit" then
+            value.amount = value.amount or value.damage
+            value.amountBig = value.amountBig or value.damageBig
+            value.hitIndex = value.hitIndex or value.sequenceHitIndex
+        elseif eventType == "battle_started" then
+            if type(value.monster) == "string" and value.name == nil then
+                value.name = value.monster
+            end
+            if type(value.monster) ~= "table" then value.monster = nil end
+        elseif eventType == "monster_spawned" then
+            local monster = type(value.monster) == "table" and value.monster or {}
+            value.floor = value.floor or monster.floor
+            value.room = value.room or monster.room
+            value.kind = value.encounterKind or monster.encounterKind or monster.kind or "normal"
+            value.hp = value.hp or value.monsterHp or monster.hp
+            value.maxHp = value.maxHp or value.monsterMaxHp or monster.maxHp
+            value.hpBig = value.hpBig or value.monsterHpBig or monster.hpBig
+            value.maxHpBig = value.maxHpBig or value.monsterMaxHpBig or monster.maxHpBig
+            if type(value.monster) ~= "table" then value.monster = nil end
+        elseif eventType == "loot_dropped" then
+            value.rarity = value.rarity or "common"
+            value.icon = value.icon or value.iconPath or value.itemIcon or ""
+        elseif eventType == "loot_settled" then
+            value.outcome = value.outcome or value.destination
+        end
+        result[#result + 1] = value
+    end
+    local valid, reason = GameEventSchema.ValidateList(result, "$events")
+    if not valid then return nil, reason end
+    return result
+end
+
+local function AddPowerSnapshotFields(changes, state)
+    local result = GameStateSchema.DeepCopy(changes or {})
+    local stats = type(state) == "table" and state.stats or nil
+    for _, fieldName in ipairs(POWER_SNAPSHOT_FIELDS) do
+        if type(stats) == "table" and stats[fieldName] ~= nil then
+            result[fieldName] = GameStateSchema.DeepCopy(stats[fieldName])
+        elseif type(state) == "table" and state[fieldName] ~= nil then
+            result[fieldName] = GameStateSchema.DeepCopy(state[fieldName])
+        end
+    end
+    return result
+end
+
+local function BuildSnapshotChunkPayload(transferId, revision, chunkIndex, chunkCount, chunkItems, snapshot, events)
+    local payload = {
+        transferId = transferId,
+        revision = revision,
+        chunkIndex = chunkIndex,
+        chunkCount = chunkCount,
+        inventory = chunkItems,
+    }
+    if snapshot then
+        payload.snapshot = snapshot
+        payload.events = events or {}
+    end
+    return payload
+end
+
+local function SendSnapshot(userId, snapshotEvents)
     local entry = CurrentEntry(userId)
     local state = profileService_:GetState(userId)
     if not entry or not state then return nil end
@@ -97,6 +240,24 @@ local function SendSnapshot(userId)
         itemPower = GameEngine.GetItemPower,
         playerNickname = entry.nickname,
     })
+    local stats = state.stats or {}
+    snapshot.recommendedPower = snapshot.recommendedPower or stats.recommendedPower or 0
+    snapshot.nextChapterRecommendedPower = snapshot.nextChapterRecommendedPower
+        or stats.nextChapterRecommendedPower or snapshot.recommendedPower
+    snapshot.powerRatio = snapshot.powerRatio or stats.powerRatio or 0
+    snapshot.headroomFloors = snapshot.headroomFloors or stats.headroomFloors or 0
+    snapshot.difficultyLabel = snapshot.difficultyLabel or stats.difficultyLabel or "危险"
+    snapshot.bossScore = snapshot.bossScore or stats.bossScore or 0
+    snapshot.eliteScore = snapshot.eliteScore or stats.eliteScore or 0
+    snapshot.estimatedEasyFloor = snapshot.estimatedEasyFloor
+        or stats.estimatedEasyFloor or state.floor or 1
+    snapshot.floorRoute = FloorRoute.Build(state.floor)
+    local snapshotEventsForState = GameStateSchema.BuildSnapshotEvents(state, snapshotEvents)
+    local networkEvents, eventError = CanonicalizeGameEvents(snapshotEventsForState)
+    if not networkEvents then
+        print("[Server] rejected invalid snapshot events: " .. tostring(eventError))
+        networkEvents = {}
+    end
     snapshot.inventoryCapacity = ServerConfig.INVENTORY_CAP
     snapshot.logs = snapshot.logs or {
         "权威存档已同步，所有玩法结算由服务器执行。",
@@ -105,10 +266,69 @@ local function SendSnapshot(userId)
     snapshot.recentDamage = snapshot.recentDamage or "等待战斗结算"
     local valid, validationError = GameStateSchema.ValidateSnapshot(snapshot)
     if not valid then
-        SendStatus(entry.connection, "error", validationError.code, validationError.reason)
+        local details = validationError and validationError.details or nil
+        local path = details and details.path or "$snapshot"
+        local reason = "存档同步失败：字段 " .. tostring(path) .. " 数值非法"
+        print("[ProfileDiag] uid=" .. tostring(userId)
+            .. " snapshotValidationFailure"
+            .. " path=" .. tostring(path)
+            .. " reason=" .. tostring(validationError and validationError.reason))
+        SendStatus(entry.connection, "error", validationError.code, reason, {
+            validationPath = path,
+        })
         return nil
     end
-    SendPayload(entry.connection, Protocol.EVENTS.SNAPSHOT, "GameSnapshot", { snapshot = snapshot })
+    local inventory = snapshot.inventory or {}
+    local transferId = NextSnapshotTransferId()
+    snapshot.inventory = nil
+    local maxChunkBytes = Protocol.SNAPSHOT_CHUNK_TARGET_BYTES
+    local chunks = {}
+    local currentItems = {}
+    local function FlushChunk()
+        chunks[#chunks + 1] = currentItems
+        currentItems = {}
+    end
+    for _, item in ipairs(inventory) do
+        local candidate = {}
+        for index, currentItem in ipairs(currentItems) do candidate[index] = currentItem end
+        candidate[#candidate + 1] = item
+        local probe = BuildSnapshotChunkPayload(
+            transferId,
+            snapshot.revision,
+            #chunks + 1,
+            1,
+            candidate,
+            #chunks == 0 and snapshot or nil,
+            #chunks == 0 and networkEvents or nil
+        )
+        local probeJson = cjson.encode(probe)
+        if #currentItems > 0 and #probeJson > maxChunkBytes then
+            FlushChunk()
+            currentItems[#currentItems + 1] = item
+        else
+            currentItems = candidate
+        end
+    end
+    if #currentItems > 0 or #chunks == 0 then FlushChunk() end
+    local chunkCount = #chunks
+    for chunkIndex, chunkItems in ipairs(chunks) do
+        local payload = BuildSnapshotChunkPayload(
+            transferId,
+            snapshot.revision,
+            chunkIndex,
+            chunkCount,
+            chunkItems,
+            chunkIndex == 1 and snapshot or nil,
+            chunkIndex == 1 and networkEvents or nil
+        )
+        if not SendPayload(entry.connection, Protocol.EVENTS.SNAPSHOT, "GameSnapshotChunk", payload) then
+            return nil
+        end
+    end
+    snapshot.inventory = inventory
+    print("[Server] snapshot sent uid=" .. tostring(userId)
+        .. " inventory=" .. tostring(#inventory)
+        .. " chunks=" .. tostring(chunkCount))
     return snapshot
 end
 
@@ -116,15 +336,24 @@ local function SendDelta(userId, domainDelta)
     local entry = CurrentEntry(userId)
     local state = profileService_:GetState(userId)
     if not entry or not entry.ready or not state or not domainDelta then return false end
-    local changes = domainDelta.changes or domainDelta.changed or {}
+    local changes = AddPowerSnapshotFields(domainDelta.changes or domainDelta.changed or {}, state)
+    changes.floorRoute = FloorRoute.Build(state.floor)
+    local networkEvents, eventError = CanonicalizeGameEvents(domainDelta.events)
+    if not networkEvents then
+        print("[Server] rejected invalid delta events: " .. tostring(eventError))
+        return SendSnapshot(userId) ~= nil
+    end
     local inventoryChanged = domainDelta.inventoryChanged == true or domainDelta.equippedChanged == true
+    if inventoryChanged then
+        return SendSnapshot(userId, networkEvents) ~= nil
+    end
     local delta = GameStateSchema.BuildDelta(state.revision, changes, {
         serverTime = os.time(),
         inventoryChanged = inventoryChanged,
         state = state,
     })
     delta.updatedAt = state.updatedAt
-    delta.events = domainDelta.events or {}
+    delta.events = networkEvents
     delta.eventKind = domainDelta.kind
     local valid, validationError = GameStateSchema.ValidateDelta(delta)
     if not valid then
@@ -212,6 +441,22 @@ FinalizeReady = function(entry)
     end)
 end
 
+local function MarkClientReady(entry, connection)
+    if not entry or not connection then return false end
+    entry.metadata = entry.metadata or {}
+    entry.metadata.clientReady = true
+    if not entry.authenticated or not registry_:IsCurrent(entry) then
+        print("[Server] ClientReady queued until ClientIdentity")
+        return false
+    end
+    connection.scene = scene_
+    if not registry_:MarkReady(connection, true) then return false end
+    FlushPendingStatuses(entry)
+    print("[Server] ClientReady uid=" .. tostring(entry.uid))
+    FinalizeReady(entry)
+    return true
+end
+
 local function HandleClientConnected(eventType, eventData)
     local connection = ConnectionFrom(eventData)
     if not connection then return end
@@ -239,6 +484,9 @@ local function HandleClientIdentity(eventType, eventData)
     end
     print("[Server] ClientIdentity uid=" .. tostring(userId) .. " generation=" .. tostring(entry.generation))
     ResolvePlayerNickname(entry)
+    if entry.metadata and entry.metadata.clientReady then
+        MarkClientReady(entry, connection)
+    end
 
     local existingSession = profileService_:GetSession(userId)
     if existingSession then
@@ -255,6 +503,10 @@ local function HandleClientIdentity(eventType, eventData)
     profileService_:Load(userId, function(result)
         if not registry_:IsCurrent(entry) then return end
         if not result.ok then
+            print("[ProfileDiag] uid=" .. tostring(userId)
+                .. " loadFailure code=" .. tostring(result.code)
+                .. " reason=" .. tostring(result.reason)
+                .. " action=disconnect")
             SendStatus(connection, "error", result.code, result.reason)
             connection:Disconnect(100)
             return
@@ -272,15 +524,9 @@ end
 
 local function HandleClientReady(eventType, eventData)
     local connection = ConnectionFrom(eventData)
-    local entry = connection and registry_:GetByConnection(connection) or nil
-    if not entry or not entry.authenticated or not registry_:IsCurrent(entry) then
-        if connection then SendStatus(connection, "rejected", ErrorCodes.UNAUTHENTICATED, "identity handshake is incomplete") end
-        return
-    end
-    connection.scene = scene_
-    if not registry_:MarkReady(connection, true) then return end
-    print("[Server] ClientReady uid=" .. tostring(entry.uid))
-    FinalizeReady(entry)
+    if not connection then return end
+    local entry = registry_:GetByConnection(connection) or registry_:OnConnected(connection)
+    MarkClientReady(entry, connection)
 end
 
 local function HandleClientDisconnected(eventType, eventData)
@@ -361,6 +607,7 @@ local function InitializeServices()
 
     local commandServices = {
         profileService = profileService_,
+        idleService = idleService_,
         sendSnapshot = SendSnapshot,
         sendDelta = SendDelta,
     }
