@@ -440,6 +440,67 @@ function Spec.OfflineQuoteRejectsStateChanges()
     assertEqual(claimed.error.code, "STALE_OFFLINE_QUOTE")
 end
 
+function Spec.OfflineBatchSettlementIsConstantShapeAndUsesCurrentFloorEquipmentLevel()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.floor = 30
+    state.maxFloor = 30
+    state.position = 3
+    state.pendingOfflineSeconds = Catalog.OFFLINE_MAX_SECONDS
+    state.pendingStoryGate = nil
+    state.pauseReason = nil
+    local before = TableUtils.DeepCopy(state)
+    local preview = GameEngine.PreviewOffline(state, 1001, queueRng({}, { 0.99 }))
+
+    assertTrue(preview.ok)
+    assertTrue(TableUtils.DeepEqual(state, before), "batch preview mutated the source state")
+    assertEqual(preview.preview.processedSeconds, Catalog.OFFLINE_MAX_SECONDS)
+    assertEqual(preview.preview.remainingSeconds, 0)
+    assertEqual(preview.preview.floor, 30)
+    assertTrue(preview.preview.fixedFloor)
+    assertTrue(#preview.previewEvents < 100, "offline preview emitted per-cycle events")
+    assertTrue(preview.preview.equipment <= Catalog.INVENTORY_CAP - #state.inventory)
+    for _, item in ipairs(preview.preview.equipmentItems) do
+        assertEqual(item.level, 30, "offline equipment must use the current floor")
+    end
+end
+
+function Spec.OfflineBatchSettlementKeepsShortAndLongRewardRatesConsistent()
+    local short = skipIntro(StateFactory.Create(1000))
+    short.pendingOfflineSeconds = Catalog.OFFLINE_STEP_SECONDS
+    local long = TableUtils.DeepCopy(short)
+    long.pendingOfflineSeconds = Catalog.OFFLINE_MAX_SECONDS
+
+    local shortResult = GameEngine.CollectOffline(short, 1001, queueRng({}, { 0.99 }))
+    local longResult = GameEngine.CollectOffline(long, 1001, queueRng({}, { 0.99 }))
+    assertTrue(shortResult.ok and longResult.ok)
+    assertEqual(shortResult.state.pendingOfflineSeconds, 0)
+    assertEqual(longResult.state.pendingOfflineSeconds, 0)
+    assertEqual(eventCount(longResult.delta.events, "offline_collected"), 1)
+    assertEqual(eventCount(longResult.delta.events, "battle_reward"), 1)
+    assertEqual(eventCount(longResult.delta.events, "battle_hit"), 0)
+    assertEqual(eventCount(longResult.delta.events, "monster_spawned"), 0)
+    assertTrue(longResult.state.floor == shortResult.state.floor)
+end
+
+function Spec.OfflineBatchDropCountRespectsInventoryCapacity()
+    local state = skipIntro(StateFactory.Create(1000))
+    local template = TableUtils.DeepCopy(state.inventory[1])
+    while #state.inventory < Catalog.INVENTORY_CAP - 1 do
+        local item = TableUtils.DeepCopy(template)
+        item.id = string.format("00000000-0000-4000-9000-%012x", #state.inventory + 1000)
+        state.inventory[#state.inventory + 1] = item
+    end
+    state.pendingOfflineSeconds = Catalog.OFFLINE_MAX_SECONDS
+    state.inventoryPolicy.pauseOnFull = true
+    local result = GameEngine.CollectOffline(state, 1001, queueRng({}, { 0.99 }))
+    assertTrue(result.ok)
+    local reward = findEvent(result.delta.events, "offline_collected")
+    assertEqual(reward.generatedEquipment, 1)
+    assertEqual(reward.discardedEquipment, reward.droppedEquipment - 1)
+    assertEqual(#result.state.inventory, Catalog.INVENTORY_CAP)
+    assertEqual(result.state.pauseReason, "inventory_full")
+end
+
 function Spec.OfflineRewardsRepeatCurrentFloorWithoutAdvancing()
     local state = skipIntro(StateFactory.Create(1000))
     state.floor = 10

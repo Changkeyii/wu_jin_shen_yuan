@@ -602,6 +602,7 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         equipmentId = item.equipmentId,
         name = definition and definition.name or "未知装备",
         rarity = item.rarity or (definition and definition.rarity) or "common",
+        level = item.level,
         slot = item.slot or (definition and definition.slot) or "",
         source = source,
         aidLocked = item.aidLocked == true,
@@ -611,6 +612,7 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         equipmentId = item.equipmentId,
         rarity = item.rarity,
         icon = icon,
+        level = item.level,
         source = source,
     })
     events[#events + 1] = event("loot_settled", {
@@ -2701,6 +2703,7 @@ local function registerOfflineEquipment(summary, value)
     local groupKey = table.concat({
         tostring(value.equipmentId or "unknown"),
         tostring(value.rarity or "common"),
+        tostring(value.level or 1),
     }, ":")
     local item = summary.equipmentGroups[groupKey]
     if not item then
@@ -2708,6 +2711,7 @@ local function registerOfflineEquipment(summary, value)
             equipmentId = value.equipmentId,
             name = value.name,
             rarity = value.rarity or "common",
+            level = value.level or 1,
             slot = value.slot,
             icon = value.icon,
             quantity = 0,
@@ -2743,16 +2747,80 @@ local function accumulateOfflineEvent(summary, value)
     end
 end
 
+local function offlineEncounterKind(floor, room)
+    if room <= TowerRules.NORMAL_ENCOUNTERS then return "normal" end
+    if room <= TowerRules.NORMAL_ENCOUNTERS + TowerRules.ELITE_ENCOUNTERS then return "elite" end
+    return floor % 10 == 0 and "chapterBoss" or "boss"
+end
+
+local function offlineEncounterCounts(floor, position, cycles)
+    local counts = { normal = 0, elite = 0, boss = 0, chapterBoss = 0 }
+    local fullRounds = math.floor(cycles / TowerRules.ENCOUNTERS_PER_FLOOR)
+    for room = 1, TowerRules.ENCOUNTERS_PER_FLOOR do
+        local kind = offlineEncounterKind(floor, room)
+        counts[kind] = counts[kind] + fullRounds
+    end
+    local remainder = cycles - fullRounds * TowerRules.ENCOUNTERS_PER_FLOOR
+    for offset = 1, remainder do
+        local room = (math.max(0, position) + offset - 1)
+            % TowerRules.ENCOUNTERS_PER_FLOOR + 1
+        local kind = offlineEncounterKind(floor, room)
+        counts[kind] = counts[kind] + 1
+    end
+    return counts
+end
+
+local function pickOfflineDropKind(counts, rng)
+    local totalWeight = 0
+    for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
+        totalWeight = totalWeight + (counts[kind] or 0) * RewardPolicy.DropChance(kind, true)
+    end
+    if totalWeight <= 0 then return "normal" end
+    local threshold = randomFloat(rng) * totalWeight
+    local accumulated = 0
+    for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
+        accumulated = accumulated + (counts[kind] or 0) * RewardPolicy.DropChance(kind, true)
+        if threshold < accumulated then return kind end
+    end
+    return "normal"
+end
+
+local function offlineAverageReward(floor, kind)
+    local multiplier = kind == "chapterBoss" and 10
+        or (kind == "boss" and 10 or (kind == "elite" and 2.3 or 1))
+    local goldMultiplier = kind == "chapterBoss" and 8
+        or (kind == "boss" and 8 or (kind == "elite" and 2 or 1))
+    local baseExp = math.floor((floor * 5 + 10) * multiplier * Catalog.OFFLINE_REWARD_RATE)
+    local baseGold = math.floor((floor * 8 + 25) * goldMultiplier * Catalog.OFFLINE_REWARD_RATE)
+    return baseGold, baseExp
+end
+
+local function offlinePityAfterMisses(pity, misses, floor)
+    pity = type(pity) == "table" and pity or {}
+    local result = {
+        epicMisses = math.min(RewardPolicy.EPIC_HARD_PITY_ATTEMPT,
+            math.max(0, TableUtils.ToInteger(pity.epicMisses or pity.epic, 0)) + misses),
+        mythMisses = math.min(RewardPolicy.MYTH_HARD_PITY_ATTEMPT,
+            math.max(0, TableUtils.ToInteger(pity.mythMisses or pity.myth, 0)) + misses),
+    }
+    if floor < RarityCatalog.Get("epic").unlockFloor then result.epicMisses = 0 end
+    if floor < RarityCatalog.Get("myth").unlockFloor then result.mythMisses = 0 end
+    return result
+end
+
 local function simulateOfflineCollection(inputState, now, rng)
     now = nowInteger(now)
     local working = stateCopy(inputState, now)
+    local floor = math.max(1, TableUtils.ToInteger(working.floor, 1))
     local seconds = math.min(working.pendingOfflineSeconds, Catalog.OFFLINE_MAX_SECONDS)
-    local availableSteps = math.floor(seconds / Catalog.OFFLINE_STEP_SECONDS)
-    if availableSteps <= 0 then
+    local cycles = math.floor(seconds / Catalog.OFFLINE_STEP_SECONDS)
+    if cycles <= 0 then
         return nil, "NO_OFFLINE_REWARD", "offline reward requires at least "
             .. tostring(Catalog.OFFLINE_STEP_SECONDS) .. " seconds"
     end
 
+    local position = math.max(0, TableUtils.ToInteger(working.position, 0))
+    local encounterCounts = offlineEncounterCounts(floor, position, cycles)
     local summary = {
         gold = 0,
         exp = 0,
@@ -2762,54 +2830,107 @@ local function simulateOfflineCollection(inputState, now, rng)
         equipmentById = {},
         equipmentGroups = {},
     }
-    local processedSteps = 0
-    local interrupted = false
-    local inventoryChanged = false
-    local deferredEvents = {}
-    for _ = 1, availableSteps do
-        local nextWorking, kind, stepEvents, stepInventoryChanged = advanceOneCellWorking(
+    local expectedDrops = 0
+    for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
+        local count = encounterCounts[kind] or 0
+        local gold, exp = offlineAverageReward(floor, kind)
+        summary.gold = summary.gold + count * gold
+        summary.exp = summary.exp + count * exp
+        expectedDrops = expectedDrops + count * (RewardPolicy.DropChance(kind, true) or 0)
+    end
+    local events = {}
+    if summary.gold > 0 then addCurrency(working, "gold", summary.gold) end
+    if summary.exp > 0 then addExp(working, summary.exp, events) end
+    events[#events + 1] = event("battle_reward", {
+        gold = summary.gold,
+        exp = summary.exp,
+        rewardRate = Catalog.OFFLINE_REWARD_RATE,
+        offline = true,
+        batch = true,
+        cycles = cycles,
+        floor = floor,
+    })
+
+    local dropCount = math.floor(expectedDrops)
+    if randomFloat(rng) < expectedDrops - dropCount then dropCount = dropCount + 1 end
+    local availableSlots = math.max(0, Catalog.INVENTORY_CAP - #working.inventory)
+    local generatedDrops = math.min(dropCount, availableSlots)
+    local generatedChapterDrops = 0
+    local generatedChapterRarities = {}
+
+    for _ = 1, generatedDrops do
+        local kind = pickOfflineDropKind(encounterCounts, rng)
+        local rarity = RewardPolicy.RollRarity(
+            kind,
+            floor,
+            randomFloat(rng),
+            working.rewardPity)
+        local weakSlots = {}
+        local powerRatio = tonumber(working.stats and working.stats.powerRatio) or 0
+        if powerRatio < 1 then
+            local weakRanked = weakestEquipmentSlots(working)
+            for index = 1, math.min(3, #weakRanked) do weakSlots[index] = weakRanked[index].slot end
+        end
+        local allSlots = {}
+        for index, slot in ipairs(Catalog.SLOTS) do allSlots[index] = slot.id end
+        local options = {
+            floor = floor,
+            slot = RewardPolicy.PickDropSlot(
+                allSlots,
+                weakSlots,
+                randomFloat(rng),
+                randomFloat(rng)
+            ),
+        }
+        local source = kind == "chapterBoss" and "chapter_boss_drop"
+            or (kind == "boss" and "boss_drop" or (kind == "elite" and "elite_drop" or "monster_drop"))
+        local dropEvents = {}
+        local added = addGeneratedDrop(
             working,
+            rarity,
+            kind == "boss" or kind == "chapterBoss",
             rng,
             now,
-            { offline = true }
+            source,
+            dropEvents,
+            options
         )
-        if kind == "inventory_full" then
-            working = nextWorking
-            interrupted = true
-            break
-        end
-        if kind == "story_gate" then
-            working = nextWorking
-            interrupted = true
-            for _, value in ipairs(stepEvents or {}) do deferredEvents[#deferredEvents + 1] = value end
-            break
-        end
-        working = nextWorking
-        processedSteps = processedSteps + 1
-        inventoryChanged = inventoryChanged or stepInventoryChanged
-        for _, value in ipairs(stepEvents or {}) do
-            accumulateOfflineEvent(summary, value)
-        end
-        if working.pauseReason == "inventory_full" then
-            interrupted = true
-            break
+        if added then
+            if kind == "chapterBoss" then
+                generatedChapterDrops = generatedChapterDrops + 1
+                generatedChapterRarities[#generatedChapterRarities + 1] = rarity
+            end
+            for _, dropEvent in ipairs(dropEvents) do
+                accumulateOfflineEvent(summary, dropEvent)
+            end
         end
     end
+    optimizeWholeLoadout(working, now, events)
 
-    if processedSteps <= 0 then
-        if working.pendingStoryGate then
-            return {
-                working = working,
-                events = deferredEvents,
-                inventoryChanged = false,
-                storyGate = true,
-            }
-        end
-        return nil, "INVENTORY_FULL", "inventory is full; clear space before collecting offline rewards"
+    local bossCycles = encounterCounts.chapterBoss or 0
+    local missedBossCycles = math.max(0, bossCycles - generatedChapterDrops)
+    if floor % 10 == 0 and missedBossCycles > 0 then
+        working.rewardPity = offlinePityAfterMisses(working.rewardPity, missedBossCycles, floor)
+        events[#events + 1] = event("reward_pity_updated", {
+            epicMisses = working.rewardPity.epicMisses,
+            mythMisses = working.rewardPity.mythMisses,
+            batch = true,
+        })
+    end
+    for _, rarity in ipairs(generatedChapterRarities) do
+        working.rewardPity = RewardPolicy.UpdatePity(working.rewardPity, rarity)
     end
 
-    local processedSeconds = math.floor(processedSteps * Catalog.OFFLINE_STEP_SECONDS)
-    working.pendingOfflineSeconds = math.max(0, seconds - processedSeconds)
+    working.pendingOfflineSeconds = math.max(0,
+        seconds - cycles * Catalog.OFFLINE_STEP_SECONDS)
+    working.currentMonster = nil
+    working.position = (position + cycles) % TowerRules.ENCOUNTERS_PER_FLOOR
+    working.floorKillBonus = working.position * 0.01
+    working.pauseReason = generatedDrops < dropCount and "inventory_full" or nil
+    if generatedDrops < dropCount then working.autoRun = false end
+    refreshDerived(working)
+
+    local processedSeconds = cycles * Catalog.OFFLINE_STEP_SECONDS
     local reward = {
         seconds = seconds,
         processedSeconds = processedSeconds,
@@ -2820,15 +2941,18 @@ local function simulateOfflineCollection(inputState, now, rng)
         fragments = summary.fragments,
         equipment = summary.equipment,
         equipmentItems = summary.equipmentItems,
-        floor = inputState.floor,
+        floor = floor,
         fixedFloor = true,
-        interrupted = interrupted,
+        interrupted = generatedDrops < dropCount,
+        droppedEquipment = dropCount,
+        generatedEquipment = generatedDrops,
+        discardedEquipment = dropCount - generatedDrops,
     }
-    deferredEvents[#deferredEvents + 1] = event("offline_collected", TableUtils.DeepCopy(reward))
+    events[#events + 1] = event("offline_collected", TableUtils.DeepCopy(reward))
     return {
         working = working,
-        events = deferredEvents,
-        inventoryChanged = inventoryChanged,
+        events = events,
+        inventoryChanged = generatedDrops > 0,
         reward = reward,
         storyGate = false,
     }

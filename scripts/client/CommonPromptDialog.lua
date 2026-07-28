@@ -52,10 +52,12 @@ function CommonPromptDialog.Present(options, finish)
     local closeOnOverlay = options.closeOnOverlay ~= false
     local pages = options.pages or options.storyLines
     local pageIndex = 1
-    local dialogWidth = 900
-    local dialogHeight = 760
+    local maxPageReached = 1
+    local dialogWidth = options.dialogWidth or 900
+    local dialogHeight = options.dialogHeight or 760
     local buttonWidth = 300
-    local buttonTop = dialogHeight - 126
+    local buttonGap = 80
+    local buttonTop = options.buttonTop or (dialogHeight - 96)
 
     local function Cancel()
         removeOverlay()
@@ -63,16 +65,23 @@ function CommonPromptDialog.Present(options, finish)
     end
 
     local RenderPage
-    local function Confirm()
-        if type(pages) == "table" and pageIndex < #pages then
-            pageIndex = pageIndex + 1
+    local function SetPage(nextPageIndex)
+        if type(pages) ~= "table" or #pages == 0 then return end
+        nextPageIndex = math.max(1, math.min(#pages, nextPageIndex))
+        if nextPageIndex == pageIndex then return end
+        local movingForward = nextPageIndex > pageIndex
+        pageIndex = nextPageIndex
+        if movingForward and pageIndex > maxPageReached then
+            maxPageReached = pageIndex
             if options.onPageAdvance then
                 local ok, reason = pcall(options.onPageAdvance, pageIndex, pages[pageIndex])
                 if not ok then print("[CommonPromptDialog] page callback failed: " .. tostring(reason)) end
             end
-            RenderPage()
-            return
         end
+        RenderPage()
+    end
+
+    local function Confirm()
         removeOverlay()
         if finish then finish("confirm") end
     end
@@ -92,6 +101,8 @@ function CommonPromptDialog.Present(options, finish)
             pageTitle = page.title or page.speaker or pageTitle
         end
 
+        local hasPages = type(pages) == "table" and #pages > 0
+        local hasMultiplePages = hasPages and #pages > 1
         local bodyChildren = {}
         if pageMessage and pageMessage ~= "" then
             bodyChildren[#bodyChildren + 1] = context_.multiTxt(pageMessage, 26, C.text, {
@@ -124,18 +135,29 @@ function CommonPromptDialog.Present(options, finish)
             )
         end
 
-        local showCancelButton = options.cancelText ~= nil or (type(pages) == "table" and #pages > 0)
+        local showCancelButton = options.cancelText ~= nil or hasPages
         local showCloseButton = options.showClose ~= false
-        local confirmButtonLeft = showCancelButton and 490 or 300
+        local showConfirmButton = options.showConfirm ~= false
+        local canConfirm = not hasPages or pageIndex == #pages
+        local buttonGroupWidth = showCancelButton
+            and (buttonWidth * 2 + buttonGap)
+            or buttonWidth
+        local buttonGroupLeft = math.floor((dialogWidth - buttonGroupWidth) * 0.5)
+        local cancelButtonLeft = options.cancelButtonLeft or buttonGroupLeft
+        local confirmButtonLeft = options.confirmButtonLeft or (showCancelButton
+            and (buttonGroupLeft + buttonWidth + buttonGap)
+            or buttonGroupLeft)
+        local contentSideInset = hasMultiplePages and 104 or 60
+        local contentWidth = dialogWidth - contentSideInset * 2
         local dialogChildren = {
             context_.txt(pageTitle, 32, C.text, {
-                position = "absolute", left = 56, top = 34,
+                position = "absolute", left = 56, top = options.titleTop or 4,
                 width = dialogWidth - 112, height = 72, textAlign = "center",
                 textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
             }),
             UI.ScrollView {
-                position = "absolute", left = 60, top = 118,
-                width = dialogWidth - 120, height = dialogHeight - 266,
+                position = "absolute", left = contentSideInset, top = 104,
+                width = contentWidth, height = dialogHeight - 248,
                 scrollX = false, scrollY = true, showScrollbar = false,
                 children = {
                     UI.Panel {
@@ -146,35 +168,67 @@ function CommonPromptDialog.Present(options, finish)
                     },
                 },
             },
-            UI.Panel {
+        }
+        if hasMultiplePages then
+            dialogChildren[#dialogChildren + 1] = UI.Panel {
+                position = "absolute", left = 32, top = 316,
+                width = 64, height = 96, clickable = pageIndex > 1,
+                opacity = pageIndex > 1 and 1.0 or 0.28,
+                alignItems = "center", justifyContent = "center",
+                onClick = function() SetPage(pageIndex - 1) end,
+                children = {
+                    context_.txt("‹", 54, C.text, {
+                        width = 64, height = 96, textAlign = "center",
+                        textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+                    }),
+                },
+            }
+            dialogChildren[#dialogChildren + 1] = UI.Panel {
+                position = "absolute", right = 32, top = 316,
+                width = 64, height = 96, clickable = pageIndex < #pages,
+                opacity = pageIndex < #pages and 1.0 or 0.28,
+                alignItems = "center", justifyContent = "center",
+                onClick = function() SetPage(pageIndex + 1) end,
+                children = {
+                    context_.txt("›", 54, C.text, {
+                        width = 64, height = 96, textAlign = "center",
+                        textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+                    }),
+                },
+            }
+        end
+        if showConfirmButton then
+            dialogChildren[#dialogChildren + 1] = UI.Panel {
                 position = "absolute", left = confirmButtonLeft, top = buttonTop,
-                width = buttonWidth, height = 82, clickable = true,
+                width = buttonWidth, height = 82, clickable = canConfirm,
+                opacity = canConfirm and 1.0 or 0.35,
                 backgroundImage = options.confirmImage or (options.danger and ASSETS.danger) or ASSETS.confirm,
                 backgroundFit = "contain", onClick = Confirm,
                 children = {
-                    context_.txt(
-                        (type(pages) == "table" and pageIndex < #pages) and "下一句" or (options.confirmText or "知道了"),
+                    context_.txt(options.confirmText or "知道了",
                         23, C.text,
                         { width = "100%", height = 82, textAlign = "center", textStroke = { width = 2, color = "#000000" }, pointerEvents = "none" }
                     ),
                 },
-            },
-        }
+            }
+        end
         if showCloseButton then
             dialogChildren[#dialogChildren + 1] = UI.Panel {
-                position = "absolute", right = 24, top = 28,
+                position = "absolute", right = options.closeRight or 24, top = options.closeTop or 28,
                 width = 64, height = 64, clickable = true,
                 backgroundImage = ASSETS.close, backgroundFit = "contain", onClick = Cancel,
             }
         end
         if showCancelButton then
             dialogChildren[#dialogChildren + 1] = UI.Panel {
-                position = "absolute", left = 110, top = buttonTop,
+                position = "absolute", left = cancelButtonLeft, top = buttonTop,
                 width = buttonWidth, height = 82, clickable = true,
                 backgroundImage = options.cancelImage or ASSETS.confirm,
                 backgroundFit = "contain", onClick = Cancel,
                 children = {
                     context_.txt(options.cancelText or "跳过", 23, C.text, {
+                        left = options.cancelTextLeft,
+                        top = options.cancelTextTop,
                         width = "100%", height = 82, textAlign = "center",
                         textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
                     }),

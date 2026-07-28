@@ -1,4 +1,5 @@
 local UI = require("urhox-libs/UI")
+local ImageCache = require("urhox-libs/UI/Core/ImageCache")
 local GameTheme = require("client.Theme")
 local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
@@ -8,6 +9,8 @@ local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local StoryCatalog = require("shared.StoryCatalog")
 local ItemTooltip = require("urhox-libs/UI/Components/ItemTooltip")
+local BackpackItemSlot = require("client.BackpackItemSlot")
+local HorizontalArrowScroller = require("client.HorizontalArrowScroller")
 local FrameEditorView = require("client.FrameEditorView")
 local LoadingController = require("client.LoadingController")
 local PlayPresentation = require("client.PlayPresentation")
@@ -41,12 +44,20 @@ local selectedCategory_ = "weapon"
 local inventoryTabScrollX_ = 0
 local equipmentScrollY_ = 0
 local equipmentPageScrollY_ = 0
-local collectingOffline_ = false
+local OFFLINE_CLAIM_IDLE = "idle"
+local OFFLINE_CLAIM_PREVIEWING = "previewing"
+local OFFLINE_CLAIM_CONFIRMING = "confirming"
+local OFFLINE_CLAIM_CLAIMING = "claiming"
+local offlineClaimState_ = OFFLINE_CLAIM_IDLE
+local offlineClaimSequence_ = 0
+---@type string|nil
+local offlineDialogKey_ = nil
 local rewardDialogSequence_ = 0
 local topRefs_ = {}
 local navRefs_ = {}
 local viewportWidth_ = 0
 local viewportHeight_ = 0
+local itemIconPreloadStarted_ = false
 
 local function BuildFrames(path, count)
     local frames = {}
@@ -169,6 +180,30 @@ local ASSETS = {
         crystal = "image/cyber_item_crystal_20260725004653.png",
     },
 }
+
+local function PreloadItemIcons()
+    if itemIconPreloadStarted_ then return end
+    itemIconPreloadStarted_ = true
+
+    local resources = { EquipmentCatalog.ATLAS_PATH }
+    for _, path in pairs(ASSETS.items) do
+        resources[#resources + 1] = path
+    end
+
+    GetCache():DownloadResources(resources, function(success, failedCount)
+        if success then
+            for _, path in ipairs(resources) do
+                ImageCache.Get(path)
+            end
+        end
+        print(string.format(
+            "[GameView] item icon preload finished: success=%s failed=%d",
+            tostring(success),
+            tonumber(failedCount) or 0
+        ))
+    end)
+    print("[GameView] item icon preload started: " .. tostring(#resources) .. " resources")
+end
 
 local PLAYER_SIZE = 210
 local RUN_W = 420
@@ -509,55 +544,40 @@ local function OfflineRewardEvent(response)
     return nil
 end
 
-local function OfflineRewardItemCard(icon, name, amount, rarity)
-    local rarityInfo = RARITIES[rarity or "common"] or RARITIES.common
-    local color = rarityInfo.color or C.text
-    return UI.Panel {
+local function OfflineRewardItemCard(icon, name, amount, rarity, item)
+    local displayItem = item or {
+        name = name,
+        rarity = rarity or "common",
+        level = 1,
+    }
+    return BackpackItemSlot.Build({
+        UI = UI,
+        C = C,
+        ASSETS = ASSETS,
+        compactTxt = CompactTxt,
+        shortenText = ShortenText,
+        rarityColor = RarityColor,
+        itemImage = function() return icon end,
+        itemLevelText = ItemLevelText,
+        isEquipped = function() return false end,
+    }, displayItem, {
         width = 164,
         height = 188,
-        flexShrink = 0,
-        alignItems = "center",
-        paddingTop = 12,
-        gap = 8,
-        backgroundImage = ASSETS.ui.inventoryItemCard,
-        backgroundFit = "sliced",
-        backgroundSlice = { 14, 14, 14, 14 },
-        borderWidth = 3,
-        borderColor = color,
-        boxShadow = {
-            { x = 0, y = 6, blur = 0, color = { 0, 0, 0, 90 } },
-            { x = 0, y = 0, blur = 14, color = { color[1], color[2], color[3], 75 } },
-        },
-        children = {
-            UI.Panel {
-                width = 94,
-                height = 94,
-                backgroundImage = icon,
-                backgroundFit = "contain",
-                pointerEvents = "none",
-            },
-            CompactTxt(ShortenText(name, 7), 18, color, {
-                width = 146,
-                height = 30,
-                textAlign = "center",
-                textStroke = { width = 2, color = "#000000" },
-                pointerEvents = "none",
-            }),
-            CompactTxt(amount, 20, C.text, {
-                width = 146,
-                height = 30,
-                textAlign = "center",
-                textStroke = { width = 2, color = "#000000" },
-            }),
-        },
-    }
+        selected = false,
+        clickable = false,
+        fallbackImage = icon,
+        amountText = amount,
+        showLevel = item ~= nil,
+        showEquipped = false,
+    })
 end
 
-local function AddRewardCard(cards, icon, name, amount, rarity)
-    cards[#cards + 1] = OfflineRewardItemCard(icon, name, amount, rarity)
+local function AddRewardCard(cards, icon, name, amount, rarity, item)
+    cards[#cards + 1] = OfflineRewardItemCard(icon, name, amount, rarity, item)
 end
 
 local OfflineRewardCardPanel
+local RewardDialogContent
 
 local function ShowRewardDialog(options)
     options = options or {}
@@ -569,13 +589,16 @@ local function ShowRewardDialog(options)
         priority = options.priority or 320,
         queueKey = options.queueKey or ("reward:" .. tostring(rewardDialogSequence_)),
         title = options.title or "获得奖励",
-        message = options.message or "奖励已存入背包",
-        lines = options.lines or {},
+        dialogHeight = 1160,
         closeOnOverlay = false,
         showClose = false,
         confirmText = options.confirmText or "确认收取",
         contentBuilder = function()
-            return OfflineRewardCardPanel(cards)
+            return RewardDialogContent(
+                options.message or "奖励已存入背包",
+                cards,
+                options.lines or {}
+            )
         end,
     }
 end
@@ -619,7 +642,8 @@ local function ShowDeltaFeedback(payload)
                     ItemImage(item),
                     value.name or item.name or "装备",
                     RarityName(value.rarity or item.rarity or "common") .. " ×1",
-                    value.rarity or item.rarity
+                    value.rarity or item.rarity,
+                    item
                 )
                 hasReward = true
             end
@@ -698,7 +722,8 @@ local function OfflineRewardCards(value)
             ItemImage(item),
             item.name or "装备",
             RarityName(item.rarity or "common") .. " ×" .. tostring(item.quantity or 1),
-            item.rarity
+            item.rarity,
+            item
         )
     end
     if (value.equipment or 0) > 0 and #(value.equipmentItems or {}) == 0 then
@@ -712,16 +737,164 @@ local function OfflineRewardCards(value)
     return cards
 end
 
-OfflineRewardCardPanel = function(cards)
+OfflineRewardCardPanel = function(cards, pageLabel)
+    return HorizontalArrowScroller.Build {
+        width = 720,
+        height = 600,
+        rows = 3,
+        columnsPerPage = 3,
+        arrowWidth = 42,
+        itemWidth = 164,
+        itemHeight = 188,
+        gapX = 12,
+        gapY = 10,
+        children = cards,
+        text = CompactTxt,
+        arrowColor = C.focus,
+        arrowBorderColor = C.focus,
+        arrowBackgroundColor = { 7, 19, 39, 225 },
+        pageLabel = pageLabel,
+    }
+end
+
+RewardDialogContent = function(message, cards, detailLines)
+    local pageLabel = CompactTxt("1 / 1", 17, C.textDim, {
+        width = 92, height = 28, textAlign = "right",
+        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+    })
+    local details = {}
+    for _, line in ipairs(detailLines or {}) do
+        details[#details + 1] = CompactTxt(line, 18, C.textSecondary, {
+            width = "100%", height = 26, textAlign = "center",
+            textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+        })
+    end
     return UI.Panel {
         width = "100%",
         flexShrink = 0,
-        flexDirection = "row",
-        flexWrap = "wrap",
-        justifyContent = "center",
+        alignItems = "center",
         gap = 14,
-        paddingTop = 8,
-        children = cards,
+        children = {
+            UI.Panel {
+                width = 700,
+                height = 44,
+                flexShrink = 0,
+                flexDirection = "row",
+                alignItems = "center",
+                justifyContent = "space-between",
+                paddingLeft = 14,
+                paddingRight = 14,
+                backgroundColor = { 7, 20, 42, 220 },
+                borderWidth = 1,
+                borderColor = C.border,
+                borderRadius = 8,
+                children = {
+                    CompactTxt(message or "奖励已存入背包", 21, C.text, {
+                        width = 560, height = 44, textAlign = "left",
+                        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                    }),
+                    pageLabel,
+                },
+            },
+            OfflineRewardCardPanel(cards, pageLabel),
+            UI.Panel {
+                width = 700,
+                flexShrink = 0,
+                paddingTop = 8,
+                gap = 4,
+                borderTopWidth = 2,
+                borderColor = C.border,
+                children = details,
+            },
+        },
+    }
+end
+
+local function BuildOfflineTimeSummary(value, preview)
+    value = value or {}
+    local primaryLabel = preview and "累计离线" or "实际结算"
+    local primaryValue = preview and value.seconds or value.processedSeconds
+    local secondaryLabel = preview and "预计结算" or "当前楼层"
+    local secondaryValue = preview and FormatDuration(value.processedSeconds or 0)
+        or ("第" .. tostring(value.floor or game.floor or 1) .. "层")
+    local note
+    if value.interrupted then
+        note = "背包空间不足，未结算时间会继续保留"
+    elseif (value.remainingSeconds or 0) > 0 then
+        note = (preview and "领取后保留 " or "剩余离线 ") .. FormatDuration(value.remainingSeconds)
+    else
+        note = preview and "收益按在线效率的20%计算，装备结果已锁定"
+            or "奖励已经服务器确认并同步到当前角色"
+    end
+    local function Stat(label, text, color, textAlign)
+        return UI.Panel {
+            width = 318, height = 64, flexShrink = 0,
+            paddingLeft = 14, paddingRight = 14,
+            justifyContent = "center", gap = 2,
+            backgroundColor = { 7, 20, 42, 210 },
+            borderWidth = 1, borderColor = C.border, borderRadius = 8,
+            children = {
+                CompactTxt(label, 15, C.textDim, {
+                    width = "100%", height = 22, textAlign = textAlign,
+                }),
+                CompactTxt(text, 20, color, {
+                    width = "100%", height = 28, textAlign = textAlign,
+                    textStroke = { width = 1, color = "#000000" },
+                }),
+            },
+        }
+    end
+    return UI.Panel {
+        width = 700, flexShrink = 0, gap = 8,
+        children = {
+            UI.Panel {
+                width = 700, height = 64, flexDirection = "row",
+                justifyContent = "space-between",
+                children = {
+                    Stat(primaryLabel, FormatDuration(primaryValue or 0), C.gold, "left"),
+                    Stat(secondaryLabel, secondaryValue, C.focus, "right"),
+                },
+            },
+            CompactTxt(note, 16, C.textSecondary, {
+                width = 700, height = 26, textAlign = "center",
+                textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+            }),
+        },
+    }
+end
+
+local function OfflinePreviewContent(value)
+    local cards = OfflineRewardCards(value)
+    local pageLabel = CompactTxt("1 / 1", 17, C.textDim, {
+        width = 92, height = 28, textAlign = "right",
+        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+    })
+    return UI.Panel {
+        width = "100%", flexShrink = 0, alignItems = "center", gap = 12,
+        children = {
+            UI.Panel {
+                width = 700, height = 42, flexShrink = 0,
+                flexDirection = "row", alignItems = "center", justifyContent = "space-between",
+                paddingLeft = 14, paddingRight = 14,
+                backgroundColor = { 7, 20, 42, 220 },
+                borderWidth = 1, borderColor = C.border, borderRadius = 8,
+                children = {
+                    CompactTxt("预计奖励", 21, C.text, {
+                        width = 500, height = 42, textAlign = "left",
+                        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                    }),
+                    pageLabel,
+                },
+            },
+            OfflineRewardCardPanel(cards, pageLabel),
+            UI.Panel {
+                width = 700,
+                height = 28,
+                flexShrink = 0,
+                pointerEvents = "none",
+            },
+            BuildOfflineTimeSummary(value, true),
+        },
     }
 end
 
@@ -749,36 +922,33 @@ local function ShowOfflineRewardDialog(value)
     }
 end
 
-local function ShowOfflinePreviewDialog(quoteToken, value, onClaim)
+local function ShowOfflinePreviewDialog(quoteToken, value, onClaim, onCancel)
     value = value or {}
-    local lines = {
-        "当前累计离线：" .. FormatDuration(value.seconds or 0),
-        "预计结算时长：" .. FormatDuration(value.processedSeconds or 0),
-        "收益按在线效率的20%计算，装备结果已由服务器锁定。",
-    }
-    if value.interrupted then
-        lines[#lines + 1] = "背包空间不足，未结算时间将继续保留。"
-    elseif (value.remainingSeconds or 0) > 0 then
-        lines[#lines + 1] = "领取后仍保留：" .. FormatDuration(value.remainingSeconds)
-    end
+    local dialogKey = "offline_preview:" .. tostring(quoteToken)
+    offlineDialogKey_ = dialogKey
     return CommonPromptDialog.Show {
         kind = "confirm",
         priority = 460,
-        queueKey = "offline_preview:" .. tostring(quoteToken),
+        queueKey = dialogKey,
         title = "离线收益预览",
-        message = "确认领取以下预计收益？",
-        lines = lines,
+        dialogHeight = 1100,
+        titleTop = -7,
+        closeTop = 17,
+        closeRight = 22,
+        buttonTop = 1017,
+        cancelButtonLeft = 108,
+        confirmButtonLeft = 492,
+        cancelTextLeft = 2,
+        cancelTextTop = -2,
         cancelText = "稍后领取",
         confirmText = "确认领取",
         closeOnOverlay = false,
         showClose = true,
         contentBuilder = function()
-            return OfflineRewardCardPanel(OfflineRewardCards(value))
+            return OfflinePreviewContent(value)
         end,
         onConfirm = onClaim,
-        onCancel = function()
-            collectingOffline_ = false
-        end,
+        onCancel = onCancel,
     }
 end
 
@@ -808,14 +978,55 @@ end
 
 local actionFns_ = {}
 actionFns_.CollectOffline = function()
-    if collectingOffline_ then
-        UI.Toast.Show("正在处理离线收益，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
+    if offlineClaimState_ == OFFLINE_CLAIM_PREVIEWING then
+        UI.Toast.Show("正在获取离线收益预览，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
         return
     end
-    collectingOffline_ = true
+    if offlineClaimState_ == OFFLINE_CLAIM_CONFIRMING then
+        if offlineDialogKey_ and DialogCoordinator.HasKey(offlineDialogKey_) then
+            UI.Toast.Show("离线收益确认弹窗正在等待显示", { duration = 1.5, variant = "info", position = "bottom" })
+            return
+        end
+        offlineDialogKey_ = nil
+        offlineClaimState_ = OFFLINE_CLAIM_IDLE
+    end
+    if offlineClaimState_ == OFFLINE_CLAIM_CLAIMING then
+        UI.Toast.Show("离线收益正在领取，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
+        return
+    end
+
+    offlineClaimSequence_ = offlineClaimSequence_ + 1
+    local sequence = offlineClaimSequence_
+    local loadingDialogKey = "offline_preview_loading:" .. tostring(sequence)
+    offlineDialogKey_ = loadingDialogKey
+    offlineClaimState_ = OFFLINE_CLAIM_PREVIEWING
+    print("[OfflineClaim] preview requested sequence=" .. tostring(sequence))
+    local loadingShown = CommonPromptDialog.Show {
+        kind = "confirm",
+        priority = 460,
+        queueKey = loadingDialogKey,
+        title = "离线收益",
+        message = "正在计算离线收益，请稍候……",
+        lines = { "服务器正在锁定本次预计奖励，完成后会显示确认领取内容。" },
+        closeOnOverlay = false,
+        showClose = false,
+        showConfirm = false,
+    }
+    if not loadingShown then
+        offlineDialogKey_ = nil
+        offlineClaimState_ = OFFLINE_CLAIM_IDLE
+        print("[OfflineClaim] loading dialog rejected sequence=" .. tostring(sequence))
+        UI.Toast.Show("当前有其他弹窗，请稍后重试", { duration = 1.8, variant = "info", position = "bottom" })
+        return
+    end
     ServerClient.PreviewOffline(function(response)
+        if sequence ~= offlineClaimSequence_ then return end
+        DialogCoordinator.CancelByKey(loadingDialogKey)
+        offlineDialogKey_ = nil
         if not response or not response.ok then
-            collectingOffline_ = false
+            offlineClaimState_ = OFFLINE_CLAIM_IDLE
+            print("[OfflineClaim] preview failed sequence=" .. tostring(sequence)
+                .. " code=" .. tostring(response and response.code))
             ActionResult(response)
             return
         end
@@ -823,14 +1034,27 @@ actionFns_.CollectOffline = function()
         local quoteToken = data.quoteToken
         local preview = data.preview
         if type(quoteToken) ~= "string" or type(preview) ~= "table" then
-            collectingOffline_ = false
+            offlineClaimState_ = OFFLINE_CLAIM_IDLE
+            print("[OfflineClaim] invalid preview response sequence=" .. tostring(sequence))
             ActionResult({ ok = false, reason = "服务器返回的离线预览无效" })
             return
         end
+
+        offlineClaimState_ = OFFLINE_CLAIM_CONFIRMING
         local shown = ShowOfflinePreviewDialog(quoteToken, preview, function()
+            if sequence ~= offlineClaimSequence_ then return end
+            offlineDialogKey_ = nil
+            offlineClaimState_ = OFFLINE_CLAIM_CLAIMING
+            print("[OfflineClaim] claim confirmed sequence=" .. tostring(sequence))
             ServerClient.CollectOffline(quoteToken, function(claimResponse)
-                collectingOffline_ = false
-                if not ActionResult(claimResponse) then return end
+                if sequence ~= offlineClaimSequence_ then return end
+                offlineClaimState_ = OFFLINE_CLAIM_IDLE
+                if not ActionResult(claimResponse) then
+                    print("[OfflineClaim] claim failed sequence=" .. tostring(sequence)
+                        .. " code=" .. tostring(claimResponse and claimResponse.code))
+                    return
+                end
+                print("[OfflineClaim] claim completed sequence=" .. tostring(sequence))
                 local reward = OfflineRewardEvent(claimResponse)
                 if reward then
                     ShowOfflineRewardDialog(reward)
@@ -839,11 +1063,20 @@ actionFns_.CollectOffline = function()
                 end
                 ServerClient.RequestSnapshot()
             end)
+        end, function()
+            if sequence ~= offlineClaimSequence_ then return end
+            offlineDialogKey_ = nil
+            offlineClaimState_ = OFFLINE_CLAIM_IDLE
+            print("[OfflineClaim] preview cancelled sequence=" .. tostring(sequence))
         end)
         if not shown then
-            collectingOffline_ = false
+            offlineDialogKey_ = nil
+            offlineClaimState_ = OFFLINE_CLAIM_IDLE
+            print("[OfflineClaim] preview dialog rejected sequence=" .. tostring(sequence))
             UI.Toast.Show("当前有其他弹窗，请稍后重试", { duration = 1.8, variant = "info", position = "bottom" })
+            return
         end
+        print("[OfflineClaim] preview dialog queued sequence=" .. tostring(sequence))
     end)
 end
 actionFns_.EquipItem = function(item)
@@ -2259,10 +2492,16 @@ local function BindServerEvents()
     ServerClient.On("status", function(payload)
         local state = payload and payload.state or "syncing"
         if state ~= "ready" then
-            collectingOffline_ = false
+            offlineClaimSequence_ = offlineClaimSequence_ + 1
+            if offlineDialogKey_ then DialogCoordinator.CancelByKey(offlineDialogKey_) end
+            offlineClaimState_ = OFFLINE_CLAIM_IDLE
+            offlineDialogKey_ = nil
             PlayPresentation.CancelPendingAutoRun()
         end
         LoadingController.HandleStatus(state)
+        if state == "ready" then
+            PreloadItemIcons()
+        end
         if not LoadingController.IsActive() then
             game = GameStateAdapter.GetViewState()
             UpdateTopBar()
@@ -2271,7 +2510,10 @@ local function BindServerEvents()
     end)
     ServerClient.On("adminResult", function(result) AdminPanel.HandleResult(result, RequestPageRefresh) end)
     ServerClient.On("disconnected", function()
-        collectingOffline_ = false
+        offlineClaimSequence_ = offlineClaimSequence_ + 1
+        if offlineDialogKey_ then DialogCoordinator.CancelByKey(offlineDialogKey_) end
+        offlineClaimState_ = OFFLINE_CLAIM_IDLE
+        offlineDialogKey_ = nil
         PlayPresentation.CancelPendingAutoRun()
         LoadingController.HandleDisconnected()
         if not LoadingController.IsActive() then

@@ -227,6 +227,39 @@ local function TestExplicitPriorityAndPresenterFailure()
         "a presenter failure must not block the remaining queue")
 end
 
+local function TestCancelByKey()
+    local Coordinator = FreshCoordinator()
+    local callbacks = {}
+
+    Coordinator.Configure({
+        present = function() end,
+        dismiss = function() end,
+    })
+
+    assert(Coordinator.Enqueue({
+        id = "active",
+        queueKey = "active-key",
+        onCancel = function() callbacks[#callbacks + 1] = "active" end,
+    }))
+    assert(Coordinator.Enqueue({
+        id = "queued",
+        queueKey = "queued-key",
+        onCancel = function() callbacks[#callbacks + 1] = "queued" end,
+    }))
+
+    assert(Coordinator.HasKey("active-key"))
+    assert(Coordinator.HasKey("queued-key"))
+    assert(Coordinator.HasKey("missing") == false)
+    assert(Coordinator.CancelByKey("queued-key"), "queued dialog must be cancellable by key")
+    assert(Coordinator.GetState().active.id == "active")
+    assert(Coordinator.GetState().queued == 0)
+    assert(callbacks[1] == "queued")
+    assert(Coordinator.CancelByKey("active-key"), "active dialog must be cancellable by key")
+    assert(Coordinator.GetState().active == nil)
+    assert(callbacks[2] == "active")
+    assert(Coordinator.CancelByKey("missing") == false)
+end
+
 function Spec.Run()
     local oldModule = package.loaded[MODULE_NAME]
     local ok, reason = pcall(function()
@@ -234,6 +267,7 @@ function Spec.Run()
         TestActiveDialogIsNotPreempted()
         TestClearAndRemountLifecycle()
         TestExplicitPriorityAndPresenterFailure()
+        TestCancelByKey()
     end)
     package.loaded[MODULE_NAME] = oldModule
     assert(ok, reason)

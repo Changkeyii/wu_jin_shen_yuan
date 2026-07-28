@@ -1,5 +1,7 @@
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local EquipmentIcon = require("client.EquipmentIcon")
+local BackpackItemSlot = require("client.BackpackItemSlot")
+local EquipmentItemSlot = require("client.EquipmentItemSlot")
 
 local InventoryView = {}
 
@@ -263,18 +265,11 @@ end
 
 local function CreateItemIconCard(item, width, height)
     local selected = selectedInventoryId == item.id
-    local cardSize = width or 180
-    local cardHeight = height or cardSize
-    local slotSize = math.floor(cardSize * 0.81)
-    local slotX = math.floor((cardSize - slotSize) * 0.5)
-    return UI.Panel {
-        width = cardSize,
-        height = cardHeight,
+    return BackpackItemSlot.Build(context, item, {
+        width = width or 180,
+        height = height or width or 180,
+        selected = selected,
         clickable = true,
-        position = "relative",
-        overflow = "visible",
-        backgroundImage = ASSETS.ui.inventoryItemCard,
-        backgroundFit = "contain",
         onClick = function()
             SetSelectedInventoryId(item.id)
             RequestPageRefresh()
@@ -288,32 +283,7 @@ local function CreateItemIconCard(item, width, height)
         onPointerLeave = function()
             if HideItemTooltip then HideItemTooltip() end
         end,
-        children = {
-            UI.Panel {
-                position = "absolute",
-                left = slotX,
-                top = 5,
-                width = slotSize,
-                height = slotSize,
-                children = { InventoryImageBox(item, selected, slotSize) }
-            },
-            CompactTxt(
-                ShortenText(item.name or "未知装备", 8),
-                14,
-                RarityColor(item.rarity),
-                {
-                    position = "absolute",
-                    left = 8,
-                    top = 148,
-                    width = cardSize - 16,
-                    height = 28,
-                    textAlign = "center",
-                    textStroke = { width = 2, color = "#000000" },
-                    pointerEvents = "none",
-                }
-            ),
-        }
-    }
+    })
 end
 
 local function CreateInventoryTabs()
@@ -1330,16 +1300,10 @@ local function CreateEquipmentPage()
 
     local function CreateEquipmentCard(item)
         local active = selectedCandidate and selectedCandidate.id == item.id
-        return UI.Panel {
-            width = 180,
-            height = 182,
-            flexShrink = 0,
+        return EquipmentItemSlot.Build(context, item, {
+            active = active,
             clickable = true,
-            position = "relative",
-            backgroundImage = active and ASSETS.ui.inventoryItemCardSelected or ASSETS.ui.inventoryItemCard,
-            backgroundFit = "contain",
-            borderWidth = active and 3 or 1,
-            borderColor = active and C.focus or RarityColor(item.rarity),
+            detailText = "战力 " .. ItemPowerText(item),
             onPointerDown = function() StartDrag(item) end,
             onPointerUp = function(event) DropAtPointer(event) end,
             onClick = function()
@@ -1355,42 +1319,7 @@ local function CreateEquipmentPage()
             onPointerLeave = function()
                 if HideItemTooltip then HideItemTooltip() end
             end,
-            children = {
-                UI.Panel {
-                    position = "absolute",
-                    left = 26,
-                    top = 7,
-                    width = 128,
-                    height = 128,
-                    children = { InventoryImageBox(item, active, 128) },
-                },
-                CompactTxt(
-                    ShortenText(item.name or "未知装备", 8),
-                    15,
-                    RarityColor(item.rarity),
-                    {
-                        position = "absolute",
-                        left = 8,
-                        top = 133,
-                        width = 164,
-                        height = 27,
-                        textAlign = "center",
-                        textStroke = { width = 2, color = "#000000" },
-                        pointerEvents = "none",
-                    }
-                ),
-                CompactTxt("战力 " .. ItemPowerText(item), 15, C.gold, {
-                    position = "absolute",
-                    left = 10,
-                    top = 158,
-                    width = 160,
-                    height = 19,
-                    textAlign = "center",
-                    textStroke = { width = 1, color = "#000000" },
-                    pointerEvents = "none",
-                }),
-            },
-        }
+        })
     end
 
     local cardChildren = {}

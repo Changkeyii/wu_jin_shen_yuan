@@ -90,6 +90,10 @@ function DialogCoordinator.Configure(options)
     end
 end
 
+function DialogCoordinator.HasKey(key)
+    return HasKey(key)
+end
+
 function DialogCoordinator.Enqueue(options)
     options = options or {}
     local key = options.queueKey or options.key
@@ -109,6 +113,24 @@ end
 
 function DialogCoordinator.CancelActive()
     return CompleteActive("cancel")
+end
+
+function DialogCoordinator.CancelByKey(key)
+    if key == nil then return false end
+    if active_ and active_.key == key then
+        return CompleteActive("cancel")
+    end
+    for index, item in ipairs(queue_) do
+        if item.key == key then
+            table.remove(queue_, index)
+            if item.options.onCancel then
+                local ok, reason = pcall(item.options.onCancel, "cancel", item.options)
+                if not ok then print("[DialogCoordinator] callback failed: " .. tostring(reason)) end
+            end
+            return true
+        end
+    end
+    return false
 end
 
 function DialogCoordinator.ConfirmActive()

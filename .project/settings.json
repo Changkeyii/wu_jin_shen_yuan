@@ -29,9 +29,9 @@
         "enabled": true
       },
       "match_info": {
-        "desc_name": "free_match",
-        "immediately_start": true,
-        "match_timeout": 0,
+        "desc_name": "free_match_with_ai",
+        "immediately_start": false,
+        "match_timeout": 20,
         "player_number": 1
       }
     }
