@@ -599,7 +599,7 @@ end
 
 local function configureState(autoEquip)
     local state = StateFactory.Create(0)
-    state.automationPolicy = { autoEquip = autoEquip, autoSkipStory = false }
+    state.automationPolicy = { autoEquip = autoEquip, lootAutoEquip = autoEquip, autoSkipStory = false }
     state.storyProgress.introCompleted = true
     state.inventoryPolicy = {
         pauseOnFull = false,

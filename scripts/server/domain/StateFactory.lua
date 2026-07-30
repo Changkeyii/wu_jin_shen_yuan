@@ -63,6 +63,7 @@ function StateFactory.Create(now)
         lastActiveAt = now,
         pendingOfflineSeconds = 0,
         level = 1,
+        vipLevel = 0,
         exp = 0,
         floor = 1,
         maxFloor = 1,

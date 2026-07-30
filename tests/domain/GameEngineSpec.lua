@@ -235,6 +235,149 @@ function Spec.EnterEncounterRejectsStaleOrSkippedRouteTargets()
     assertEqual(started.state.currentMonster.id, FloorRoute.EncounterId(1, 1))
 end
 
+function Spec.StrengthenPreviewMatchesAuthoritativeConsumption()
+    local state = skipIntro(StateFactory.Create(1000))
+    local slot = Catalog.SLOTS[1].id
+    state.gold = LargeNumber.FromNumber(100000)
+    state.fragments = LargeNumber.FromNumber(100000)
+
+    local preview = GameEngine.GetStrengthenPreview(state, slot)
+    assertTrue(preview.ok and preview.data.canStrengthen)
+    assertEqual(currency(preview.data.goldOwned), currency(state.gold))
+    assertEqual(currency(preview.data.fragmentsOwned), currency(state.fragments))
+    local goldBefore = currency(state.gold)
+    local fragmentsBefore = currency(state.fragments)
+
+    local result = GameEngine.Strengthen(state, slot, 1001)
+    assertTrue(result.ok)
+    assertEqual(currency(result.state.gold), goldBefore - preview.data.gold)
+    assertEqual(currency(result.state.fragments), fragmentsBefore - preview.data.fragments)
+    local strengthened = findEvent(result.delta.events, "equipment_strengthened")
+    assertTrue(strengthened ~= nil)
+    assertEqual(strengthened.goldCost, preview.data.gold)
+    assertEqual(strengthened.fragmentCost, preview.data.fragments)
+end
+
+function Spec.StarRequiresMatchingEquipmentAndStarLevel()
+    local state = skipIntro(StateFactory.Create(1000))
+    local slot = Catalog.SLOTS[1].id
+    local equippedId = state.equipped[slot]
+    local equipped = nil
+    for _, item in ipairs(state.inventory) do
+        if item.id == equippedId then equipped = item; break end
+    end
+    assertTrue(equipped ~= nil, "starter weapon must be equipped")
+    equipped.star = 1
+
+    local wrongStar = TableUtils.DeepCopy(equipped)
+    wrongStar.id = "00000000-0000-4000-8000-00000000aa02"
+    wrongStar.star = 0
+    wrongStar.locked = false
+    wrongStar.aidLocked = false
+    state.inventory[#state.inventory + 1] = wrongStar
+    state.gold = LargeNumber.FromNumber(100000)
+    state.fragments = LargeNumber.FromNumber(100000)
+
+    local wrongRarity = TableUtils.DeepCopy(equipped)
+    wrongRarity.id = "00000000-0000-4000-8000-00000000aa05"
+    wrongRarity.rarity = equipped.rarity == "common" and "advanced" or "common"
+    wrongRarity.locked = false
+    wrongRarity.aidLocked = false
+    state.inventory[#state.inventory + 1] = wrongRarity
+
+    local blockedPreview = GameEngine.GetStarPreview(state, slot)
+    assertTrue(blockedPreview.ok and not blockedPreview.data.canStar)
+    assertEqual(#blockedPreview.data.materials, 0)
+    assertTrue(blockedPreview.data.material == nil)
+    local missingSelection = GameEngine.Star(state, slot, nil, 1001)
+    assertTrue(not missingSelection.ok)
+    assertEqual(missingSelection.error.code, "MATERIAL_REQUIRED")
+    local blockedResult = GameEngine.Star(state, slot, wrongStar.id, 1001)
+    assertTrue(not blockedResult.ok)
+    assertEqual(blockedResult.error.code, "DUPLICATE_REQUIRED")
+    local wrongRarityResult = GameEngine.Star(state, slot, wrongRarity.id, 1001)
+    assertTrue(not wrongRarityResult.ok)
+    assertEqual(wrongRarityResult.error.code, "DUPLICATE_REQUIRED")
+
+    local matchingStar = TableUtils.DeepCopy(equipped)
+    matchingStar.id = "00000000-0000-4000-8000-00000000aa03"
+    matchingStar.locked = false
+    matchingStar.aidLocked = false
+    state.inventory[#state.inventory + 1] = matchingStar
+
+    local secondMatchingStar = TableUtils.DeepCopy(equipped)
+    secondMatchingStar.id = "00000000-0000-4000-8000-00000000aa04"
+    secondMatchingStar.locked = false
+    secondMatchingStar.aidLocked = false
+    state.inventory[#state.inventory + 1] = secondMatchingStar
+
+    local readyPreview = GameEngine.GetStarPreview(state, slot)
+    assertTrue(readyPreview.ok and readyPreview.data.canStar)
+    assertEqual(#readyPreview.data.materials, 2)
+    assertEqual(readyPreview.data.materialOwned, 2)
+    assertEqual(currency(readyPreview.data.goldOwned), currency(state.gold))
+    assertEqual(currency(readyPreview.data.fragmentsOwned), currency(state.fragments))
+    assertEqual(readyPreview.data.material.itemId, matchingStar.id)
+    assertEqual(readyPreview.data.material.star, equipped.star)
+    local result = GameEngine.Star(state, slot, secondMatchingStar.id, 1002)
+    assertTrue(result.ok)
+    local remainingIds = {}
+    for _, item in ipairs(result.state.inventory) do remainingIds[item.id] = true end
+    assertTrue(remainingIds[wrongStar.id])
+    assertTrue(remainingIds[wrongRarity.id])
+    assertTrue(remainingIds[matchingStar.id])
+    assertTrue(not remainingIds[secondMatchingStar.id])
+end
+
+function Spec.StarPreviewMatchesAuthoritativeConsumption()
+    local state = skipIntro(StateFactory.Create(1000))
+    local slot = Catalog.SLOTS[1].id
+    local equippedId = state.equipped[slot]
+    local equipped = nil
+    for _, item in ipairs(state.inventory) do
+        if item.id == equippedId then equipped = item; break end
+    end
+    assertTrue(equipped ~= nil, "starter weapon must be equipped")
+    local duplicate = TableUtils.DeepCopy(equipped)
+    duplicate.id = "00000000-0000-4000-8000-00000000aa01"
+    duplicate.locked = false
+    duplicate.aidLocked = false
+    state.inventory[#state.inventory + 1] = duplicate
+    state.gold = LargeNumber.FromNumber(100000)
+    state.fragments = LargeNumber.FromNumber(100000)
+
+    local preview = GameEngine.GetStarPreview(state, slot)
+    assertTrue(preview.ok and preview.data.canStar)
+    assertEqual(preview.data.material.itemId, duplicate.id)
+    assertEqual(#preview.data.materials, 1)
+    local goldBefore = currency(state.gold)
+    local fragmentsBefore = currency(state.fragments)
+
+    local result = GameEngine.Star(state, slot, duplicate.id, 1001)
+    assertTrue(result.ok)
+    assertEqual(currency(result.state.gold), goldBefore - preview.data.gold)
+    assertEqual(currency(result.state.fragments), fragmentsBefore - preview.data.fragments)
+    local starred = findEvent(result.delta.events, "equipment_starred")
+    assertTrue(starred ~= nil)
+    assertEqual(starred.goldCost, preview.data.gold)
+    assertEqual(starred.fragmentCost, preview.data.fragments)
+end
+
+function Spec.CurrencyDropPresentationEventPreservesRewardTotal()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(started.ok)
+    local won = GameEngine.AdvanceCombatTick(started.state, queueRng(), 1002, 60)
+    assertTrue(won.ok)
+    local reward = findEvent(won.delta.events, "battle_reward")
+    local drop = findEvent(won.delta.events, "currency_drop")
+    assertTrue(reward ~= nil and drop ~= nil)
+    assertEqual(drop.currency, "gold")
+    assertEqual(drop.amount, reward.gold)
+    assertTrue(drop.dropCount >= 1 and drop.dropCount <= 12)
+end
+
 function Spec.OnlineAttackAlwaysSettlesFourConfiguredHits()
     local state = skipIntro(StateFactory.Create(1000))
     state.autoRun = true
@@ -501,6 +644,31 @@ function Spec.OfflineBatchDropCountRespectsInventoryCapacity()
     assertEqual(result.state.pauseReason, "inventory_full")
 end
 
+function Spec.EquipmentCollectionMigratesAndKeepsHighestPowerRecord()
+    local state = StateFactory.Create(1000)
+    local item = state.inventory[1]
+    local equipmentId = item.equipmentId
+    local initial = state.equipmentCollection[equipmentId]
+    assertTrue(initial ~= nil, "starter equipment should unlock its codex entry")
+    local initialPower = BigNumber.Normalize(initial.powerBig)
+
+    item.enhance = 12
+    local upgraded = StateNormalizer.Normalize(state, 1001)
+    local best = upgraded.equipmentCollection[equipmentId]
+    assertTrue(BigNumber.Compare(best.powerBig, initialPower) > 0,
+        "higher equipment power should replace the codex record")
+    assertEqual(best.enhance, 12)
+
+    upgraded.inventory = {}
+    upgraded.equipped = {}
+    local persisted = StateNormalizer.ToPersisted(upgraded)
+    local restored = StateNormalizer.Normalize(persisted, 1002)
+    assertTrue(restored.equipmentCollection[equipmentId] ~= nil,
+        "selling or decomposing equipment must not clear the codex entry")
+    assertEqual(restored.equipmentCollection[equipmentId].enhance, 12)
+    assertTrue(GameStateSchema.ValidateState(restored))
+end
+
 function Spec.OfflineRewardsRepeatCurrentFloorWithoutAdvancing()
     local state = skipIntro(StateFactory.Create(1000))
     state.floor = 10
@@ -666,6 +834,64 @@ function Spec.FullModelAutoEquipAndUndoUseOneAuthoritativeLoadout()
     assertTrue(undone.ok)
     assertTrue(undone.state.equipped[definition.slot] ~= itemId)
     assertEqual(eventCount(undone.delta.events, "equipment_reverted"), 1)
+end
+
+function Spec.LootStashKeepsDropsUntilManualEquip()
+    local state = skipIntro(StateFactory.Create(1000))
+    local definition = Catalog.GetEquipmentDefinition(state.inventory[1].equipmentId)
+    local granted = GameEngine.GrantEquipment(state, {
+        equipmentId = definition.id,
+        rarity = "myth",
+        atk = 10000,
+        level = 1,
+    }, 1001)
+    assertTrue(granted.ok)
+    local itemId = granted.state.inventory[#granted.state.inventory].id
+    assertTrue(granted.state.automationPolicy.lootAutoEquip == false)
+
+    granted.state.lootStash = { itemId }
+    local equipped = GameEngine.Equip(granted.state, itemId, 1002)
+    assertTrue(equipped.ok)
+    assertEqual(equipped.state.equipped[definition.slot], itemId)
+    assertEqual(#equipped.state.lootStash, 0)
+    assertTrue(GameStateSchema.ValidateState(equipped.state))
+end
+
+function Spec.DecomposeRefundUsesVipRate()
+    local item = {
+        rarity = "legendary",
+        investedGold = 1000,
+        investedFragments = 82,
+    }
+    local base = Catalog.GetDecomposeRefund(item, 0)
+    assertEqual(base.gold, 600)
+    assertEqual(base.fragments, 60)
+    assertEqual(base.rate, 0.60)
+
+    local vipTen = Catalog.GetDecomposeRefund(item, 10)
+    assertEqual(vipTen.gold, 700)
+    assertEqual(vipTen.fragments, 70)
+    assertEqual(vipTen.rate, 0.70)
+
+    local capped = Catalog.GetDecomposeRefund(item, 99)
+    assertEqual(capped.gold, 1000)
+    assertEqual(capped.fragments, 100)
+    assertEqual(capped.rate, 1)
+end
+
+function Spec.LootAutoEquipSettingIsExplicitAndDefaultsOff()
+    local state = StateFactory.Create(1000)
+    assertTrue(state.automationPolicy.autoEquip == false)
+    assertTrue(state.automationPolicy.lootAutoEquip == false)
+    local enabled = GameEngine.SetAutomationPolicy(state, {
+        autoEquip = true,
+        lootAutoEquip = true,
+        autoSkipStory = false,
+    }, 1001)
+    assertTrue(enabled.ok)
+    assertTrue(enabled.state.automationPolicy.autoEquip)
+    assertTrue(enabled.state.automationPolicy.lootAutoEquip)
+    assertTrue(GameStateSchema.ValidateState(enabled.state))
 end
 
 function Spec.StoryLineIndexAndRuleIdsAreAuthoritative()

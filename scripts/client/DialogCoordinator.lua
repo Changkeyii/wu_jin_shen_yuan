@@ -155,6 +155,14 @@ function DialogCoordinator.GetState()
     }
 end
 
+function DialogCoordinator._ResetForTests()
+    queue_ = {}
+    active_ = nil
+    sequence_ = 0
+    presenter_ = nil
+    dismisser_ = nil
+end
+
 DialogCoordinator.Priorities = PRIORITIES
 
 return DialogCoordinator

@@ -12,6 +12,7 @@ local GameStateSchema = {}
 GameStateSchema.VERSION = 5
 GameStateSchema.INVENTORY_CAP = 300
 GameStateSchema.TEMPORARY_LOOT_CAP = 60
+GameStateSchema.LOOT_STASH_CAP = 60
 GameStateSchema.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 GameStateSchema.MAX_LOGS = 40
 GameStateSchema.MAX_APPLIED_GM_COMMANDS = 64
@@ -48,6 +49,7 @@ local PERSISTED_FIELDS = {
     "lastActiveAt",
     "pendingOfflineSeconds",
     "level",
+    "vipLevel",
     "exp",
     "floor",
     "maxFloor",
@@ -65,6 +67,7 @@ local PERSISTED_FIELDS = {
     "nextItemId",
     "inventory",
     "overflowLoot",
+    "lootStash",
     "equipped",
     "consumables",
     "hp",
@@ -81,11 +84,13 @@ local PERSISTED_FIELDS = {
     "pendingEquipDecision",
     "previousLoadout",
     "currentMonster",
+    "equipmentCollection",
     "appliedGmCommandIds",
 }
 
 local SNAPSHOT_FIELDS = {
     "level",
+    "vipLevel",
     "exp",
     "floor",
     "maxFloor",
@@ -102,6 +107,7 @@ local SNAPSHOT_FIELDS = {
     "pendingOfflineSeconds",
     "inventory",
     "overflowLoot",
+    "lootStash",
     "equipped",
     "consumables",
     "hp",
@@ -118,6 +124,7 @@ local SNAPSHOT_FIELDS = {
     "pendingEquipDecision",
     "previousLoadout",
     "currentMonster",
+    "equipmentCollection",
     "floorRoute",
     "setProgress",
     "logs",
@@ -576,11 +583,50 @@ local function validateAcknowledgements(value)
     return true
 end
 
+local function validateEquipmentCollection(value)
+    local definitions = {}
+    for _, definition in ipairs(EquipmentCatalog.GetAll()) do
+        definitions[definition.id] = true
+    end
+    local count = 0
+    for equipmentId, record in pairs(value) do
+        count = count + 1
+        if count > #EquipmentCatalog.GetAll() or not definitions[equipmentId] or type(record) ~= "table" then
+            return false, "Equipment collection contains an invalid definition"
+        end
+        if not BigNumber.ValidateCanonical(record.powerBig) then
+            return false, "Equipment collection power is invalid"
+        end
+        if type(record.level) ~= "number" or record.level ~= math.floor(record.level)
+            or record.level < 1 or record.level > 1000000
+            or type(record.enhance) ~= "number" or record.enhance ~= math.floor(record.enhance)
+            or record.enhance < 0 or record.enhance > 1000
+            or type(record.star) ~= "number" or record.star ~= math.floor(record.star)
+            or record.star < 0 or record.star > 5
+            or type(record.rarity) ~= "string"
+        then
+            return false, "Equipment collection record is invalid"
+        end
+    end
+    return true
+end
+
+local function validateLootStash(value)
+    local seen = {}
+    for _, itemId in ipairs(value) do
+        local key = tostring(itemId)
+        if seen[key] then return false, "Loot stash item ids must be unique" end
+        seen[key] = true
+    end
+    return true
+end
+
 local AUTOMATION_POLICY_SCHEMA = {
     type = "object", allowUnknown = false,
-    required = { "autoEquip", "autoSkipStory" },
+    required = { "autoEquip", "lootAutoEquip", "autoSkipStory" },
     fields = {
         autoEquip = { type = "boolean" },
+        lootAutoEquip = { type = "boolean" },
         autoSkipStory = { type = "boolean" },
     },
 }
@@ -805,6 +851,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "lastActiveAt",
         "pendingOfflineSeconds",
         "level",
+        "vipLevel",
         "exp",
         "floor",
         "maxFloor",
@@ -821,6 +868,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "nextItemId",
         "inventory",
         "overflowLoot",
+        "lootStash",
         "equipped",
         "consumables",
         "hpBig",
@@ -832,6 +880,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "rewardPity",
         "storyProgress",
         "ruleAcknowledgements",
+        "equipmentCollection",
         "appliedGmCommandIds",
     },
     fields = {
@@ -841,6 +890,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         lastActiveAt = SAFE_INTEGER_SCHEMA,
         pendingOfflineSeconds = { type = "integer", min = 0, max = GameStateSchema.OFFLINE_MAX_SECONDS },
         level = { type = "integer", min = 1, max = 1000000 },
+        vipLevel = { type = "integer", min = 0, max = 40 },
         exp = { type = "integer", min = 0, max = 1000000000 },
         floor = { type = "integer", min = 1, max = 1000000000 },
         maxFloor = { type = "integer", min = 1, max = 1000000000 },
@@ -870,6 +920,12 @@ GameStateSchema.PERSISTED_SCHEMA = {
             maxLength = GameStateSchema.TEMPORARY_LOOT_CAP,
             items = ITEM_SCHEMA,
         },
+        lootStash = {
+            type = "array",
+            maxLength = GameStateSchema.LOOT_STASH_CAP,
+            items = { type = "string", minLength = 1, maxLength = 64 },
+            validate = validateLootStash,
+        },
         equipped = { type = "object", validate = validateEquipped },
         consumables = { type = "object", validate = validateConsumables },
         hp = NONNEGATIVE_NUMBER_SCHEMA,
@@ -883,6 +939,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         storyProgress = STORY_PROGRESS_SCHEMA,
         pendingStoryGate = STORY_GATE_SCHEMA,
         ruleAcknowledgements = { type = "object", validate = validateAcknowledgements },
+        equipmentCollection = { type = "object", validate = validateEquipmentCollection },
         pendingEquipDecision = PENDING_EQUIP_SCHEMA,
         previousLoadout = LOADOUT_BACKUP_SCHEMA,
         currentMonster = CURRENT_MONSTER_SCHEMA,
@@ -920,6 +977,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     pendingOfflineSeconds = PERSISTED_VALUE_SCHEMAS.pendingOfflineSeconds,
     inventory = PERSISTED_VALUE_SCHEMAS.inventory,
     overflowLoot = PERSISTED_VALUE_SCHEMAS.overflowLoot,
+    lootStash = PERSISTED_VALUE_SCHEMAS.lootStash,
     equipped = PERSISTED_VALUE_SCHEMAS.equipped,
     consumables = PERSISTED_VALUE_SCHEMAS.consumables,
     hp = PERSISTED_VALUE_SCHEMAS.hp,
@@ -933,6 +991,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     storyProgress = PERSISTED_VALUE_SCHEMAS.storyProgress,
     pendingStoryGate = PERSISTED_VALUE_SCHEMAS.pendingStoryGate,
     ruleAcknowledgements = PERSISTED_VALUE_SCHEMAS.ruleAcknowledgements,
+    equipmentCollection = PERSISTED_VALUE_SCHEMAS.equipmentCollection,
     pendingEquipDecision = PERSISTED_VALUE_SCHEMAS.pendingEquipDecision,
     previousLoadout = PERSISTED_VALUE_SCHEMAS.previousLoadout,
     currentMonster = PERSISTED_VALUE_SCHEMAS.currentMonster,
@@ -1001,7 +1060,7 @@ local SNAPSHOT_REQUIRED_FIELDS = {
     "level", "exp", "floor", "maxFloor", "position", "transitionRemaining",
     "attemptId", "floorDefeats", "aidPending",
     "gold", "fragments", "mythShards", "autoRun", "pendingOfflineSeconds",
-    "inventory", "overflowLoot", "equipped", "consumables", "hpBig",
+    "inventory", "overflowLoot", "lootStash", "equipped", "consumables", "hpBig",
     "floorKillBonus", "permanentBonus", "inventoryPolicy", "automationPolicy",
     "interactionMode", "rewardPity", "storyProgress", "ruleAcknowledgements",
     "logs", "currentEvent", "recentDamage", "stats", "nextExp",
@@ -1021,6 +1080,7 @@ function GameStateSchema.NewInitialState(now)
         lastActiveAt = now,
         pendingOfflineSeconds = 0,
         level = 1,
+        vipLevel = 0,
         exp = 0,
         floor = 1,
         maxFloor = 1,
@@ -1037,6 +1097,7 @@ function GameStateSchema.NewInitialState(now)
         nextItemId = 1,
         inventory = {},
         overflowLoot = {},
+        lootStash = {},
         equipped = {},
         consumables = { healthPotion = 0 },
         hp = 1,
@@ -1050,12 +1111,13 @@ function GameStateSchema.NewInitialState(now)
             decomposeRarities = { common = false, advanced = false, rare = false, artifact = false, legendary = false, epic = false, myth = false },
             sellRarities = { common = false, advanced = false, rare = false, artifact = false, legendary = false, epic = false, myth = false },
         },
-        automationPolicy = { autoEquip = true, autoSkipStory = false },
+        automationPolicy = { autoEquip = false, lootAutoEquip = false, autoSkipStory = false },
         interactionMode = "normal",
         rewardPity = { epicMisses = 0, mythMisses = 0 },
         storyProgress = { introCompleted = false, highestCompletedChapter = 0, contentVersion = 1 },
         pendingStoryGate = nil,
         ruleAcknowledgements = {},
+        equipmentCollection = {},
         pendingEquipDecision = nil,
         previousLoadout = nil,
         appliedGmCommandIds = {},
@@ -1146,6 +1208,7 @@ function GameStateSchema.NormalizeState(rawState, now)
     end
     local sourceVersion = tonumber(rawState.schemaVersion) or 3
     normalized.schemaVersion = GameStateSchema.VERSION
+    normalized.vipLevel = math.max(0, math.min(40, math.floor(tonumber(normalized.vipLevel) or 0)))
     if sourceVersion < 4 then
         normalized.position = 0
         normalized.currentMonster = nil
@@ -1269,6 +1332,12 @@ function GameStateSchema.ValidateState(state)
         allItemIds[idKey] = true
     end
 
+    for index, itemId in ipairs(persisted.lootStash or {}) do
+        if not inventoryById[tostring(itemId)] then
+            return false, stateError("Loot stash item is missing from inventory", "$state.lootStash[" .. index .. "]")
+        end
+    end
+
     local equippedIds = {}
     for slot, itemId in pairs(persisted.equipped) do
         local idKey = tostring(itemId)
@@ -1349,6 +1418,7 @@ function GameStateSchema.BuildSnapshot(state, options)
 
     snapshot.inventory = networkInventory(state.inventory)
     snapshot.overflowLoot = networkInventory(state.overflowLoot)
+    snapshot.lootStash = deepCopy(state.lootStash or {})
     snapshot.equipped = deepCopy(state.equipped or {})
     snapshot.consumables = deepCopy(state.consumables or {})
     snapshot.nextExp = options.nextExp or snapshot.nextExp or nextExp(snapshot.level or 1)
@@ -1419,11 +1489,13 @@ function GameStateSchema.BuildDelta(revision, changes, options)
     local inventoryChanged = options.inventoryChanged == true
         or changes.inventory ~= nil
         or changes.overflowLoot ~= nil
+        or changes.lootStash ~= nil
         or changes.equipped ~= nil
         or changes.consumables ~= nil
     if inventoryChanged and options.state ~= nil then
         deltaChanges.inventory = networkInventory(options.state.inventory or {})
         deltaChanges.overflowLoot = networkInventory(options.state.overflowLoot or {})
+        deltaChanges.lootStash = deepCopy(options.state.lootStash or {})
         deltaChanges.equipped = deepCopy(options.state.equipped or {})
         deltaChanges.consumables = deepCopy(options.state.consumables or {})
     end

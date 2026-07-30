@@ -19,6 +19,9 @@ Catalog.INVENTORY_CAP = 300
 Catalog.MAX_LOG_EVENTS = 40
 Catalog.MAX_STAR = 5
 Catalog.MAX_ENHANCE = 1000
+Catalog.MAX_VIP_LEVEL = 40
+Catalog.DECOMPOSE_BASE_REFUND_RATE = 0.60
+Catalog.DECOMPOSE_VIP_REFUND_RATE_PER_LEVEL = 0.01
 Catalog.MAX_VALUE = 9007199254740991
 Catalog.ENEMY_ATTACK_SECONDS = 1.5
 Catalog.BOSS_ENRAGE_SECONDS = 30
@@ -261,12 +264,36 @@ function Catalog.CreateItemStats(definition, floor, rarityId, roll, enhance, sta
     return stats
 end
 
-function Catalog.GetDecomposeRefund(item)
+function Catalog.GetDecomposeRefundRate(vipLevel)
+    vipLevel = Catalog.Clamp(
+        math.floor(tonumber(vipLevel) or 0),
+        0,
+        Catalog.MAX_VIP_LEVEL
+    )
+    return math.min(
+        1,
+        Catalog.DECOMPOSE_BASE_REFUND_RATE
+            + vipLevel * Catalog.DECOMPOSE_VIP_REFUND_RATE_PER_LEVEL
+    )
+end
+
+function Catalog.GetEquipmentRecoveryValue(item)
     if not item then return { gold = 0, fragments = 0 } end
     local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
     return {
         gold = math.max(0, math.floor(item.investedGold or 0)),
-        fragments = rarity.fragments + math.max(0, math.floor(item.investedFragments or 0)),
+        fragments = rarity.fragments
+            + math.max(0, math.floor(item.investedFragments or 0)),
+    }
+end
+
+function Catalog.GetDecomposeRefund(item, vipLevel)
+    local rate = Catalog.GetDecomposeRefundRate(vipLevel)
+    local total = Catalog.GetEquipmentRecoveryValue(item)
+    return {
+        gold = math.floor(total.gold * rate),
+        fragments = math.floor(total.fragments * rate),
+        rate = rate,
     }
 end
 

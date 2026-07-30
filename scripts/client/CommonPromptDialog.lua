@@ -11,6 +11,7 @@ local ASSETS = {
     close = "image/ui/dialog/close_button.png",
     confirm = "image/ui/dialog/confirm_button.png",
     danger = "image/ui/inventory/action_red.png",
+    glow = "image/ui/generated/pickup_spark_82x82.png",
 }
 
 local root_ = nil
@@ -138,7 +139,8 @@ function CommonPromptDialog.Present(options, finish)
         local showCancelButton = options.cancelText ~= nil or hasPages
         local showCloseButton = options.showClose ~= false
         local showConfirmButton = options.showConfirm ~= false
-        local canConfirm = not hasPages or pageIndex == #pages
+        local confirmEnabled = options.confirmEnabled ~= false
+        local canConfirm = (not hasPages or pageIndex == #pages) and confirmEnabled
         local buttonGroupWidth = showCancelButton
             and (buttonWidth * 2 + buttonGap)
             or buttonWidth
@@ -156,9 +158,14 @@ function CommonPromptDialog.Present(options, finish)
                 textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
             }),
             UI.ScrollView {
-                position = "absolute", left = contentSideInset, top = 104,
-                width = contentWidth, height = dialogHeight - 248,
-                scrollX = false, scrollY = true, showScrollbar = false,
+                position = "absolute",
+                left = contentSideInset,
+                top = options.bodyTop or 104,
+                width = contentWidth,
+                height = options.bodyHeight or (dialogHeight - 248),
+                scrollX = false,
+                scrollY = options.bodyScrollY ~= false,
+                showScrollbar = options.showBodyScrollbar == true,
                 children = {
                     UI.Panel {
                         width = "100%", flexShrink = 0, gap = 20,
@@ -237,11 +244,39 @@ function CommonPromptDialog.Present(options, finish)
         end
 
         local dialog = UI.Panel {
-            position = "relative", width = dialogWidth, height = dialogHeight,
+            position = "absolute", left = 0, top = 0,
+            width = dialogWidth, height = dialogHeight,
             clickable = true, overflow = "hidden",
             backgroundColor = { 14, 24, 48, 255 },
             backgroundImage = ASSETS.frame, backgroundFit = "sliced",
             backgroundSlice = { 72, 42, 92, 42 }, children = dialogChildren,
+        }
+        local celebrationGlow = nil
+        if options.celebration then
+            local glowSize = math.floor(dialogWidth * 0.72)
+            celebrationGlow = UI.Panel {
+                position = "absolute",
+                left = math.floor((dialogWidth - glowSize) * 0.5),
+                top = math.floor((dialogHeight - glowSize) * 0.5),
+                width = glowSize,
+                height = glowSize,
+                backgroundImage = ASSETS.glow,
+                backgroundFit = "contain",
+                opacity = 0.5,
+                pointerEvents = "none",
+            }
+        end
+        local foregroundChildren = {}
+        if celebrationGlow then foregroundChildren[#foregroundChildren + 1] = celebrationGlow end
+        foregroundChildren[#foregroundChildren + 1] = dialog
+        local stage = UI.Panel {
+            position = "relative",
+            width = dialogWidth,
+            height = dialogHeight,
+            pointerEvents = "box-none",
+            alignItems = "center",
+            justifyContent = "center",
+            children = foregroundChildren,
         }
         overlay_ = UI.Panel {
             position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
@@ -253,10 +288,35 @@ function CommonPromptDialog.Present(options, finish)
                     clickable = true, backgroundImage = ASSETS.overlay, backgroundFit = "cover",
                     onClick = function() if closeOnOverlay then Cancel() end end,
                 },
-                dialog,
+                stage,
             },
         }
         root_:AddChild(overlay_)
+        dialog:Animate {
+            keyframes = {
+                [0] = { opacity = 0, scale = 0.72, translateY = 48 },
+                [0.58] = { opacity = 1, scale = 1.04, translateY = -8 },
+                [1] = { opacity = 1, scale = 1.0, translateY = 0 },
+            },
+            duration = options.entranceDuration or 0.46,
+            easing = "easeOut",
+        }
+        if celebrationGlow then
+            celebrationGlow:Animate {
+                keyframes = {
+                    [0] = { opacity = 0, scale = 0.45 },
+                    [0.45] = { opacity = 0.72, scale = 1.12 },
+                    [1] = { opacity = 0.2, scale = 1.0 },
+                },
+                duration = 1.15,
+                easing = "easeOut",
+                loop = true,
+            }
+        end
+        if options.onPresented then
+            local ok, reason = pcall(options.onPresented, options)
+            if not ok then print("[CommonPromptDialog] presented callback failed: " .. tostring(reason)) end
+        end
     end
 
     RenderPage()

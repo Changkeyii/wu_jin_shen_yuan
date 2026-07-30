@@ -41,7 +41,7 @@ local function TestMixedUtf8NamesRemainValid()
             "MK-II深渊核心",
             7
         ),
-        "MK-II深…",
+        "MK-II深渊…",
         "mixed UTF-8 names must be shortened by characters"
     )
 end

@@ -4,7 +4,9 @@ local MODULE_NAME = "client.DialogCoordinator"
 
 local function FreshCoordinator()
     package.loaded[MODULE_NAME] = nil
-    return require(MODULE_NAME)
+    local coordinator = require(MODULE_NAME)
+    if coordinator._ResetForTests then coordinator._ResetForTests() end
+    return coordinator
 end
 
 local function AssertOrder(actual, expected, message)

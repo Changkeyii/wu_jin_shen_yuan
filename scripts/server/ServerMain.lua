@@ -5,7 +5,6 @@ local GameEventSchema = require("shared.GameEventSchema")
 local FloorRoute = require("shared.FloorRoute")
 local ServerConfig = require("server.ServerConfig")
 local PlayerRegistry = require("server.core.PlayerRegistry")
-local AdmissionGuard = require("server.core.AdmissionGuard")
 local RateLimiter = require("server.core.RateLimiter")
 local CommandRouter = require("server.core.CommandRouter")
 local OperationQueue = require("server.core.OperationQueue")
@@ -22,7 +21,6 @@ local GameEngine = require("server.domain.GameEngine")
 ---@type Scene
 local scene_ = nil
 local registry_ = nil
-local admission_ = nil
 local operationQueue_ = nil
 local router_ = nil
 local gateway_ = nil
@@ -476,12 +474,7 @@ local function HandleClientIdentity(eventType, eventData)
     end
 
     local isAdmin = adminPolicy_:IsAdmin(userId)
-    local entry, replaced, admissionError = admission_:Admit(connection, userId, nil, { isAdmin = isAdmin })
-    if not entry then
-        SendStatus(connection, "rejected", admissionError.code, admissionError.reason)
-        connection:Disconnect(50)
-        return
-    end
+    local entry, replaced = registry_:OnAuthenticated(connection, userId, nil, { isAdmin = isAdmin })
     print("[Server] ClientIdentity uid=" .. tostring(userId) .. " generation=" .. tostring(entry.generation))
     ResolvePlayerNickname(entry)
     if entry.metadata and entry.metadata.clientReady then
@@ -532,7 +525,7 @@ end
 local function HandleClientDisconnected(eventType, eventData)
     local connection = ConnectionFrom(eventData)
     if not connection then return end
-    local entry, wasCurrent = admission_:Release(connection)
+    local entry, wasCurrent = registry_:OnDisconnected(connection)
     if not entry then return end
     print("[Server] ClientDisconnected uid=" .. tostring(entry.uid) .. " current=" .. tostring(wasCurrent))
     if not wasCurrent or not entry.uid then return end
@@ -559,12 +552,6 @@ end
 local function InitializeServices()
     registry_ = PlayerRegistry.New()
     adminPolicy_ = AdminPolicy.New({ adminUserIds = { 1379670410 } })
-    admission_ = AdmissionGuard.New({
-        registry = registry_,
-        maxPlayers = ServerConfig.LOGICAL_MAX_PLAYERS,
-        isAdmin = function(userId) return adminPolicy_:IsAdmin(userId) end,
-        bypassAdmins = true,
-    })
     operationQueue_ = OperationQueue.New({
         onError = function(reason) print("[OperationQueue] " .. tostring(reason)) end,
     })

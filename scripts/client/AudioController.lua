@@ -7,6 +7,12 @@ local MUSIC_PATHS = {
     battle = "audio/music_1785119227932.ogg",
 }
 local CLICK_PATH = "audio/sfx/cyber_ui_click.mp3"
+local FEEDBACK_PATHS = {
+    reward = "audio/sfx/reward_claim.mp3",
+    levelUp = "audio/sfx/level_up.mp3",
+    combatAttack = "audio/sfx/combat_attack_release.mp3",
+    lootDrop = "audio/sfx/loot_drop_pop.mp3",
+}
 
 ---@type Scene
 local audioScene_ = nil
@@ -18,7 +24,11 @@ local musicSource_ = nil
 local clickSource_ = nil
 ---@type Sound
 local clickSound_ = nil
+---@type SoundSource[]
+local feedbackSources_ = {}
+local feedbackSourceIndex_ = 0
 local musicSounds_ = {}
+local feedbackSounds_ = {}
 local currentMusic_ = nil
 local musicVolume_ = 0.42
 local sfxVolume_ = 0.7
@@ -58,6 +68,20 @@ end
 function AudioController.PlaySoundEffect(sound)
     if not clickSource_ or not sound or sfxVolume_ <= 0 then return end
     clickSource_:Play(sound)
+end
+
+function AudioController.PlayFeedback(name)
+    local sound = feedbackSounds_[name]
+    if not sound then
+        print("[AudioController] feedback sound unavailable: " .. tostring(name))
+        return false
+    end
+    if #feedbackSources_ == 0 or sfxVolume_ <= 0 then return false end
+    feedbackSourceIndex_ = (feedbackSourceIndex_ % #feedbackSources_) + 1
+    local source = feedbackSources_[feedbackSourceIndex_]
+    source:SetGain(sfxVolume_)
+    source:Play(sound)
+    return true
 end
 
 local function PlayClickAtPhysicalPosition(x, y)
@@ -117,8 +141,20 @@ function AudioController.Start()
     clickSource_:SetSoundType(SOUND_EFFECT)
     clickSource_:SetGain(sfxVolume_)
     clickSource_:SetDeclickEnabled(true)
+    feedbackSources_ = {}
+    feedbackSourceIndex_ = 0
+    for index = 1, 8 do
+        local source = audioNode_:CreateComponent("SoundSource")
+        source:SetSoundType(SOUND_EFFECT)
+        source:SetGain(sfxVolume_)
+        source:SetDeclickEnabled(true)
+        feedbackSources_[index] = source
+    end
 
     clickSound_ = LoadSound(CLICK_PATH, false)
+    for name, path in pairs(FEEDBACK_PATHS) do
+        feedbackSounds_[name] = LoadSound(path, false)
+    end
     musicSounds_.home = LoadSound(MUSIC_PATHS.home, true)
     musicSounds_.battle = LoadSound(MUSIC_PATHS.battle, true)
 
@@ -156,6 +192,7 @@ end
 function AudioController.SetSfxVolume(value)
     sfxVolume_ = ClampVolume(value)
     if clickSource_ then clickSource_:SetGain(sfxVolume_) end
+    for _, source in ipairs(feedbackSources_) do source:SetGain(sfxVolume_) end
 end
 
 function AudioController.GetSfxVolume()
@@ -175,7 +212,10 @@ function AudioController.Stop()
     audioNode_ = nil
     musicSource_ = nil
     clickSource_ = nil
+    feedbackSources_ = {}
+    feedbackSourceIndex_ = 0
     clickSound_ = nil
+    feedbackSounds_ = {}
     musicSounds_ = {}
     currentMusic_ = nil
 end

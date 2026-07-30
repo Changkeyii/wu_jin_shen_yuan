@@ -66,13 +66,15 @@ function Spec.Run()
     local envelope = assert(Protocol.MakeEnvelope("req-3", "Equip", { ok = true }, function()
         return "{encoded}"
     end))
+    local oldVariantMap = _G.VariantMap
+    local oldVariant = _G.Variant
+    _G.VariantMap = nil
+    _G.Variant = nil
     local eventData = Protocol.ToVariantMap(envelope)
     assert(eventData[Protocol.FIELDS.REQUEST_ID] == "req-3")
     assert(eventData[Protocol.FIELDS.COMMAND] == "Equip")
     assert(eventData[Protocol.FIELDS.PAYLOAD_JSON] == "{encoded}")
 
-    local oldVariantMap = _G.VariantMap
-    local oldVariant = _G.Variant
     _G.VariantMap = setmetatable({}, { __call = function() return {} end })
     _G.Variant = setmetatable({}, { __call = function(_, value) return { value = value } end })
     local engineEventData = Protocol.ToVariantMap(envelope)

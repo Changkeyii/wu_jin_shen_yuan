@@ -595,6 +595,9 @@ end
 function ServerClient.Equip(itemId, callback) return ServerClient.Send("Game.Equip", { itemId = itemId }, callback) end
 function ServerClient.Unequip(slot, callback) return ServerClient.Send("Game.Unequip", { slot = slot }, callback) end
 function ServerClient.AutoEquip(callback) return ServerClient.Send("Game.AutoEquip", {}, callback) end
+function ServerClient.DecomposePreview(itemId, callback)
+    return ServerClient.Send("Game.DecomposePreview", { itemId = itemId }, callback)
+end
 function ServerClient.Decompose(maxRank, candidateIds, callback)
     return ServerClient.Send("Game.Decompose", { maxRank = maxRank, candidateIds = candidateIds }, callback)
 end
@@ -604,8 +607,16 @@ end
 function ServerClient.SetInventoryPolicy(policy, callback)
     return ServerClient.Send("Game.SetInventoryPolicy", policy, callback)
 end
+function ServerClient.StrengthenPreview(slot, callback)
+    return ServerClient.Send("Game.StrengthenPreview", { slot = slot }, callback)
+end
 function ServerClient.Strengthen(slot, callback) return ServerClient.Send("Game.Strengthen", { slot = slot }, callback) end
-function ServerClient.Star(slot, callback) return ServerClient.Send("Game.Star", { slot = slot }, callback) end
+function ServerClient.StarPreview(slot, callback)
+    return ServerClient.Send("Game.StarPreview", { slot = slot }, callback)
+end
+function ServerClient.Star(slot, materialItemId, callback)
+    return ServerClient.Send("Game.Star", { slot = slot, materialItemId = materialItemId }, callback)
+end
 function ServerClient.PreviewOffline(callback)
     return ServerClient.Send("Game.PreviewOffline", {}, callback)
 end

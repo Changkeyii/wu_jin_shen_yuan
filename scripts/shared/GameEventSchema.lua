@@ -26,6 +26,7 @@ local KNOWN = {
     chest_reward = true,
     critical_hit = true,
     currency_granted = true,
+    currency_drop = true,
     damage_dealt = true,
     encounter_transition = true,
     equip_decision_applied = true,
@@ -91,6 +92,7 @@ local REQUIRED = {
     player_healed = { "source" },
     monster_spawned = { "floor", "room", "kind" },
     loot_dropped = { "rarity", "icon" },
+    currency_drop = { "currency", "amount", "dropCount" },
     loot_settled = { "itemId", "outcome" },
     story_gate = { "storyId", "chapter", "phase", "lines" },
     story_advanced = { "storyId", "lineIndex", "line" },
@@ -171,6 +173,11 @@ local FIELD_RULES = {
     },
     inventory_policy_changed = {
         inventoryPolicy = { kind = "object" },
+    },
+    currency_drop = {
+        currency = { kind = "enum", values = { gold = true, fragments = true, exp = true } },
+        amount = { kind = "magnitude" },
+        dropCount = { kind = "integer", minimum = 1, maximum = 24 },
     },
     loot_settled = {
         itemId = { kind = "string", minLength = 1, maxLength = 64 },

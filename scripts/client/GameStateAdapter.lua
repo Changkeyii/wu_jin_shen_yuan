@@ -315,6 +315,8 @@ local function EmptyView()
             power = 0,
         },
         inventory = {},
+        overflowLoot = {},
+        lootStash = {},
         equipped = {},
         equippedSlots = {},
         logs = { "正在连接权威服务器..." },
@@ -344,6 +346,8 @@ local function RebuildView()
     nextView.stepTimer = nextView.stepTimer or 0
     nextView.logs = nextView.logs or {}
     nextView.inventory = ProjectInventory(nextView.inventory or {})
+    nextView.overflowLoot = ProjectInventory(nextView.overflowLoot or {})
+    nextView.lootStash = nextView.lootStash or {}
     nextView.equipmentInventoryCount = #nextView.inventory
     nextView.inventoryCapacity = nextView.inventoryCapacity or 300
     nextView.equippedSlots = nextView.equippedSlots or nextView.equipped or {}
@@ -452,6 +456,7 @@ function GameStateAdapter.ApplyDelta(delta)
     local changes = DeepCopy(delta.changes or delta.changed or delta.state or {})
     if changes.inventory ~= nil then authoritative_.inventory = ProjectInventory(changes.inventory); changes.inventory = nil end
     if changes.overflowLoot ~= nil then authoritative_.overflowLoot = ProjectInventory(changes.overflowLoot); changes.overflowLoot = nil end
+    if changes.lootStash ~= nil then authoritative_.lootStash = DeepCopy(changes.lootStash); changes.lootStash = nil end
     if changes.equipped ~= nil then authoritative_.equipped = changes.equipped; changes.equipped = nil end
     if changes.consumables ~= nil then authoritative_.consumables = changes.consumables; changes.consumables = nil end
     if changes.stats ~= nil then authoritative_.stats = DeepCopy(changes.stats); changes.stats = nil end

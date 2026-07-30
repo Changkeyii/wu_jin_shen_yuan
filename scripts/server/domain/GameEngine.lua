@@ -49,6 +49,7 @@ local SCALAR_DELTA_FIELDS = {
     "rewardPity",
     "currentMonster",
     "currentEvent",
+    "lootStash",
 }
 
 local function addCurrency(state, currency, amount)
@@ -171,6 +172,53 @@ local function randomFloat(rng)
     return Catalog.Clamp(value, 0, 0.999999999)
 end
 
+local function recordEquipmentCollection(state, item)
+    if not item or not item.equipmentId then return end
+    state.equipmentCollection = state.equipmentCollection or {}
+    local powerBig = BigNumber.Normalize(Catalog.GetItemPower(item))
+    local record = state.equipmentCollection[item.equipmentId]
+    if not record or BigNumber.Compare(powerBig, record.powerBig) > 0 then
+        state.equipmentCollection[item.equipmentId] = {
+            powerBig = powerBig,
+            level = item.level,
+            enhance = item.enhance,
+            star = item.star,
+            rarity = item.rarity,
+        }
+    end
+end
+
+local function updateEquipmentCollection(state)
+    for _, item in ipairs(state.inventory or {}) do recordEquipmentCollection(state, item) end
+    for _, item in ipairs(state.overflowLoot or {}) do recordEquipmentCollection(state, item) end
+end
+
+local function removeFromLootStash(state, itemId)
+    local kept = {}
+    for _, value in ipairs(state.lootStash or {}) do
+        if tostring(value) ~= tostring(itemId) then kept[#kept + 1] = value end
+    end
+    state.lootStash = kept
+end
+
+local function addToLootStash(state, itemId)
+    if itemId == nil then return end
+    state.lootStash = state.lootStash or {}
+    removeFromLootStash(state, itemId)
+    state.lootStash[#state.lootStash + 1] = itemId
+    while #state.lootStash > GameStateSchema.LOOT_STASH_CAP do table.remove(state.lootStash, 1) end
+end
+
+local function pruneLootStash(state)
+    local existing = {}
+    for _, item in ipairs(state.inventory or {}) do existing[tostring(item.id)] = true end
+    local kept = {}
+    for _, itemId in ipairs(state.lootStash or {}) do
+        if existing[tostring(itemId)] then kept[#kept + 1] = itemId end
+    end
+    state.lootStash = kept
+end
+
 local function refreshDerived(state, combatOnly)
     local previousMaximum = state.stats and (state.stats.hpBig or state.stats.hp) or 1
     local previousHp = magnitude(state.hpBig, state.hp, previousMaximum)
@@ -178,6 +226,7 @@ local function refreshDerived(state, combatOnly)
         item.power = Catalog.GetItemPower(item)
     end
     for _, item in ipairs(state.overflowLoot or {}) do item.power = Catalog.GetItemPower(item) end
+    updateEquipmentCollection(state)
     state.nextExp = Catalog.NextExp(state.level)
     local previousStats = state.stats or {}
     state.stats = Catalog.CalculateStats(state, combatOnly and { skipPowerEvaluation = true } or nil)
@@ -488,7 +537,7 @@ local function disposeEquipment(state, item, mode)
         addCurrency(state, "gold", gold)
         return { gold = gold, fragments = 0 }
     end
-    local refund = Catalog.GetDecomposeRefund(item)
+    local refund = Catalog.GetDecomposeRefund(item, state.vipLevel)
     addCurrency(state, "gold", refund.gold)
     addCurrency(state, "fragments", refund.fragments)
     return refund
@@ -576,6 +625,7 @@ end
 local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, events, options)
     local item = generatedEquipment(state, rarityId, isBoss, rng, now, source, options)
     if not item then return true, nil, false end
+    recordEquipmentCollection(state, item)
     local hasRoom, handled = makeRoomForDrop(state, item, events, not (options and options.requireInventory))
     local definition = Catalog.GetEquipmentDefinition(item.equipmentId)
     local icon = definition and definition.icon or ""
@@ -597,6 +647,7 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         return false, nil, false
     end
     state.inventory[#state.inventory + 1] = item
+    addToLootStash(state, item.id)
     events[#events + 1] = event("equipment_drop", {
         itemId = item.id,
         equipmentId = item.equipmentId,
@@ -628,6 +679,7 @@ local function drainOverflowLoot(state, events)
     while #state.inventory < Catalog.INVENTORY_CAP and #state.overflowLoot > 0 do
         local item = table.remove(state.overflowLoot, 1)
         state.inventory[#state.inventory + 1] = item
+        addToLootStash(state, item.id)
         moved = moved + 1
         events[#events + 1] = event("loot_settled", {
             itemId = item.id,
@@ -747,6 +799,7 @@ local function considerEquipmentUpgrade(state, item, now, events)
             available = true,
         }
         state.equipped = candidateEquipped
+        removeFromLootStash(state, item.id)
         state.pendingEquipDecision = nil
         refreshDerived(state)
         payload.automatic = true
@@ -816,6 +869,9 @@ local function optimizeWholeLoadout(state, now, events, force)
         available = true,
     }
     state.equipped = selected
+    for _, itemId in pairs(selected) do
+        removeFromLootStash(state, itemId)
+    end
     state.pendingEquipDecision = nil
     original = evaluateLoadout(state, originalEquipped, true)
     optimized = evaluateLoadout(state, selected, true)
@@ -1094,6 +1150,13 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         rewardRate = rate,
         offline = context and context.offline == true,
     })
+    if gold > 0 and not (context and context.offline == true) then
+        events[#events + 1] = event("currency_drop", {
+            currency = "gold",
+            amount = gold,
+            dropCount = math.max(1, math.min(12, math.ceil(gold / math.max(1, state.floor * 45)))),
+        })
+    end
 
     local inventoryChanged = false
     local chance = RewardPolicy.DropChance(encounterKind, context and context.offline == true) or 0
@@ -1944,6 +2007,7 @@ function GameEngine.Equip(inputState, itemId, now)
         return noCommit(inputState, now, "already_equipped")
     end
     working.equipped[item.slot] = item.id
+    removeFromLootStash(working, item.id)
     refreshDerived(working)
     return finalize(inputState, working, now, "equipment_changed", {
         event("equipment_equipped", { itemId = item.id, slot = item.slot }),
@@ -1982,6 +2046,28 @@ end
 
 GameEngine.AutoEquipBest = GameEngine.AutoEquip
 
+function GameEngine.GetDecomposePreview(inputState, itemId)
+    local item = findItem(inputState, itemId)
+    if not item then
+        return {
+            ok = false,
+            code = "ITEM_NOT_FOUND",
+            reason = "equipment item was not found",
+        }
+    end
+    local refund = Catalog.GetDecomposeRefund(item, inputState.vipLevel)
+    return {
+        ok = true,
+        data = {
+            itemId = item.id,
+            gold = refund.gold,
+            fragments = refund.fragments,
+            rate = refund.rate,
+            vipLevel = inputState.vipLevel or 0,
+        },
+    }
+end
+
 function GameEngine.Decompose(inputState, maximumRank, now, candidateIds)
     maximumRank = TableUtils.ToInteger(maximumRank, -1)
     if maximumRank < 1 or maximumRank >= #Catalog.RARITY_ORDER then
@@ -2007,7 +2093,7 @@ function GameEngine.Decompose(inputState, maximumRank, now, candidateIds)
         if explicitlySelected and rarity and rarity.rank <= maximumRank
             and not equipped[item.id] and not item.locked and not item.aidLocked then
             removed = removed + 1
-            local refund = Catalog.GetDecomposeRefund(item)
+            local refund = Catalog.GetDecomposeRefund(item, working.vipLevel)
             fragments = fragments + refund.fragments
             gold = gold + refund.gold
             addCurrency(working, "gold", refund.gold)
@@ -2019,6 +2105,7 @@ function GameEngine.Decompose(inputState, maximumRank, now, candidateIds)
         return noCommit(inputState, now, "decompose_empty")
     end
     working.inventory = kept
+    pruneLootStash(working)
     addCurrency(working, "fragments", fragments)
     local events = {
         event("equipment_decomposed", { count = removed, fragments = fragments, gold = gold }),
@@ -2061,6 +2148,7 @@ function GameEngine.Sell(inputState, maximumRank, now, candidateIds)
     end
     if removed == 0 then return noCommit(inputState, now, "sell_empty") end
     working.inventory = kept
+    pruneLootStash(working)
     addCurrency(working, "gold", gold)
     local events = { event("equipment_sold", { count = removed, gold = gold }) }
     local recovered = drainOverflowLoot(working, events)
@@ -2373,14 +2461,16 @@ end
 function GameEngine.SetAutomationPolicy(inputState, policy, now)
     if type(policy) ~= "table"
         or type(policy.autoEquip) ~= "boolean"
+        or type(policy.lootAutoEquip) ~= "boolean"
         or type(policy.autoSkipStory) ~= "boolean"
     then
         return failure(inputState, now, "INVALID_AUTOMATION_POLICY",
-            "autoEquip and autoSkipStory must be booleans")
+            "autoEquip, lootAutoEquip and autoSkipStory must be booleans")
     end
     local working = stateCopy(inputState, now)
     local nextPolicy = {
-        autoEquip = policy.autoEquip,
+        autoEquip = policy.lootAutoEquip,
+        lootAutoEquip = policy.lootAutoEquip,
         autoSkipStory = policy.autoSkipStory,
     }
     if TableUtils.DeepEqual(working.automationPolicy, nextPolicy) then
@@ -2431,6 +2521,7 @@ function GameEngine.DecideEquip(inputState, decision, now)
             available = true,
         }
         working.equipped = candidateEquipped
+        removeFromLootStash(working, item.id)
         refreshDerived(working)
         equippedChanged = true
         local appliedPayload = {
@@ -2579,6 +2670,50 @@ function GameEngine.AcknowledgeRules(inputState, ruleId, now)
     }, false, false)
 end
 
+local function StrengthenCost(enhance)
+    enhance = math.max(0, math.floor(tonumber(enhance) or 0))
+    return {
+        gold = 1200 + enhance * 900,
+        fragments = 8 + enhance * 5,
+    }
+end
+
+function GameEngine.GetStrengthenPreview(inputState, slotId)
+    if not Catalog.SLOT_BY_ID[slotId] then
+        return failure(inputState, os.time(), "INVALID_SLOT", "unknown equipment slot")
+    end
+    local working = stateCopy(inputState, os.time())
+    local item = findItem(working, working.equipped[slotId])
+    if not item then
+        return failure(inputState, os.time(), "ITEM_NOT_FOUND", "slot has no equipped item")
+    end
+    local limit = math.max(1, math.floor(working.maxFloor / 10) + 1)
+    local cost = StrengthenCost(item.enhance)
+    local atMax = item.enhance >= limit
+    local goldEnough = hasCurrency(working, "gold", cost.gold)
+    local fragmentsEnough = hasCurrency(working, "fragments", cost.fragments)
+    return {
+        ok = true,
+        code = "OK",
+        data = {
+            slot = slotId,
+            itemId = item.id,
+            itemName = item.name,
+            currentEnhance = item.enhance,
+            nextEnhance = math.min(limit, item.enhance + 1),
+            enhanceLimit = limit,
+            gold = cost.gold,
+            goldOwned = LargeNumber.Normalize(working.gold),
+            fragments = cost.fragments,
+            fragmentsOwned = LargeNumber.Normalize(working.fragments),
+            canStrengthen = not atMax and goldEnough and fragmentsEnough,
+            atMax = atMax,
+            goldEnough = goldEnough,
+            fragmentsEnough = fragmentsEnough,
+        },
+    }
+end
+
 function GameEngine.Strengthen(inputState, slotId, now)
     if not Catalog.SLOT_BY_ID[slotId] then
         return failure(inputState, now, "INVALID_SLOT", "unknown equipment slot")
@@ -2592,8 +2727,9 @@ function GameEngine.Strengthen(inputState, slotId, now)
     if item.enhance >= limit then
         return failure(inputState, now, "ENHANCE_LIMIT", "equipment reached the current strengthen limit")
     end
-    local goldCost = 1200 + item.enhance * 900
-    local fragmentCost = 8 + item.enhance * 5
+    local cost = StrengthenCost(item.enhance)
+    local goldCost = cost.gold
+    local fragmentCost = cost.fragments
     if not hasCurrency(working, "gold", goldCost) or not hasCurrency(working, "fragments", fragmentCost) then
         return failure(inputState, now, "INSUFFICIENT_RESOURCES", "not enough gold or fragments")
     end
@@ -2615,7 +2751,101 @@ end
 
 GameEngine.StrengthenSelected = GameEngine.Strengthen
 
-function GameEngine.Star(inputState, slotId, now)
+local function StarCost(star)
+    star = math.max(0, math.floor(tonumber(star) or 0))
+    return {
+        gold = 3000 + star * 2000,
+        fragments = 20 + star * 10,
+        duplicateCount = 1,
+    }
+end
+
+local function StarMaterials(state, item)
+    local equipped = equippedIdSet(state)
+    local materials = {}
+    for index, candidate in ipairs(state.inventory or {}) do
+        if candidate.id ~= item.id
+            and candidate.equipmentId == item.equipmentId
+            and (candidate.star or 0) == (item.star or 0)
+            and RarityCatalog.NormalizeId(candidate.rarity) == RarityCatalog.NormalizeId(item.rarity)
+            and not candidate.locked
+            and not candidate.aidLocked
+            and not equipped[candidate.id]
+        then
+            materials[#materials + 1] = { item = candidate, index = index }
+        end
+    end
+    return materials
+end
+
+local function FindStarMaterial(state, item, materialItemId)
+    for _, material in ipairs(StarMaterials(state, item)) do
+        if materialItemId == nil or tostring(material.item.id) == tostring(materialItemId) then
+            return material.item, material.index
+        end
+    end
+    return nil, nil
+end
+
+function GameEngine.GetStarPreview(inputState, slotId)
+    if not Catalog.SLOT_BY_ID[slotId] then
+        return failure(inputState, os.time(), "INVALID_SLOT", "unknown equipment slot")
+    end
+    local working = stateCopy(inputState, os.time())
+    local item = findItem(working, working.equipped[slotId])
+    if not item then
+        return failure(inputState, os.time(), "ITEM_NOT_FOUND", "slot has no equipped item")
+    end
+    local cost = StarCost(item.star)
+    local materialEntries = StarMaterials(working, item)
+    local materials = {}
+    for _, entry in ipairs(materialEntries) do
+        local material = entry.item
+        materials[#materials + 1] = {
+            itemId = material.id,
+            equipmentId = material.equipmentId,
+            name = material.name,
+            rarity = material.rarity,
+            level = material.level,
+            enhance = material.enhance or 0,
+            star = material.star or 0,
+            slot = material.slot,
+            category = material.category,
+            icon = material.icon,
+            locked = material.locked == true,
+            aidLocked = material.aidLocked == true,
+        }
+    end
+    local atMax = item.star >= Catalog.MAX_STAR
+    local goldEnough = hasCurrency(working, "gold", cost.gold)
+    local fragmentsEnough = hasCurrency(working, "fragments", cost.fragments)
+    return {
+        ok = true,
+        code = "OK",
+        data = {
+            slot = slotId,
+            itemId = item.id,
+            itemName = item.name,
+            currentStar = item.star,
+            nextStar = math.min(Catalog.MAX_STAR, item.star + 1),
+            maxStar = Catalog.MAX_STAR,
+            gold = cost.gold,
+            goldOwned = LargeNumber.Normalize(working.gold),
+            fragments = cost.fragments,
+            fragmentsOwned = LargeNumber.Normalize(working.fragments),
+            duplicateCount = cost.duplicateCount,
+            materialOwned = #materials,
+            materials = materials,
+            material = materials[1],
+            canStar = not atMax and #materials > 0 and goldEnough and fragmentsEnough,
+            atMax = atMax,
+            goldEnough = goldEnough,
+            fragmentsEnough = fragmentsEnough,
+        },
+    }
+end
+
+function GameEngine.Star(inputState, slotId, materialItemId, now)
     if not Catalog.SLOT_BY_ID[slotId] then
         return failure(inputState, now, "INVALID_SLOT", "unknown equipment slot")
     end
@@ -2628,24 +2858,24 @@ function GameEngine.Star(inputState, slotId, now)
         return failure(inputState, now, "STAR_LIMIT", "equipment already has five stars")
     end
 
-    local equipped = equippedIdSet(working)
-    local duplicateIndex = nil
-    for index, candidate in ipairs(working.inventory) do
-        if candidate.id ~= item.id
-            and candidate.equipmentId == item.equipmentId
-            and not candidate.locked
-            and not candidate.aidLocked
-            and not equipped[candidate.id] then
-            duplicateIndex = index
-            break
-        end
+    if type(materialItemId) ~= "string" or materialItemId == "" then
+        return failure(inputState, now, "MATERIAL_REQUIRED", "a star material item must be selected")
     end
+    local _, duplicateIndex = FindStarMaterial(working, item, materialItemId)
     if not duplicateIndex then
-        return failure(inputState, now, "DUPLICATE_REQUIRED", "an unequipped item with the same name is required")
+        return failure(inputState, now, "DUPLICATE_REQUIRED", "an unequipped item with the same equipment, star level and rarity is required")
     end
+    local cost = StarCost(item.star)
+    if not hasCurrency(working, "gold", cost.gold)
+        or not hasCurrency(working, "fragments", cost.fragments)
+    then
+        return failure(inputState, now, "INSUFFICIENT_RESOURCES", "not enough gold or fragments")
+    end
+    spendCurrency(working, "gold", cost.gold)
+    spendCurrency(working, "fragments", cost.fragments)
     local consumed = working.inventory[duplicateIndex]
     local consumedId = consumed.id
-    local refund = Catalog.GetDecomposeRefund(consumed)
+    local refund = Catalog.GetEquipmentRecoveryValue(consumed)
     item.investedGold = math.min(Catalog.MAX_VALUE, (item.investedGold or 0) + refund.gold)
     item.investedFragments = math.min(Catalog.MAX_VALUE, (item.investedFragments or 0) + refund.fragments)
     table.remove(working.inventory, duplicateIndex)
@@ -2655,7 +2885,14 @@ function GameEngine.Star(inputState, slotId, now)
     end
     refreshDerived(working)
     return finalize(inputState, working, now, "equipment_starred", {
-        event("equipment_starred", { itemId = item.id, consumedItemId = consumedId, star = item.star }),
+        event("equipment_starred", {
+            itemId = item.id,
+            consumedItemId = consumedId,
+            star = item.star,
+            previousStar = item.star - 1,
+            goldCost = cost.gold,
+            fragmentCost = cost.fragments,
+        }),
     }, true, false)
 end
 
@@ -3097,6 +3334,7 @@ function GameEngine.GrantEquipment(inputState, specification, now)
         investedFragments = 0,
     }
     local events = {}
+    recordEquipmentCollection(working, item)
     local hasRoom, handled = makeRoomForDrop(working, item, events)
     if not hasRoom then
         if handled then

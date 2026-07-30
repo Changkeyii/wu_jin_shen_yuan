@@ -17,13 +17,15 @@ local combatHitFrame_ = nil
 local combatEndFrame_ = nil
 local combatWindupSeconds_ = 0
 local combatRecoverySeconds_ = 0
-local combatAttackSerial_ = nil
+local lastAttackSoundKey_ = nil
+local lastLootSoundKey_ = nil
 local currentMonsterHp_ = 0
 local currentMonsterMaxHp_ = 1
 local currentEventLocked_ = false
 local currentAttackFrames_ = nil
 local pickupFx_ = nil
 local pickupQueue_ = {}
+local currencyBurst_ = {}
 local rewardOrigin_ = nil
 local currentPlayerImage_ = nil
 local floatingText_ = nil
@@ -153,6 +155,115 @@ local function EnemyImageForStep(step, eventType)
     return assets.enemies.skeleton
 end
 
+local function BuildChapterProgressBar()
+    local UI = context_.UI
+    local assets = Assets()
+    local barWidth = 768
+    local barHeight = 42
+    local nodeConfigs = {
+        { image = assets.ui.chapterProgressNodeNormal, size = 56 },
+        { image = assets.ui.chapterProgressNodeElite, size = 56 },
+        { image = assets.ui.chapterProgressNodeNormal, size = 56 },
+        { image = assets.ui.chapterProgressNodeBoss, size = 64 },
+        { image = assets.ui.chapterProgressNodeAbyss, size = 64 },
+    }
+    local trackChildren = {}
+    trackChildren[#trackChildren + 1] = UI.Panel {
+        position = "absolute", left = 0, top = 0,
+        width = 48, height = barHeight,
+        backgroundImage = assets.ui.chapterProgressLeftCap,
+        backgroundFit = "contain",
+        pointerEvents = "none",
+    }
+    for index = 1, 7 do
+        trackChildren[#trackChildren + 1] = UI.Panel {
+            position = "absolute", left = 48 + (index - 1) * 96, top = 0,
+            width = 96, height = barHeight,
+            backgroundImage = assets.ui.chapterProgressMid,
+            backgroundFit = "contain",
+            pointerEvents = "none",
+        }
+    end
+    trackChildren[#trackChildren + 1] = UI.Panel {
+        position = "absolute", left = 720, top = 0,
+        width = 48, height = barHeight,
+        backgroundImage = assets.ui.chapterProgressRightCap,
+        backgroundFit = "contain",
+        pointerEvents = "none",
+    }
+    local fillClip = UI.Panel {
+        position = "absolute", left = 48, top = 9,
+        width = 0, height = 24,
+        overflow = "hidden", pointerEvents = "none",
+    }
+    for index = 1, 7 do
+        fillClip:AddChild(UI.Panel {
+            position = "absolute", left = (index - 1) * 96, top = 0,
+            width = 96, height = 24,
+            backgroundImage = assets.ui.chapterProgressEnergyMid,
+            backgroundFit = "contain",
+            pointerEvents = "none",
+        })
+    end
+    trackChildren[#trackChildren + 1] = fillClip
+    local chapterNodes = {}
+    local nodePositions = { 48, 216, 384, 552, 720 }
+    for index, config in ipairs(nodeConfigs) do
+        local node = UI.Panel {
+            position = "absolute",
+            left = math.floor(nodePositions[index] - config.size * 0.5),
+            top = math.floor((barHeight - config.size) * 0.5),
+            width = config.size, height = config.size,
+            backgroundImage = config.image,
+            backgroundFit = "contain",
+            pointerEvents = "none",
+        }
+        chapterNodes[#chapterNodes + 1] = node
+        trackChildren[#trackChildren + 1] = node
+    end
+    local chapterLabel = context_.compactTxt("第1章", 18, C().focus, {
+        position = "absolute", left = 0, top = -32,
+        width = 180, height = 28, textStroke = { width = 1, color = "#000000" },
+    })
+    local progressLabel = context_.compactTxt("第1层 · 1/10", 18, C().text, {
+        position = "absolute", right = 0, top = -32,
+        width = 260, height = 28, textAlign = "right",
+        textStroke = { width = 1, color = "#000000" },
+    })
+    local root = UI.Panel {
+        position = "absolute", left = 156, top = 294,
+        width = barWidth, height = 76,
+        pointerEvents = "box-none",
+        children = {
+            chapterLabel,
+            progressLabel,
+            UI.Panel {
+                position = "absolute", left = 0, top = 17,
+                width = barWidth, height = barHeight,
+                children = trackChildren,
+            },
+        },
+    }
+    return root, fillClip, chapterLabel, progressLabel, chapterNodes
+end
+
+local function UpdateChapterProgressBar(fillClip, chapterLabel, progressLabel, chapterNodes, game)
+    if not fillClip then return end
+    local floor = math.max(1, math.floor(tonumber(game.floor) or 1))
+    local room = Clamp(math.floor(tonumber(game.room) or 1), 1, 10)
+    local chapter = math.floor((floor - 1) / 10) + 1
+    local chapterFloor = ((chapter - 1) * 10) + 1
+    local progress = Clamp(((floor - chapterFloor) * 10 + room - 1) / 100, 0, 1)
+    fillClip:SetStyle({ width = math.max(1, math.floor(672 * progress)) })
+    chapterLabel:SetText("第" .. tostring(chapter) .. "章")
+    progressLabel:SetText("第" .. tostring(floor) .. "层 · " .. tostring(room) .. "/10")
+    local nodeProgress = { 0, 0.25, 0.50, 0.75, 1.0 }
+    for index, node in ipairs(chapterNodes or {}) do
+        local reached = progress >= nodeProgress[index]
+        node:SetStyle({ opacity = reached and 1.0 or 0.58 })
+    end
+end
+
 local function ApplyFloorRoute(route, position, currentMonster)
     if type(route) ~= "table" or type(route.encounters) ~= "table" then
         return false
@@ -234,7 +345,7 @@ local function ClearCombatPresentation(advanceLockedEvent)
     combatEndFrame_ = nil
     combatWindupSeconds_ = 0
     combatRecoverySeconds_ = 0
-    combatAttackSerial_ = nil
+    lastAttackSoundKey_ = nil
     currentMonsterHp_ = 0
     currentMonsterMaxHp_ = 1
     enemyDamageBursts_ = {}
@@ -310,6 +421,15 @@ local function SetAutoRun(enabled)
         end)
     end
     return true
+end
+
+local function RequestAutoRunChange(enabled)
+    if context_ and context_.requestAutoRunChange then
+        return context_.requestAutoRunChange(enabled, function()
+            return SetAutoRun(enabled)
+        end)
+    end
+    return SetAutoRun(enabled)
 end
 
 local function CurrentEnemyScreenPosition()
@@ -402,17 +522,6 @@ local function GoldBeamTier(gold, floor)
     if ratio >= 2 then return "rare" end
     if ratio >= 1.35 then return "advanced" end
     return "gold_green"
-end
-
-local function TriggerGoldVisual(gold)
-    local enemyX, enemyY = CurrentRewardScreenPosition()
-    TriggerPickupVisual(
-        Assets().items.gold,
-        enemyX + context_.enemySize * 0.5 - context_.lootSize * 0.5,
-        nil,
-        "金币+" .. context_.formatInt(gold or 0),
-        GoldBeamTier(gold, Game().floor)
-    )
 end
 
 local function AddPlayerFeedback(text, color, source)
@@ -514,7 +623,7 @@ local function SetCombatSequence(
             or tonumber(sequence.recoverySeconds)
             or ((combatEndFrame_ - combatHitFrame_ + 1) / sequence.fps)
     )
-    combatAttackSerial_ = attackSerial
+    lastAttackSoundKey_ = tostring(attackSerial or lastAttackSoundKey_ or "")
     combatAnimationTime_ = 0
     combatSequenceStartTime_ = 0
 end
@@ -552,6 +661,15 @@ local function CreatePage()
         backgroundColor = {255,255,255,38},
     }
     refs_.pickup = context_.UI.Panel {position = "absolute", left = 0, top = 0, width = context_.lootSize, height = context_.lootSize, backgroundImage = assets.items.crystal, backgroundFit = "contain", visible = false}
+    refs_.currencyBurst = {}
+    for index = 1, 12 do
+        refs_.currencyBurst[index] = context_.UI.Panel {
+            position = "absolute", left = 0, top = 0,
+            width = context_.lootSize, height = context_.lootSize,
+            backgroundImage = assets.items.gold, backgroundFit = "contain",
+            visible = false, pointerEvents = "none",
+        }
+    end
     refs_.pickupSpark = context_.UI.Panel {position = "absolute", left = 0, top = 0, width = 82, height = 82, backgroundImage = assets.ui.pickupSpark, backgroundFit = "contain", visible = false}
     refs_.floatLabel = context_.txt("", 30, C().gold, {position = "absolute", left = 0, top = 0, width = 360, textAlign = "center", visible = false, textStroke = {width = 2, color = "#000000"}})
     refs_.enemyDamageLabels = {}
@@ -567,7 +685,7 @@ local function CreatePage()
         })
     end
     refs_.event = context_.compactTxt("向右移动", 20, C().primary, {width = "100%"})
-    refs_.progress = context_.compactTxt("第1层", 20, C().focus, {})
+    refs_.progress = nil
     refs_.lootLabel = context_.compactTxt(lastLootText_, 18, C().gold, {width = "100%"})
     local hpProgress
     hpProgress, refs_.hpFill = context_.imageProgress(
@@ -579,7 +697,7 @@ local function CreatePage()
     enemyHpProgress, refs_.enemyHpFill = context_.imageProgress(420, 30, currentMonsterHp_, currentMonsterMaxHp_, assets.ui.progressTrackHp, assets.ui.progressFillHp)
     refs_.enemyHpBar = enemyHpProgress
     refs_.runButtonLabel = context_.compactTxt(game.autoRun and "刷宝中" or "开始刷宝", 20, C().text, {
-        width = "100%",
+        width = "100%", left = 2, top = -7,
         textAlign = "center",
         textStroke = {width = 2, color = "#000000"},
         pointerEvents = "none",
@@ -592,15 +710,32 @@ local function CreatePage()
     sceneChildren[#sceneChildren + 1] = refs_.lootBeam
     sceneChildren[#sceneChildren + 1] = refs_.lootGlow
     sceneChildren[#sceneChildren + 1] = refs_.pickup
+    for index = 1, #refs_.currencyBurst do sceneChildren[#sceneChildren + 1] = refs_.currencyBurst[index] end
     sceneChildren[#sceneChildren + 1] = refs_.pickupSpark
     sceneChildren[#sceneChildren + 1] = refs_.floatLabel
     for index = 1, #refs_.enemyDamageLabels do sceneChildren[#sceneChildren + 1] = refs_.enemyDamageLabels[index] end
     for index = 1, #refs_.playerFeedbackLabels do sceneChildren[#sceneChildren + 1] = refs_.playerFeedbackLabels[index] end
 
+    local stashCount = #(game.lootStash or {})
+    local stashButton = context_.UI.Button {
+        position = "absolute", right = 252, top = 18, width = 180, height = 72,
+        disabled = game.readOnly,
+        alignItems = "center", justifyContent = "center",
+        padding = 0, borderWidth = 0, boxShadow = {},
+        backgroundImage = assets.ui.playAutoRunButton, backgroundFit = "contain",
+        onClick = function()
+            if not Game().readOnly and context_.openLootStash then context_.openLootStash() end
+        end,
+        children = {
+            context_.compactTxt("暂存箱 " .. tostring(stashCount), 19, C().text, {
+                width = "100%", height = 72, left = 6, top = -7, textAlign = "center",
+                textStroke = {width = 2, color = "#000000"}, pointerEvents = "none",
+            }),
+        },
+    }
+
     local settingsButton = context_.UI.Panel {
-        position = "absolute",
-        right = 272,
-        top = 20,
+        position = "absolute", right = 42, top = 1379,
         width = 72,
         height = 72,
         clickable = not game.readOnly,
@@ -633,7 +768,7 @@ local function CreatePage()
             if not currentGame.readOnly and not context_.loadingController.IsPlayAssetLoading() and not pendingAutoRun_ then
                 local currentAutoRun = currentGame.autoRun
                 if requestedAutoRun_ ~= nil then currentAutoRun = requestedAutoRun_ end
-                SetAutoRun(not currentAutoRun)
+                RequestAutoRunChange(not currentAutoRun)
             end
         end,
         children = {refs_.runButtonLabel},
@@ -643,8 +778,8 @@ local function CreatePage()
     local root = context_.UI.Panel {width = "100%", height = "100%", position = "relative", overflow = "hidden", backgroundImage = assets.bg, backgroundFit = "cover", children = sceneChildren}
     refs_.root = root
     refs_.event:SetStyle({visible = false})
-    refs_.progress:SetStyle({position = "absolute", left = 0, top = 19, width = 150, textAlign = "center"})
-    local floorBadge = context_.UI.Panel {position = "absolute", left = 465, top = 286, width = 150, height = 60, backgroundImage = assets.ui.floorBadge, backgroundFit = "contain", children = {refs_.progress}}
+    local floorBadge
+    floorBadge, refs_.chapterProgressFill, refs_.chapterLabel, refs_.chapterProgressLabel, refs_.chapterProgressNodes = BuildChapterProgressBar()
     refs_.floatLabel:SetStyle({visible = false})
     refs_.lootLabel:SetStyle({visible = false})
     refs_.playerHpText = context_.compactTxt("", 17, C().text, {position = "absolute", left = 52, top = 105, width = 400, height = 28, textAlign = "center", textStroke = {width = 2, color = "#000000"}})
@@ -691,6 +826,7 @@ local function CreatePage()
     root:AddChild(floorBadge)
     root:AddChild(hpFrame)
     root:AddChild(enemyHpFrame)
+    root:AddChild(stashButton)
     root:AddChild(settingsButton)
     root:AddChild(runButton)
     root:AddChild(lootTray)
@@ -860,6 +996,15 @@ local function Update(dt)
         refs_.event:SetFontColor((context_.eventInfo[eventType] and context_.eventInfo[eventType].color) or C().primary)
     end
     if refs_.progress then refs_.progress:SetText("第" .. tostring(game.floor or 1) .. "层 · " .. tostring(game.room or 1) .. "/10") end
+    if refs_.chapterProgressFill then
+        UpdateChapterProgressBar(
+            refs_.chapterProgressFill,
+            refs_.chapterLabel,
+            refs_.chapterProgressLabel,
+            refs_.chapterProgressNodes,
+            game
+        )
+    end
     if refs_.lootLabel then refs_.lootLabel:SetText(lastLootText_) end
     if refs_.lootTrayLabel then
         refs_.lootTrayLabel:SetText(lastLootText_)
@@ -905,6 +1050,55 @@ local function Update(dt)
     local runButtonUnavailable = game.readOnly or context_.loadingController.IsPlayAssetLoading()
     refs_.runButton:SetDisabled(runButtonUnavailable or pendingAutoRun_)
     refs_.runButton:SetStyle({opacity = runButtonUnavailable and 0.45 or (pendingAutoRun_ and 0.72 or 1.0)})
+
+    for index, node in ipairs(refs_.currencyBurst or {}) do
+        local burst = currencyBurst_[index]
+        if burst then
+            burst.age = burst.age + dt
+            if burst.age >= 0 and not burst.soundPlayed then
+                burst.soundPlayed = true
+                if context_.playFeedback then context_.playFeedback("lootDrop") end
+            end
+            if burst.age < 0 then
+                node:SetStyle({ visible = false })
+            elseif burst.age < 0.38 then
+                local t = Clamp(burst.age / 0.38, 0, 1)
+                local ease = 1 - (1 - t) * (1 - t)
+                node:SetStyle({
+                    visible = true,
+                    left = burst.startX + (burst.scatterX - burst.startX) * ease,
+                    top = burst.startY + (burst.scatterY - burst.startY) * ease - math.sin(t * math.pi) * 72,
+                    opacity = 1, scale = 0.72 + t * 0.38,
+                    backgroundImage = Assets().items.gold,
+                })
+            elseif burst.age < 1.18 then
+                local hover = math.sin((burst.age - 0.38) * 10 + index) * 4
+                node:SetStyle({
+                    visible = true, left = burst.scatterX, top = burst.scatterY + hover,
+                    opacity = 1, scale = 1.05 + math.sin(burst.age * 8 + index) * 0.05,
+                    backgroundImage = Assets().items.gold,
+                    boxShadow = { { x = 0, y = 0, blur = 18, color = {255, 220, 70, 165} } },
+                })
+            elseif burst.age < 1.68 then
+                local t = Clamp((burst.age - 1.18) / 0.50, 0, 1)
+                local ease = t * t
+                local targetX = context_.playerScreenX + context_.playerSize * 0.45
+                local targetY = context_.roadY - context_.playerSize * 0.50
+                node:SetStyle({
+                    visible = t < 1,
+                    left = burst.scatterX + (targetX - burst.scatterX) * ease,
+                    top = burst.scatterY + (targetY - burst.scatterY) * ease - math.sin(t * math.pi) * 54,
+                    opacity = 1 - t * 0.3, scale = 1.0 - t * 0.55,
+                    backgroundImage = Assets().items.gold,
+                })
+            else
+                node:SetStyle({ visible = false })
+                currencyBurst_[index] = nil
+            end
+        else
+            node:SetStyle({ visible = false })
+        end
+    end
 
     if pickupFx_ then
         pickupFx_.age = pickupFx_.age + dt
@@ -1124,6 +1318,11 @@ function PlayPresentation.HandleDelta(payload)
                 or (value.monster and value.monster.maxHp) or currentMonsterHp_ or 1
         elseif kind == "attack_started" then
             currentEventLocked_ = true
+            local attackKey = tostring(value.attackSerial or value.eventId or value.sequenceIndex or "")
+            if attackKey ~= "" and attackKey ~= lastAttackSoundKey_ and context_.playFeedback then
+                lastAttackSoundKey_ = attackKey
+                context_.playFeedback("combatAttack")
+            end
             local sequenceIndex = value.sequenceIndex or tonumber(value.sequenceId)
                 or ({A = 1, B = 2, C = 3})[value.sequenceId]
             SetCombatSequence(
@@ -1220,13 +1419,35 @@ function PlayPresentation.HandleDelta(payload)
             lastLootRarity_ = "gold_green"
             lastLootText_ = "金币+" .. context_.formatInt(value.gold or 0) .. " 经验+" .. context_.formatInt(value.exp or 0)
             lastLootIcon_ = Assets().items.gold
-            if (tonumber(value.gold) or 0) > 0 then
-                TriggerGoldVisual(value.gold)
+        elseif kind == "currency_drop" and value.currency == "gold" then
+            local total = math.max(0, tonumber(value.amount) or 0)
+            local count = math.max(1, math.min(12, math.floor(tonumber(value.dropCount) or 1)))
+            local baseAmount = math.floor(total / count)
+            local remainder = total - baseAmount * count
+            local enemyX, enemyY = CurrentRewardScreenPosition()
+            currencyBurst_ = {}
+            for index = 1, count do
+                local amount = baseAmount + (index <= remainder and 1 or 0)
+                local angle = ((index - 1) / count) * math.pi * 2
+                local radius = 72 + ((index - 1) % 3) * 34
+                currencyBurst_[index] = {
+                    age = -(index - 1) * 0.07,
+                    amount = amount,
+                    startX = enemyX + context_.enemySize * 0.5 - context_.lootSize * 0.5,
+                    startY = Clamp(enemyY + context_.enemySize * 0.58, 32, metrics_.height - context_.lootSize - 96),
+                    scatterX = enemyX + context_.enemySize * 0.5 + math.cos(angle) * radius - context_.lootSize * 0.5,
+                    scatterY = Clamp(enemyY + context_.enemySize * 0.58 + math.sin(angle) * 46, 32, metrics_.height - context_.lootSize - 96),
+                    soundPlayed = false,
+                }
             end
         elseif kind == "loot_dropped" or kind == "equipment_drop" then
             local itemKey = tostring(value.itemId or value.equipmentId or "")
             if itemKey == "" or not seenLootItems[itemKey] then
                 if itemKey ~= "" then seenLootItems[itemKey] = true end
+                if itemKey ~= "" and itemKey ~= lastLootSoundKey_ and context_.playFeedback then
+                    lastLootSoundKey_ = itemKey
+                    context_.playFeedback("lootDrop")
+                end
                 local icon = LootIcon(value)
                 local rarity = value.rarity or "common"
                 lastLootRarity_ = rarity
@@ -1348,7 +1569,7 @@ function PlayPresentation.HandleSnapshot()
 end
 
 function PlayPresentation.SetAutoRun(enabled)
-    return SetAutoRun(enabled)
+    return RequestAutoRunChange(enabled)
 end
 
 function PlayPresentation.CancelPendingAutoRun()

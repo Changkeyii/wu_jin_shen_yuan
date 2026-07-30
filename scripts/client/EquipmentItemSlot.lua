@@ -40,7 +40,28 @@ function EquipmentItemSlot.Build(context, item, options)
             textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
         })
     end
-    return UI.Panel {
+    local longPressConsumed = false
+    local onLongPress = options.onLongPress
+    if not onLongPress and context.showItemTips then
+        onLongPress = function(_, widget)
+            local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                and widget:GetAbsoluteLayoutForHitTest()
+                or nil
+            context.showItemTips(item, bounds)
+        end
+    end
+    local function HandleLongPress(event, widget)
+        longPressConsumed = true
+        if onLongPress then onLongPress(event, widget) end
+    end
+    local function HandleClick(widget, event)
+        if longPressConsumed then
+            longPressConsumed = false
+            return
+        end
+        if options.onClick then options.onClick(widget, event) end
+    end
+    local widget = UI.Panel {
         width = width,
         height = height,
         flexShrink = 0,
@@ -53,11 +74,16 @@ function EquipmentItemSlot.Build(context, item, options)
         borderColor = active and context.C.focus or context.rarityColor(item.rarity),
         onPointerDown = options.onPointerDown,
         onPointerUp = options.onPointerUp,
-        onClick = options.onClick,
-        onPointerEnter = options.onPointerEnter,
-        onPointerLeave = options.onPointerLeave,
+        onClick = HandleClick,
+        onLongPress = onLongPress and HandleLongPress or nil,
+        onLongPressStart = options.onLongPressStart,
+        onLongPressEnd = options.onLongPressEnd,
         children = children,
     }
+    if context.registerItemTipsTrigger and options.itemTips ~= false then
+        context.registerItemTipsTrigger(widget, item)
+    end
+    return widget
 end
 
 return EquipmentItemSlot

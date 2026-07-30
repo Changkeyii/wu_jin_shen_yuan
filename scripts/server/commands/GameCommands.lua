@@ -15,13 +15,31 @@ local SAFE_ID_SCHEMA = {
 
 local AUTOMATION_POLICY_SCHEMA = {
     type = "object",
-    required = { "autoEquip", "autoSkipStory" },
+    required = { "autoEquip", "lootAutoEquip", "autoSkipStory" },
     allowUnknown = false,
     fields = {
         autoEquip = { type = "boolean" },
+        lootAutoEquip = { type = "boolean" },
         autoSkipStory = { type = "boolean" },
     },
 }
+
+local function MutationResponse(result)
+    if not result or not result.ok then return result end
+    local data = result.data or {}
+    local state = data.state or {}
+    return {
+        ok = true,
+        code = result.code,
+        reason = result.reason,
+        data = {
+            committed = data.committed == true,
+            runtimeOnly = data.runtimeOnly == true,
+            alreadyApplied = data.alreadyApplied == true,
+            revision = state.revision,
+        },
+    }
+end
 
 local function AsyncMutation(services, operationName, mutator)
     return function(context, payload, done)
@@ -29,7 +47,8 @@ local function AsyncMutation(services, operationName, mutator)
             return mutator(state, payload, now)
         end, function(result)
             if result.ok and result.data.delta then services.sendDelta(context.uid, result.data.delta) end
-            done(result.ok, result)
+            local response = MutationResponse(result)
+            done(response.ok, response)
         end)
         return CommandRouter.PENDING
     end
@@ -88,7 +107,8 @@ function GameCommands.Register(router, services)
                     if result.ok and result.data.delta then
                         services.sendDelta(context.uid, result.data.delta)
                     end
-                    done(result.ok, result)
+                    local response = MutationResponse(result)
+                    done(response.ok, response)
                 end
             )
             return CommandRouter.PENDING
@@ -220,6 +240,28 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
+        name = "Game.DecomposePreview",
+        schema = {
+            type = "object",
+            required = { "itemId" },
+            allowUnknown = false,
+            fields = {
+                itemId = { type = "string", minLength = 36, maxLength = 36 },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = function(context, payload, done)
+            local state = services.profileService:GetState(context.uid)
+            local result = state
+                and GameEngine.GetDecomposePreview(state, payload.itemId)
+                or { ok = false, code = "PROFILE_NOT_LOADED", reason = "profile is not loaded" }
+            done(result.ok, result)
+            return CommandRouter.PENDING
+        end,
+    })
+
+    router:Register({
         name = "Game.Decompose",
         schema = {
             type = "object",
@@ -345,6 +387,25 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
+        name = "Game.StrengthenPreview",
+        schema = {
+            type = "object",
+            required = { "slot" },
+            allowUnknown = false,
+            fields = { slot = slotSchema },
+        },
+        rate = ServerConfig.RATES.Progression,
+        async = true,
+        handler = function(context, payload, done)
+            local state = services.profileService:GetState(context.uid)
+            local result = state
+                and GameEngine.GetStrengthenPreview(state, payload.slot)
+                or { ok = false, code = "PROFILE_NOT_LOADED", reason = "profile is not loaded" }
+            done(result.ok, result)
+            return CommandRouter.PENDING
+        end,
+    })
+    router:Register({
         name = "Game.Strengthen",
         schema = {
             type = "object",
@@ -359,7 +420,7 @@ function GameCommands.Register(router, services)
         end),
     })
     router:Register({
-        name = "Game.Star",
+        name = "Game.StarPreview",
         schema = {
             type = "object",
             required = { "slot" },
@@ -368,8 +429,30 @@ function GameCommands.Register(router, services)
         },
         rate = ServerConfig.RATES.Progression,
         async = true,
+        handler = function(context, payload, done)
+            local state = services.profileService:GetState(context.uid)
+            local result = state
+                and GameEngine.GetStarPreview(state, payload.slot)
+                or { ok = false, code = "PROFILE_NOT_LOADED", reason = "profile is not loaded" }
+            done(result.ok, result)
+            return CommandRouter.PENDING
+        end,
+    })
+    router:Register({
+        name = "Game.Star",
+        schema = {
+            type = "object",
+            required = { "slot", "materialItemId" },
+            allowUnknown = false,
+            fields = {
+                slot = slotSchema,
+                materialItemId = { type = "string", minLength = 1, maxLength = 64 },
+            },
+        },
+        rate = ServerConfig.RATES.Progression,
+        async = true,
         handler = AsyncMutation(services, "star equipment", function(state, payload, now)
-            return GameEngine.Star(state, payload.slot, now)
+            return GameEngine.Star(state, payload.slot, payload.materialItemId, now)
         end),
     })
 
@@ -410,13 +493,34 @@ function GameCommands.Register(router, services)
                 context.uid,
                 payload.quoteToken,
                 function(result)
-                    if result.ok and result.data.delta then
-                        services.sendDelta(
-                            context.uid,
-                            result.data.delta
-                        )
+                    local response = result
+                    if result.ok then
+                        local data = result.data or {}
+                        if data.delta then
+                            services.sendDelta(
+                                context.uid,
+                                data.delta
+                            )
+                        end
+                        local reward = nil
+                        for _, value in ipairs((data.delta and data.delta.events) or {}) do
+                            if (value.kind or value.type) == "offline_collected" then
+                                reward = value
+                                break
+                            end
+                        end
+                        response = {
+                            ok = true,
+                            code = result.code,
+                            reason = result.reason,
+                            data = {
+                                committed = data.committed == true,
+                                revision = data.state and data.state.revision or nil,
+                                reward = reward,
+                            },
+                        }
                     end
-                    done(result.ok, result)
+                    done(response.ok, response)
                 end
             )
             return CommandRouter.PENDING

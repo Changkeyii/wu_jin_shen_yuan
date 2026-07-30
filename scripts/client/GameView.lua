@@ -8,8 +8,9 @@ local EquipmentCatalog = require("shared.EquipmentCatalog")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local StoryCatalog = require("shared.StoryCatalog")
-local ItemTooltip = require("urhox-libs/UI/Components/ItemTooltip")
+local ItemTips = require("client.ItemTips")
 local BackpackItemSlot = require("client.BackpackItemSlot")
+local ItemSlotBase = require("client.ItemSlotBase")
 local HorizontalArrowScroller = require("client.HorizontalArrowScroller")
 local FrameEditorView = require("client.FrameEditorView")
 local LoadingController = require("client.LoadingController")
@@ -17,6 +18,8 @@ local PlayPresentation = require("client.PlayPresentation")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DialogCoordinator = require("client.DialogCoordinator")
 local AudioController = require("client.AudioController")
+local EquipmentCodexView = require("client.EquipmentCodexView")
+local IdleRewardAccumulator = require("client.IdleRewardAccumulator")
 
 local CONFIG = GameTheme.CONFIG
 local C = GameTheme.Colors
@@ -35,6 +38,9 @@ local uiRoot_ = nil
 local screenRoot_ = nil
 local idleSettingsOverlay_ = nil
 local idleSettingTipOverlay_ = nil
+local lootStashOverlay_ = nil
+local equipmentUpgradeOverlay_ = nil
+local equipmentUpgradeItemId_ = nil
 local pageContainer_ = nil
 local needsFullRebuild_ = false
 local needsPageRefresh_ = false
@@ -53,6 +59,22 @@ local offlineClaimSequence_ = 0
 ---@type string|nil
 local offlineDialogKey_ = nil
 local rewardDialogSequence_ = 0
+local idleRewardTracking_ = false
+local idleRewardActionPending_ = false
+---@class IdleRewardItem
+---@field icon string
+---@field name string
+---@field rarity string
+---@field item table
+---@class IdleRewardSummary
+---@field gold table
+---@field exp table
+---@field fragments table
+---@field equipmentItems IdleRewardItem[]
+---@field equipmentById table<string, boolean>
+---@field battles integer
+---@type IdleRewardSummary|nil
+local idleRewardSummary_ = nil
 local topRefs_ = {}
 local navRefs_ = {}
 local viewportWidth_ = 0
@@ -114,6 +136,12 @@ local ASSETS = {
         inventoryItemCard = "image/ui/inventory/item_card.png",
         inventoryEmptyState = "image/inventory_empty_state_20260720075957.png",
         inventoryItemCardSelected = "image/ui/inventory/item_card_selected.png",
+        itemTipsMainFrame = "image/ui/itemtips/main_frame.png",
+        itemTipsMainFrameCompare = "image/ui/itemtips/main_frame_compare.png",
+        itemTipsDetailRow = "image/ui/itemtips/detail_row.png",
+        itemTipsCompareFrame = "image/ui/itemtips/compare_frame.png",
+        itemTipsCompareButton = "image/ui/itemtips/compare_button.png",
+        itemTipsCloseButton = "image/ui/itemtips/close_button.png",
         playHpFrame = "image/brawlforge_play_hp_frame_cropped.png",
         playAutoRunButton = "image/brawlforge_play_autorun_button_cropped.png",
         panelLarge = "image/ui/generated/panel_940x320.png",
@@ -124,6 +152,14 @@ local ASSETS = {
         detailRow = "image/ui/generated/detail_row_520x38.png",
         statusBar = "image/ui/generated/status_bar_448x60.png",
         floorBadge = "image/ui/generated/floor_badge_150x60.png",
+        chapterProgressLeftCap = "image/ui/generated/chapter_progress_left_cap_48x42.png",
+        chapterProgressMid = "image/ui/generated/chapter_progress_mid_96x42.png",
+        chapterProgressRightCap = "image/ui/generated/chapter_progress_right_cap_48x42.png",
+        chapterProgressEnergyMid = "image/ui/generated/chapter_progress_energy_mid_96x24.png",
+        chapterProgressNodeNormal = "image/ui/generated/chapter_progress_node_normal_56x56.png",
+        chapterProgressNodeElite = "image/ui/generated/chapter_progress_node_elite_56x56.png",
+        chapterProgressNodeBoss = "image/ui/generated/chapter_progress_node_boss_64x64.png",
+        chapterProgressNodeAbyss = "image/ui/generated/chapter_progress_node_abyss_64x64.png",
         equipSlot = "image/ui/generated/equip_slot_compact.png",
         equipSlotSelected = "image/ui/generated/equip_slot_compact_selected.png",
         equipmentSlotIcons = {
@@ -317,6 +353,101 @@ local function FormatInt(v)
         return BigNumber.Format(v, 4)
     end
     return LargeNumber.Format(v)
+end
+
+local function BuildCostItemCard(name, icon, owned, required, enough, options)
+    options = options or {}
+    local width = options.width or 176
+    local height = options.height or 176
+    local slotSize = options.slotSize or 106
+    local slotLeft = math.floor((width - slotSize) * 0.5)
+    local children = {
+        UI.Panel {
+            position = "absolute",
+            left = slotLeft,
+            top = 2,
+            width = slotSize,
+            height = slotSize,
+            children = options.itemSlot and { options.itemSlot } or {
+                UI.Panel {
+                    position = "absolute",
+                    left = 0,
+                    top = 0,
+                    width = slotSize,
+                    height = slotSize,
+                    backgroundImage = ASSETS.ui.inventorySlotCommon,
+                    backgroundFit = "contain",
+                    pointerEvents = "none",
+                },
+                UI.Panel {
+                    position = "absolute",
+                    left = 18,
+                    top = 18,
+                    width = slotSize - 36,
+                    height = slotSize - 36,
+                    backgroundImage = icon,
+                    backgroundFit = "contain",
+                    opacity = enough and 1.0 or 0.5,
+                    pointerEvents = "none",
+                },
+            },
+        },
+        CompactTxt(name, 18, C.text, {
+            position = "absolute",
+            left = 8,
+            top = 108,
+            width = width - 16,
+            height = 28,
+            textAlign = "center",
+            textStroke = { width = 2, color = "#000000" },
+            pointerEvents = "none",
+        }),
+        CompactTxt(FormatInt(owned or 0) .. "/" .. FormatInt(required or 0), 20,
+            enough and C.success or C.error, {
+                position = "absolute",
+                left = 8,
+                top = 138,
+                width = width - 16,
+                height = 30,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+                pointerEvents = "none",
+            }),
+    }
+    if not enough then
+        children[#children + 1] = UI.Panel {
+            position = "absolute",
+            left = slotLeft,
+            top = 2,
+            width = slotSize,
+            height = slotSize,
+            backgroundImage = ASSETS.ui.selectionFrame,
+            backgroundFit = "contain",
+            imageTint = C.error,
+            opacity = 0.7,
+            pointerEvents = "none",
+        }
+        children[#children + 1] = CompactTxt("不足", 18, C.error, {
+            position = "absolute",
+            left = slotLeft,
+            top = 42,
+            width = slotSize,
+            height = 30,
+            textAlign = "center",
+            textStroke = { width = 2, color = "#000000" },
+            pointerEvents = "none",
+        })
+    end
+    return UI.Panel {
+        width = width,
+        height = height,
+        flexShrink = 0,
+        position = "relative",
+        overflow = "visible",
+        backgroundImage = ASSETS.ui.inventoryItemCard,
+        backgroundFit = "contain",
+        children = children,
+    }
 end
 
 local function FormatPercent(v)
@@ -521,6 +652,8 @@ local ACTION_ERROR_MESSAGES = {
     NOT_READY = "正在连接服务器，请稍后再试",
     RATE_LIMITED = "操作太频繁，请稍后再试",
     REQUEST_TIMEOUT = "服务器响应超时，请稍后重试",
+    MATERIAL_REQUIRED = "请先选择一件升星材料",
+    DUPLICATE_REQUIRED = "所选材料不再满足同款、同星级、同品阶条件，请重新选择",
 }
 
 local function ActionResult(response, successMessage)
@@ -537,6 +670,7 @@ end
 
 local function OfflineRewardEvent(response)
     local data = response and response.data
+    if type(data and data.reward) == "table" then return data.reward end
     local delta = data and data.delta
     for _, value in ipairs((delta and delta.events) or {}) do
         if value.kind == "offline_collected" then return value end
@@ -561,12 +695,12 @@ local function OfflineRewardItemCard(icon, name, amount, rarity, item)
         itemLevelText = ItemLevelText,
         isEquipped = function() return false end,
     }, displayItem, {
-        width = 164,
-        height = 188,
+        width = 180,
+        height = 180,
         selected = false,
         clickable = false,
         fallbackImage = icon,
-        amountText = amount,
+        amountText = item == nil and amount or nil,
         showLevel = item ~= nil,
         showEquipped = false,
     })
@@ -574,6 +708,33 @@ end
 
 local function AddRewardCard(cards, icon, name, amount, rarity, item)
     cards[#cards + 1] = OfflineRewardItemCard(icon, name, amount, rarity, item)
+end
+
+local function NewIdleRewardSummary()
+    return IdleRewardAccumulator.New()
+end
+
+local function ResetIdleRewardSummary()
+    idleRewardSummary_ = NewIdleRewardSummary()
+end
+
+local function IdleRewardHasValue()
+    return IdleRewardAccumulator.HasValue(idleRewardSummary_)
+end
+
+local function StartIdleRewardTracking()
+    if idleRewardTracking_ then return end
+    idleRewardTracking_ = true
+    ResetIdleRewardSummary()
+end
+
+local function AccumulateIdleRewards(events)
+    if not idleRewardTracking_ then return end
+    if not idleRewardSummary_ then ResetIdleRewardSummary() end
+    IdleRewardAccumulator.Accumulate(assert(idleRewardSummary_), events, {
+        getItemById = GetItemById,
+        itemImage = ItemImage,
+    })
 end
 
 local OfflineRewardCardPanel
@@ -589,16 +750,200 @@ local function ShowRewardDialog(options)
         priority = options.priority or 320,
         queueKey = options.queueKey or ("reward:" .. tostring(rewardDialogSequence_)),
         title = options.title or "获得奖励",
+        celebration = true,
+        entranceDuration = 0.52,
+        onPresented = function()
+            AudioController.PlayFeedback(options.sound or "reward")
+        end,
         dialogHeight = 1160,
         closeOnOverlay = false,
-        showClose = false,
+        showClose = options.showClose == true,
+        cancelText = options.cancelText,
         confirmText = options.confirmText or "确认收取",
+        onConfirm = options.onConfirm,
+        onCancel = options.onCancel,
         contentBuilder = function()
             return RewardDialogContent(
                 options.message or "奖励已存入背包",
                 cards,
                 options.lines or {}
             )
+        end,
+    }
+end
+
+local function MergeIdleRewardSummary(target, source)
+    IdleRewardAccumulator.Merge(target, source)
+end
+
+local function ShowIdleRewardSummary(onConfirm)
+    if not IdleRewardHasValue() then
+        if onConfirm then onConfirm() end
+        return false
+    end
+    if idleRewardActionPending_ then return true end
+
+    local summary = assert(idleRewardSummary_)
+    ResetIdleRewardSummary()
+    local cards = {}
+    if not BigNumber.IsZero(summary.gold) then
+        AddRewardCard(cards, ASSETS.items.gold, "金币", "+" .. FormatInt(summary.gold), "epic")
+    end
+    if not BigNumber.IsZero(summary.exp) then
+        AddRewardCard(cards, ASSETS.items.crystal, "经验", "+" .. FormatInt(summary.exp), "advanced")
+    end
+    if not BigNumber.IsZero(summary.fragments) then
+        AddRewardCard(cards, ASSETS.items.crystal, "碎片", "+" .. FormatInt(summary.fragments), "rare")
+    end
+    for _, value in ipairs(summary.equipmentItems) do
+        AddRewardCard(
+            cards,
+            value.icon,
+            value.name,
+            nil,
+            value.rarity,
+            value.item
+        )
+    end
+
+    idleRewardActionPending_ = true
+    rewardDialogSequence_ = rewardDialogSequence_ + 1
+    local shown = ShowRewardDialog {
+        priority = 450,
+        queueKey = "idle_reward:" .. tostring(rewardDialogSequence_),
+        title = "获得挂机奖励",
+        message = "本次挂机收益已汇总",
+        lines = {
+            "完成战斗 " .. tostring(summary.battles or 0) .. " 场，奖励已同步到当前角色。",
+        },
+        confirmText = "确认并离开",
+        cancelText = "继续刷宝",
+        showClose = true,
+        cards = cards,
+        onConfirm = function()
+            idleRewardActionPending_ = false
+            if onConfirm then onConfirm() end
+        end,
+        onCancel = function()
+            MergeIdleRewardSummary(assert(idleRewardSummary_), summary)
+            idleRewardActionPending_ = false
+        end,
+    }
+    if not shown then
+        MergeIdleRewardSummary(assert(idleRewardSummary_), summary)
+        idleRewardActionPending_ = false
+    end
+    return shown
+end
+
+local function IsIdleRewardEvent(kind)
+    return IdleRewardAccumulator.IsRewardEvent(kind)
+end
+
+local function ShowLevelUpDialog(value)
+    value = value or {}
+    local previousLevel = math.max(1, tonumber(value.previousLevel) or ((tonumber(value.level) or 1) - 1))
+    local level = math.max(previousLevel + 1, tonumber(value.level) or (previousLevel + 1))
+    local levelsGained = math.max(1, tonumber(value.levelsGained) or (level - previousLevel))
+    local currentExp = math.max(0, tonumber(value.exp) or 0)
+    local nextExp = math.max(1, tonumber(value.nextExp) or 1)
+    local expRatio = math.max(0, math.min(1, currentExp / nextExp))
+    return CommonPromptDialog.Show {
+        kind = "equipment",
+        priority = 500,
+        queueKey = "level_up:" .. tostring(previousLevel) .. ":" .. tostring(level),
+        title = "等级提升",
+        dialogHeight = 700,
+        celebration = true,
+        entranceDuration = 0.62,
+        closeOnOverlay = false,
+        showClose = false,
+        confirmText = "继续冒险",
+        onPresented = function()
+            AudioController.PlayFeedback("levelUp")
+        end,
+        contentBuilder = function()
+            local levelBadge = UI.Panel {
+                width = 220,
+                height = 220,
+                flexShrink = 0,
+                alignItems = "center",
+                justifyContent = "center",
+                backgroundColor = { 17, 36, 70, 245 },
+                borderWidth = 4,
+                borderColor = C.gold,
+                borderRadius = 110,
+                children = {
+                    CompactTxt("LV", 24, C.textSecondary, {
+                        position = "absolute", left = 0, top = 42,
+                        width = 220, height = 34, textAlign = "center",
+                        textStroke = { width = 1, color = "#000000" },
+                        pointerEvents = "none",
+                    }),
+                    CompactTxt(tostring(level), 76, C.gold, {
+                        width = 220, height = 110, textAlign = "center",
+                        textStroke = { width = 3, color = "#000000" },
+                        pointerEvents = "none",
+                    }),
+                },
+            }
+            levelBadge:Animate {
+                keyframes = {
+                    [0] = { opacity = 0, scale = 0.35, rotate = -10 },
+                    [0.62] = { opacity = 1, scale = 1.16, rotate = 4 },
+                    [1] = { opacity = 1, scale = 1.0, rotate = 0 },
+                },
+                duration = 0.72,
+                easing = "easeOut",
+            }
+            return UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                alignItems = "center",
+                gap = 18,
+                children = {
+                    CompactTxt(
+                        "Lv." .. tostring(previousLevel) .. "  →  Lv." .. tostring(level),
+                        30,
+                        C.focus,
+                        {
+                            width = "100%", height = 48, textAlign = "center",
+                            textStroke = { width = 2, color = "#000000" },
+                            pointerEvents = "none",
+                        }
+                    ),
+                    levelBadge,
+                    CompactTxt(
+                        levelsGained > 1 and ("连续提升 " .. tostring(levelsGained) .. " 级") or "角色属性已全面成长",
+                        23,
+                        C.text,
+                        {
+                            width = "100%", height = 38, textAlign = "center",
+                            textStroke = { width = 1, color = "#000000" },
+                            pointerEvents = "none",
+                        }
+                    ),
+                    UI.Panel {
+                        width = 520, height = 28, flexShrink = 0,
+                        backgroundColor = { 5, 14, 29, 235 },
+                        borderWidth = 2, borderColor = C.border, borderRadius = 14,
+                        overflow = "hidden",
+                        children = {
+                            UI.Panel {
+                                width = math.floor(516 * expRatio), height = 24,
+                                backgroundColor = C.focus, borderRadius = 12,
+                                pointerEvents = "none",
+                            },
+                        },
+                    },
+                    CompactTxt(
+                        "当前经验 " .. FormatInt(currentExp) .. " / " .. FormatInt(nextExp),
+                        18,
+                        C.textSecondary,
+                        { width = "100%", height = 30, textAlign = "center", pointerEvents = "none" }
+                    ),
+                },
+            }
         end,
     }
 end
@@ -615,9 +960,16 @@ end
 
 local function ShowDeltaFeedback(payload)
     local events = (payload and payload.events) or {}
+    local hasOfflineReward = false
     for _, value in ipairs(events) do
-        if (value.kind or value.type) == "offline_collected" then return end
+        local kind = value.kind or value.type
+        if kind == "offline_collected" then
+            hasOfflineReward = true
+        elseif kind == "level_up" then
+            ShowLevelUpDialog(value)
+        end
     end
+    if hasOfflineReward then return end
     local equipmentById = {}
     local cards = {}
     local title = "获得奖励"
@@ -632,7 +984,9 @@ local function ShowDeltaFeedback(payload)
     for index, value in ipairs(events) do
         local kind = value.kind or value.type
         queueParts[#queueParts + 1] = EventKey(value, index)
-        if kind == "equipment_drop" or kind == "equipment_granted" or kind == "tower_aid_equipment" then
+        if idleRewardTracking_ and IsIdleRewardEvent(kind) then
+            -- 在线挂机奖励按会话累计，仅在切换页签或退出挂机时统一展示。
+        elseif kind == "equipment_drop" or kind == "equipment_granted" or kind == "tower_aid_equipment" then
             local itemId = tostring(value.itemId or value.equipmentId or index)
             if not equipmentById[itemId] then
                 equipmentById[itemId] = true
@@ -641,7 +995,7 @@ local function ShowDeltaFeedback(payload)
                     cards,
                     ItemImage(item),
                     value.name or item.name or "装备",
-                    RarityName(value.rarity or item.rarity or "common") .. " ×1",
+                    nil,
                     value.rarity or item.rarity,
                     item
                 )
@@ -721,7 +1075,7 @@ local function OfflineRewardCards(value)
         cards[#cards + 1] = OfflineRewardItemCard(
             ItemImage(item),
             item.name or "装备",
-            RarityName(item.rarity or "common") .. " ×" .. tostring(item.quantity or 1),
+            nil,
             item.rarity,
             item
         )
@@ -730,7 +1084,7 @@ local function OfflineRewardCards(value)
         cards[#cards + 1] = OfflineRewardItemCard(
             ASSETS.items.chest,
             "装备",
-            tostring(value.equipment or 0) .. "件",
+            nil,
             "rare"
         )
     end
@@ -744,9 +1098,9 @@ OfflineRewardCardPanel = function(cards, pageLabel)
         rows = 3,
         columnsPerPage = 3,
         arrowWidth = 42,
-        itemWidth = 164,
-        itemHeight = 188,
-        gapX = 12,
+        itemWidth = 180,
+        itemHeight = 180,
+        gapX = 8,
         gapY = 10,
         children = cards,
         text = CompactTxt,
@@ -1123,45 +1477,272 @@ actionFns_.DecomposeByRank = function(maxRank)
 end
 actionFns_.SetEquipmentLock = function(item) ServerClient.SetEquipmentLock(item.id, not item.locked, ActionResult) end
 actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, ActionResult) end
-local function UpgradeCostLines(kind, slotId)
-    local costs = game.upgradeCosts or game.equipmentUpgradeCosts or {}
-    local slotCosts = costs[slotId] or {}
-    local value = slotCosts[kind] or slotCosts[kind == "star" and "starUp" or "strengthen"]
-    if type(value) ~= "table" then
-        return { "最终消耗和成功结果由服务端结算；确认前不会扣除资源。" }
-    end
-    local parts = {}
-    if value.gold ~= nil then parts[#parts + 1] = "金币 " .. FormatInt(value.gold) end
-    if value.fragments ~= nil then parts[#parts + 1] = "碎片 " .. FormatInt(value.fragments) end
-    if value.materials ~= nil then parts[#parts + 1] = "材料 " .. FormatInt(value.materials) end
-    return { #parts > 0 and ("本次预计消耗：" .. table.concat(parts, "、")) or "具体消耗以服务端结算为准。" }
-end
 actionFns_.StrengthenSelected = function()
     local slotId = selectedSlot_
-    CommonPromptDialog.Show {
-        kind = "confirm",
-        title = "确认强化",
-        message = "将强化当前" .. SlotName(slotId) .. "装备。",
-        lines = UpgradeCostLines("strengthen", slotId),
-        cancelText = "取消",
-        confirmText = "确认强化",
-        closeOnOverlay = false,
-        onConfirm = function() ServerClient.Strengthen(slotId, ActionResult) end,
-    }
+    ServerClient.StrengthenPreview(slotId, function(response)
+        if not response or not response.ok or type(response.data) ~= "table" then
+            ActionResult(response)
+            return
+        end
+        local preview = response.data
+        local content = UI.Panel {
+            width = "100%",
+            height = 300,
+            flexShrink = 0,
+            alignItems = "center",
+            gap = 10,
+            children = {
+                CompactTxt(
+                    "+" .. tostring(preview.currentEnhance or 0)
+                        .. "  →  +" .. tostring(preview.nextEnhance or 0),
+                    28,
+                    preview.atMax and C.error or C.gold,
+                    {
+                        width = "100%",
+                        height = 42,
+                        textAlign = "center",
+                        textStroke = { width = 2, color = "#000000" },
+                    }
+                ),
+                CompactTxt(
+                    preview.atMax and "已达到当前强化上限" or "强化所需材料",
+                    20,
+                    preview.atMax and C.error or C.textSecondary,
+                    { width = "100%", height = 30, textAlign = "center" }
+                ),
+                UI.Panel {
+                    width = "100%",
+                    height = 176,
+                    flexDirection = "row",
+                    justifyContent = "center",
+                    gap = 28,
+                    children = {
+                        BuildCostItemCard(
+                            "金币",
+                            ASSETS.items.gold,
+                            preview.goldOwned,
+                            preview.gold,
+                            preview.goldEnough == true
+                        ),
+                        BuildCostItemCard(
+                            "装备碎片",
+                            ASSETS.items.crystal,
+                            preview.fragmentsOwned,
+                            preview.fragments,
+                            preview.fragmentsEnough == true
+                        ),
+                    },
+                },
+            },
+        }
+        CommonPromptDialog.Show {
+            kind = "confirm",
+            title = "确认强化",
+            content = content,
+            dialogWidth = 900,
+            dialogHeight = 640,
+            bodyTop = 86,
+            bodyHeight = 380,
+            bodyScrollY = false,
+            buttonTop = 532,
+            cancelText = "取消",
+            confirmText = "确认强化",
+            confirmEnabled = preview.canStrengthen == true,
+            closeOnOverlay = false,
+            onConfirm = function()
+                ServerClient.Strengthen(slotId, function(result)
+                    ActionResult(result, "强化成功")
+                    if result and result.ok then RequestPageRefresh() end
+                end)
+            end,
+        }
+    end)
 end
 actionFns_.StarSelected = function()
     local slotId = selectedSlot_
-    CommonPromptDialog.Show {
-        kind = "confirm",
-        title = "确认升星",
-        message = "升星会消耗资源，是否为当前" .. SlotName(slotId) .. "装备升星？",
-        lines = UpgradeCostLines("star", slotId),
-        cancelText = "取消",
-        confirmText = "确认升星",
-        danger = true,
-        closeOnOverlay = false,
-        onConfirm = function() ServerClient.Star(slotId, ActionResult) end,
-    }
+    ServerClient.StarPreview(slotId, function(response)
+        if not response or not response.ok or type(response.data) ~= "table" then
+            ActionResult(response)
+            return
+        end
+        local preview = response.data
+        local materials = type(preview.materials) == "table" and preview.materials or {}
+        local selectedMaterialId = materials[1] and materials[1].itemId or nil
+        local materialContext = {
+            C = C,
+            ASSETS = ASSETS,
+            itemImage = ItemImage,
+            itemLevelText = ItemLevelText,
+            compactTxt = CompactTxt,
+            rarityColor = RarityColor,
+            shortenText = ShortenText,
+            isEquipped = function() return false end,
+            showItemTips = ItemTips.Show,
+            registerItemTipsTrigger = ItemTips.RegisterTrigger,
+        }
+        local starContent = UI.Panel {
+            width = "100%",
+            height = 562,
+            flexShrink = 0,
+            alignItems = "center",
+            gap = 8,
+        }
+
+        local function RebuildStarContent()
+            starContent:ClearChildren()
+            local selectedMaterial = nil
+            for _, candidate in ipairs(materials) do
+                if tostring(candidate.itemId) == tostring(selectedMaterialId) then
+                    selectedMaterial = candidate
+                    break
+                end
+            end
+            local duplicateCount = preview.duplicateCount or 1
+            local materialOwned = preview.materialOwned or #materials
+            local materialEnough = materialOwned >= duplicateCount
+            local materialSlot = ItemSlotBase.Build(materialContext, selectedMaterial, {
+                size = 106,
+                selected = selectedMaterial ~= nil,
+                showEquipped = false,
+            })
+
+            starContent:AddChild(CompactTxt(
+                tostring(preview.currentStar or 0)
+                    .. " 星  →  " .. tostring(preview.nextStar or 0) .. " 星",
+                28,
+                preview.atMax and C.error or C.gold,
+                {
+                    width = "100%",
+                    height = 40,
+                    textAlign = "center",
+                    textStroke = { width = 2, color = "#000000" },
+                }
+            ))
+            starContent:AddChild(CompactTxt(
+                preview.atMax and "已达到最高星级" or "升星所需材料",
+                20,
+                preview.atMax and C.error or C.textSecondary,
+                { width = "100%", height = 28, textAlign = "center" }
+            ))
+            starContent:AddChild(UI.Panel {
+                width = "100%",
+                height = 176,
+                flexDirection = "row",
+                justifyContent = "center",
+                gap = 18,
+                children = {
+                    BuildCostItemCard(
+                        "金币",
+                        ASSETS.items.gold,
+                        preview.goldOwned,
+                        preview.gold,
+                        preview.goldEnough == true,
+                        { width = 170 }
+                    ),
+                    BuildCostItemCard(
+                        "装备碎片",
+                        ASSETS.items.crystal,
+                        preview.fragmentsOwned,
+                        preview.fragments,
+                        preview.fragmentsEnough == true,
+                        { width = 170 }
+                    ),
+                    BuildCostItemCard(
+                        "同款装备",
+                        nil,
+                        materialOwned,
+                        duplicateCount,
+                        materialEnough,
+                        { width = 170, itemSlot = materialSlot }
+                    ),
+                },
+            })
+            starContent:AddChild(CompactTxt(
+                #materials > 1 and "选择要消耗的同款、同星级、同品阶装备" or "升星装备材料",
+                19,
+                #materials > 0 and C.textSecondary or C.error,
+                { width = "100%", height = 28, textAlign = "center" }
+            ))
+
+            if #materials == 0 then
+                starContent:AddChild(UI.Panel {
+                    width = 128,
+                    height = 128,
+                    position = "relative",
+                    children = {
+                        ItemSlotBase.Build(materialContext, nil, { size = 124 }),
+                        CompactTxt("缺少", 20, C.error, {
+                            position = "absolute",
+                            left = 0,
+                            top = 45,
+                            width = 124,
+                            height = 34,
+                            textAlign = "center",
+                            textStroke = { width = 2, color = "#000000" },
+                        }),
+                    },
+                })
+            else
+                local cards = {}
+                for _, candidate in ipairs(materials) do
+                    local material = candidate
+                    local selected = tostring(material.itemId) == tostring(selectedMaterialId)
+                    cards[#cards + 1] = BackpackItemSlot.Build(materialContext, material, {
+                        width = 132,
+                        height = 146,
+                        selected = selected,
+                        clickable = true,
+                        showEquipped = false,
+                        amountText = selected and "已选择" or "点击选择",
+                        onClick = function()
+                            selectedMaterialId = material.itemId
+                            RebuildStarContent()
+                        end,
+                    })
+                end
+                starContent:AddChild(UI.ScrollView {
+                    width = "100%",
+                    height = 150,
+                    scrollX = true,
+                    scrollY = false,
+                    showScrollbar = false,
+                    children = {
+                        UI.Panel {
+                            height = 146,
+                            flexDirection = "row",
+                            gap = 10,
+                            justifyContent = #cards <= 5 and "center" or "flex-start",
+                            children = cards,
+                        },
+                    },
+                })
+            end
+        end
+        RebuildStarContent()
+
+        CommonPromptDialog.Show {
+            kind = "confirm",
+            title = "确认升星",
+            content = starContent,
+            dialogWidth = 900,
+            dialogHeight = 860,
+            bodyTop = 82,
+            bodyHeight = 638,
+            bodyScrollY = false,
+            buttonTop = 752,
+            cancelText = "取消",
+            confirmText = "确认升星",
+            confirmEnabled = preview.canStar == true and selectedMaterialId ~= nil,
+            danger = true,
+            closeOnOverlay = false,
+            onConfirm = function()
+                ServerClient.Star(slotId, selectedMaterialId, function(result)
+                    ActionResult(result, "升星成功")
+                    if result and result.ok then RequestPageRefresh() end
+                end)
+            end,
+        }
+    end)
 end
 
 local RefreshCurrentPage
@@ -1439,6 +2020,8 @@ local function ShowIdleSettings()
         myth = false,
     }
     local readOnly = game.readOnly == true
+    local automationPolicy = game.automationPolicy or {}
+    local lootAutoEquip = automationPolicy.lootAutoEquip == true
     local switches = {}
     local settingsHeight = Clamp(CONFIG.DynamicDesignHeight() - 96, 760, 1660)
 
@@ -1584,6 +2167,15 @@ local function ShowIdleSettings()
                 gap = 16,
                 paddingBottom = 32,
                 children = {
+                    Txt("装备处理", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
+                    AddSwitch("loot_auto_equip", "刷宝掉落自动装备", "默认关闭。关闭时装备先进入暂存箱；发现更强同部位装备仍会显示非阻塞对比提示，由玩家决定是否穿戴。", lootAutoEquip, function(value)
+                        lootAutoEquip = value
+                        ServerClient.SetAutomationPolicy({
+                            autoEquip = value,
+                            lootAutoEquip = value,
+                            autoSkipStory = automationPolicy.autoSkipStory == true,
+                        }, ActionResult)
+                    end),
                     Txt("背包满时的处理规则", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
                     AddSwitch("pause", "背包满后暂停挂机", "开启后，背包满且没有可自动处理的装备时，挂机会暂停。关闭后将跳过无法处理的掉落并继续挂机。", pauseOnFull, function(value)
                         pauseOnFull = value
@@ -1892,6 +2484,7 @@ local function BuildInventoryContext()
         getEquipmentPageScrollY = function() return equipmentPageScrollY_ end,
         setEquipmentPageScrollY = function(value) equipmentPageScrollY_ = value or 0 end,
         requestPageRefresh = RequestPageRefresh,
+        requestDecomposePreview = ServerClient.DecomposePreview,
         equipItem = actionFns_.EquipItem,
         unequipSlot = actionFns_.UnequipSlot,
         decomposeByRank = actionFns_.DecomposeByRank,
@@ -1920,23 +2513,15 @@ local function BuildInventoryContext()
         sectionTitle = SectionTitle,
         formatInt = FormatInt,
         getEquipmentDefinition = EquipmentCatalog.Get,
-        showItemTooltip = function(item, bounds)
-            if item then
-                ItemTooltip.Show({
-                    name = item.name,
-                    rarity = item.rarity,
-                    description = (item.setName and (item.setName .. "；") or "") .. (item.description or ""),
-                    stats = {
-                        ["部位"] = SlotName(item.slot),
-                        ["等级"] = ItemLevelText(item),
-                        ["强化"] = "+" .. tostring(item.enhance or 0),
-                        ["星级"] = tostring(item.star or 0),
-                        ["战力"] = ItemPowerText(item),
-                    },
-                }, bounds)
+        showItemTips = function(item, bounds, options)
+            options = options or {}
+            if options.source == "equipment" and item and item.slot then
+                options.allowCompare = true
+                options.compareItem = game.equipped and game.equipped[item.slot] or nil
             end
+            return ItemTips.Show(item, bounds, options)
         end,
-        hideItemTooltip = ItemTooltip.Hide,
+        registerItemTipsTrigger = ItemTips.RegisterTrigger,
     }
 end
 
@@ -1991,73 +2576,163 @@ local function ShowStoryGate(story)
     }
 end
 
-local function MetricLine(label, value, suffix)
-    if value == nil then return nil end
-    return label .. FormatInt(value) .. (suffix or "")
+local function CloseLootStash()
+    if lootStashOverlay_ and uiRoot_ then uiRoot_:RemoveChild(lootStashOverlay_) end
+    lootStashOverlay_ = nil
+end
+
+local function LootStashItems()
+    game = GameStateAdapter.GetViewState()
+    local items = {}
+    for _, itemId in ipairs(game.lootStash or {}) do
+        local item = GetItemById(itemId)
+        if item then items[#items + 1] = item end
+    end
+    return items
+end
+
+local function ShowLootStash()
+    if not uiRoot_ then return false end
+    CloseLootStash()
+    local items = LootStashItems()
+    local cards = {}
+    local slotContext = BuildInventoryContext()
+    for _, item in ipairs(items) do
+        cards[#cards + 1] = BackpackItemSlot.Build(slotContext, item, {
+            width = 180,
+            height = 180,
+            clickable = true,
+            onClick = function() actionFns_.EquipItem(item) end,
+        })
+    end
+    local content
+    if #cards == 0 then
+        content = UI.Panel {
+            width = 720, height = 560, flexShrink = 0,
+            alignItems = "center", justifyContent = "center",
+            children = { CompactTxt("暂存箱为空", 24, C.textSecondary, {
+                width = "100%", height = 48, textAlign = "center",
+            }) },
+        }
+    else
+        local pageLabel = CompactTxt("1 / 1", 17, C.textDim, {
+            width = 92, height = 28, textAlign = "right",
+        })
+        content = OfflineRewardCardPanel(cards, pageLabel)
+    end
+    lootStashOverlay_ = UI.Panel {
+        position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
+        zIndex = 2200, pointerEvents = "box-none",
+        alignItems = "center", justifyContent = "center",
+        children = {
+            UI.Panel {
+                position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
+                clickable = true, backgroundImage = "image/ui/generated/screen_overlay_1080x1920.png", backgroundFit = "cover",
+                onClick = CloseLootStash,
+            },
+            UI.Panel {
+                position = "relative", width = 900, height = 900,
+                clickable = true, overflow = "hidden",
+                backgroundImage = ASSETS.ui.panelLarge, backgroundFit = "sliced",
+                backgroundSlice = { 14, 14, 14, 14 },
+                children = {
+                    Txt("暂存箱", 32, C.text, {
+                        position = "absolute", left = 80, top = 30,
+                        width = 740, height = 54, textAlign = "center",
+                        textStroke = { width = 2, color = "#000000" },
+                    }),
+                    CompactTxt("当前刷宝获得的装备；点击格子可手动穿戴", 18, C.textSecondary, {
+                        position = "absolute", left = 80, top = 88,
+                        width = 740, height = 34, textAlign = "center",
+                    }),
+                    UI.Panel {
+                        position = "absolute", left = 90, top = 140,
+                        width = 720, height = 620, children = { content },
+                    },
+                    UI.Panel {
+                        position = "absolute", right = 22, top = 22,
+                        width = 64, height = 64, clickable = true,
+                        backgroundImage = "image/ui/dialog/close_button.png",
+                        backgroundFit = "contain", onClick = CloseLootStash,
+                    },
+                },
+            },
+        },
+    }
+    uiRoot_:AddChild(lootStashOverlay_)
+    return true
 end
 
 local function ShowEquipmentUpgrade(value)
     value = value or {}
-    local lines = {}
-    local candidates = {
-        MetricLine("总战力：", value.newPower or value.displayedPower),
-        MetricLine("战力提升：", value.displayedPowerDeltaBig or value.displayedPowerDelta
-            or value.powerDeltaBig or value.powerDelta,
-            value.powerDeltaPercent and ("（" .. string.format("%.1f%%", value.powerDeltaPercent * 100) .. "）") or ""),
-        MetricLine("Boss DPS：", value.bossDps),
-        MetricLine("有效生命：", value.effectiveHp or value.ehp),
-        MetricLine("预计可推进：", value.estimatedEasyFloor, "层"),
-        value.setChange and ("套装变化：" .. tostring(value.setChange)) or nil,
-    }
-    for _, line in ipairs(candidates) do if line then lines[#lines + 1] = line end end
-    if #lines == 0 then lines[1] = "完整换装收益已由服务端战斗核评估。" end
     local decisionId = value.decisionId or value.itemId
-    CommonPromptDialog.Show {
-        kind = "equipment",
-        queueKey = decisionId and ("equip:" .. tostring(decisionId)) or nil,
-        title = "发现更强装备",
-        message = "该装备可提升完整配装表现，是否更换？",
-        lines = lines,
-        contentBuilder = function()
-            return UI.Panel {
-                width = "100%",
-                height = 58,
-                flexShrink = 0,
-                alignItems = "center",
-                justifyContent = "center",
-                children = {
-                    CompactTxt(
-                        ShortenText(
-                            value.name or "新装备",
-                            22
-                        ),
-                        26,
-                        RarityColor(
-                            value.rarity or "common"
-                        ),
-                        {
-                            width = "100%",
-                            height = 42,
-                            textAlign = "center",
-                            textStroke = {
-                                width = 2,
-                                color = "#000000",
-                            },
-                            pointerEvents = "none",
-                        }
-                    ),
-                },
-            }
-        end,
-        cancelText = "保留原装",
-        confirmText = "立即更换",
-        onConfirm = function()
-            ServerClient.DecideEquip("equip", value.itemId, ActionResult)
-        end,
-        onCancel = function()
-            ServerClient.DecideEquip("keep", value.itemId, ActionResult)
-        end,
+    if not uiRoot_ or decisionId == nil or tostring(decisionId) == tostring(equipmentUpgradeItemId_) then return false end
+    if equipmentUpgradeOverlay_ then uiRoot_:RemoveChild(equipmentUpgradeOverlay_) end
+    equipmentUpgradeItemId_ = decisionId
+    local item = GetItemById(value.itemId) or value
+    local current = game.equipped and game.equipped[item.slot] or nil
+    local slotContext = BuildInventoryContext()
+    local function Close()
+        if equipmentUpgradeOverlay_ and uiRoot_ then uiRoot_:RemoveChild(equipmentUpgradeOverlay_) end
+        equipmentUpgradeOverlay_ = nil
+        equipmentUpgradeItemId_ = nil
+    end
+    local children = {
+        CompactTxt("发现更强装备", 22, C.gold, {
+            position = "absolute", left = 18, top = 10, width = 444, height = 34,
+            textAlign = "center", textStroke = { width = 2, color = "#000000" },
+        }),
+        CompactTxt("当前", 16, C.textSecondary, {
+            position = "absolute", left = 24, top = 52, width = 180, height = 26, textAlign = "center",
+        }),
+        CompactTxt("新装备", 16, C.focus, {
+            position = "absolute", left = 276, top = 52, width = 180, height = 26, textAlign = "center",
+        }),
+        UI.Panel {
+            position = "absolute", left = 24, top = 78, width = 180, height = 180,
+            children = { BackpackItemSlot.Build(slotContext, current or {
+                name = "未装备", rarity = "common", level = 1,
+            }, { width = 180, height = 180, clickable = false, showEquipped = false }) },
+        },
+        UI.Panel {
+            position = "absolute", left = 276, top = 78, width = 180, height = 180,
+            children = { BackpackItemSlot.Build(slotContext, item, {
+                width = 180, height = 180, clickable = false, showEquipped = false,
+            }) },
+        },
+        CompactTxt("战力提升 " .. FormatInt(value.displayedPowerDeltaBig or value.displayedPowerDelta or 0), 18, C.success, {
+            position = "absolute", left = 20, top = 270, width = 440, height = 30, textAlign = "center",
+            textStroke = { width = 1, color = "#000000" },
+        }),
+        UI.Panel {
+            position = "absolute", left = 24, top = 312, width = 200, height = 58,
+            children = { ImageButton("保留原装", 200, 58, ASSETS.ui.buttonBlueWide, function()
+                Close()
+                ServerClient.DecideEquip("keep", value.itemId, ActionResult)
+            end, false) },
+        },
+        UI.Panel {
+            position = "absolute", right = 24, top = 312, width = 200, height = 58,
+            children = { ImageButton("立即装备", 200, 58, ASSETS.ui.buttonGreen, function()
+                Close()
+                ServerClient.DecideEquip("equip", value.itemId, function(response)
+                    ActionResult(response, response and response.ok and "装备已穿戴" or nil)
+                    if lootStashOverlay_ then ShowLootStash() end
+                end)
+            end, false) },
+        },
     }
+    equipmentUpgradeOverlay_ = UI.Panel {
+        position = "absolute", right = 24, top = 340,
+        width = 480, height = 398, zIndex = 1800,
+        clickable = true, overflow = "hidden",
+        backgroundImage = ASSETS.ui.panelLarge, backgroundFit = "sliced",
+        backgroundSlice = { 14, 14, 14, 14 },
+        boxShadow = { { x = 0, y = 6, blur = 16, color = { 0, 0, 0, 150 } } },
+        children = children,
+    }
+    uiRoot_:AddChild(equipmentUpgradeOverlay_)
+    return true
 end
 
 local function ShowTowerRules()
@@ -2132,6 +2807,14 @@ local function ConfigurePlayPresentation()
         loadingController = LoadingController,
         actionResult = ActionResult,
         openIdleSettings = ShowIdleSettings,
+        openLootStash = ShowLootStash,
+        requestAutoRunChange = function(enabled, proceed)
+            local currentGame = GameStateAdapter.GetViewState()
+            if not enabled and currentGame.page == "play" and currentGame.autoRun and idleRewardTracking_ then
+                return ShowIdleRewardSummary(proceed)
+            end
+            return proceed()
+        end,
         showStoryGate = ShowStoryGate,
         showEquipmentUpgrade = ShowEquipmentUpgrade,
         showTowerRules = ShowTowerRules,
@@ -2140,6 +2823,7 @@ local function ConfigurePlayPresentation()
         rarityColor = RarityColor,
         rarityName = RarityName,
         rarities = RARITIES,
+        playFeedback = AudioController.PlayFeedback,
         currentPlayer = CurrentPlayer,
         getRunParams = FrameEditorView.GetRunParams,
         getAttackParams = FrameEditorView.GetAttackParams,
@@ -2197,6 +2881,20 @@ end
 local function CreatePageContent()
     if game.page == "admin" and game.isAdmin then return AdminPanel.Build(UI, { onChanged = RequestPageRefresh, readOnly = game.readOnly }) end
     if game.page == "bag" then return BuildInventoryPage() end
+    if game.page == "codex" then
+        return EquipmentCodexView.Build {
+            game = game,
+            C = C,
+            ASSETS = ASSETS,
+            txt = Txt,
+            compactTxt = CompactTxt,
+            formatInt = FormatInt,
+            rarityColor = RarityColor,
+            itemImage = ItemImage,
+            itemLevelText = ItemLevelText,
+            onRefresh = RequestPageRefresh,
+        }
+    end
     if game.page == "equip" then
         if type(game.playerNickname) ~= "string" or game.playerNickname == "" then
             return UI.Panel {
@@ -2233,7 +2931,7 @@ RefreshCurrentPage = function()
     UpdateBottomNav()
 end
 
-SwitchPage = function(pageId)
+local function PerformPageSwitch(pageId)
     local leavingPlay = game.page == "play" and pageId ~= "play"
     if leavingPlay then PlayPresentation.ClearCombatPresentation(true) end
     if pageId == "play" then
@@ -2251,10 +2949,23 @@ SwitchPage = function(pageId)
     RefreshCurrentPage()
 end
 
+SwitchPage = function(pageId)
+    if game.page == pageId then return end
+    ItemTips.Hide("page-switch")
+    if game.page == "play" and game.autoRun and idleRewardTracking_ then
+        ShowIdleRewardSummary(function()
+            PerformPageSwitch(pageId)
+        end)
+        return
+    end
+    PerformPageSwitch(pageId)
+end
+
 local function CreateBottomNav()
     local nav = {
         { id = "home", name = "首页" },
         { id = "bag", name = "背包" },
+        { id = "codex", name = "图鉴" },
         { id = "equip", name = "装备" },
         { id = "play", name = "刷宝" },
         { id = "market", name = "市场" },
@@ -2444,6 +3155,25 @@ local function BuildRoot()
         multiTxt = MultiTxt,
     }
     CommonPromptDialog.AttachRoot(screenRoot_)
+    ItemTips.Configure {
+        C = C,
+        ASSETS = ASSETS,
+        compactTxt = CompactTxt,
+        multiTxt = MultiTxt,
+        shortenText = ShortenText,
+        rarityColor = RarityColor,
+        rarityName = RarityName,
+        slotName = SlotName,
+        itemImage = ItemImage,
+        itemLevelText = ItemLevelText,
+        itemPower = ItemPower,
+        itemPowerText = ItemPowerText,
+        compareMagnitude = BigNumber.Compare,
+        formatInt = FormatInt,
+        isEquipped = IsEquipped,
+        requestDecomposePreview = ServerClient.DecomposePreview,
+    }
+    ItemTips.AttachRoot(screenRoot_)
     LoadingController.AttachRoot(uiRoot_)
     if game.page == "play" then
         LoadingController.EnsurePlayAssetsReady(function() PlayPresentation.Update(0) end)
@@ -2461,6 +3191,12 @@ end
 local function BindServerEvents()
     ServerClient.On("snapshot", function()
         game = GameStateAdapter.GetViewState()
+        if game.autoRun then
+            StartIdleRewardTracking()
+        elseif idleRewardTracking_ and not idleRewardActionPending_ and not IdleRewardHasValue() then
+            idleRewardTracking_ = false
+            ResetIdleRewardSummary()
+        end
         PlayPresentation.HandleSnapshot()
         UpdateTopBar()
         if pageContainer_ then
@@ -2475,6 +3211,8 @@ local function BindServerEvents()
     end)
     ServerClient.On("delta", function(payload)
         game = GameStateAdapter.GetViewState()
+        if game.autoRun then StartIdleRewardTracking() end
+        AccumulateIdleRewards(payload and payload.events)
         PlayPresentation.HandleDelta(payload)
         ShowDeltaFeedback(payload)
         UpdateTopBar()
@@ -2483,6 +3221,7 @@ local function BindServerEvents()
         elseif game.page == "home"
             or game.page == "equip"
             or game.page == "bag"
+            or game.page == "codex"
         then
             -- These pages render authoritative values as static nodes, so
             -- rebuild after every accepted server delta.
@@ -2570,6 +3309,7 @@ function GameView.Stop()
     PlayPresentation.Reset()
     CommonPromptDialog.Reset()
     DialogCoordinator.Clear(false)
+    ItemTips.Stop()
     LoadingController.Stop()
     ServerClient.Stop()
     AudioController.Stop()

@@ -299,10 +299,29 @@ end
 local function sanitizeAutomationPolicy(value)
     local supplied = type(value) == "table"
     value = supplied and value or {}
+    local lootAutoEquip = supplied and value.lootAutoEquip == true
     return {
-        autoEquip = not supplied or value.autoEquip ~= false,
+        autoEquip = lootAutoEquip,
+        lootAutoEquip = lootAutoEquip,
         autoSkipStory = value.autoSkipStory == true,
     }
+end
+
+local function sanitizeEquipmentCollection(value)
+    local result = {}
+    for equipmentId, record in pairs(type(value) == "table" and value or {}) do
+        if Catalog.GetEquipmentDefinition(equipmentId) and type(record) == "table" then
+            local powerBig = BigNumber.Normalize(record.powerBig or record.power or 0)
+            result[equipmentId] = {
+                powerBig = powerBig,
+                level = clampInteger(record.level, 1, 1000000, 1),
+                enhance = clampInteger(record.enhance, 0, Catalog.MAX_ENHANCE, 0),
+                star = clampInteger(record.star, 0, Catalog.MAX_STAR, 0),
+                rarity = RarityCatalog.NormalizeId(record.rarity),
+            }
+        end
+    end
+    return result
 end
 
 local function sanitizeRewardPity(value)
@@ -365,6 +384,7 @@ function StateNormalizer.Normalize(rawState, now)
         lastActiveAt = math.max(0, TableUtils.ToInteger(rawState.lastActiveAt, now)),
         pendingOfflineSeconds = clampInteger(rawState.pendingOfflineSeconds or rawState.offlineSeconds, 0, Catalog.OFFLINE_MAX_SECONDS, 0),
         level = clampInteger(rawState.level, 1, 1000000, 1),
+        vipLevel = clampInteger(rawState.vipLevel, 0, Catalog.MAX_VIP_LEVEL, 0),
         exp = clampInteger(rawState.exp, 0, 1000000000, 0),
         floor = normalizedFloor,
         maxFloor = normalizedMaxFloor,
@@ -393,6 +413,7 @@ function StateNormalizer.Normalize(rawState, now)
         nextItemId = math.max(1, TableUtils.ToInteger(rawState.nextItemId or rawState.itemSequence, 1)),
         inventory = {},
         overflowLoot = {},
+        lootStash = {},
         equipped = {},
         consumables = {},
         automationPolicy = sanitizeAutomationPolicy(rawState.automationPolicy),
@@ -401,6 +422,7 @@ function StateNormalizer.Normalize(rawState, now)
         storyProgress = sanitizeStoryProgress(rawState.storyProgress, sourceVersion, normalizedMaxFloor),
         pendingStoryGate = sourceVersion < 4 and nil or sanitizeStoryGate(rawState.pendingStoryGate),
         ruleAcknowledgements = sanitizeRuleAcknowledgements(rawState.ruleAcknowledgements),
+        equipmentCollection = sanitizeEquipmentCollection(rawState.equipmentCollection),
         pendingEquipDecision = nil,
         previousLoadout = nil,
         appliedGmCommandIds = GameStateSchema.NormalizeAppliedGmCommandIds(rawState.appliedGmCommandIds),
@@ -571,6 +593,13 @@ function StateNormalizer.Normalize(rawState, now)
     for _, item in ipairs(state.inventory) do
         byId[item.id] = item
     end
+    for _, rawItemId in ipairs(type(rawState.lootStash) == "table" and rawState.lootStash or {}) do
+        local itemId = byId[rawItemId] and rawItemId or legacyIdMap[tostring(rawItemId)]
+        if itemId and #state.lootStash < GameStateSchema.LOOT_STASH_CAP then
+            state.lootStash[#state.lootStash + 1] = itemId
+        end
+    end
+
     local rawEquipped = type(rawState.equipped) == "table" and rawState.equipped
         or (type(rawState.equipment) == "table" and rawState.equipment or {})
     local equippedIds = {}
@@ -662,6 +691,32 @@ function StateNormalizer.Normalize(rawState, now)
         item.power = Catalog.GetItemPower(item)
     end
     for _, item in ipairs(state.overflowLoot) do item.power = Catalog.GetItemPower(item) end
+    for _, item in ipairs(state.inventory) do
+        local powerBig = BigNumber.Normalize(item.power)
+        local record = state.equipmentCollection[item.equipmentId]
+        if not record or BigNumber.Compare(powerBig, record.powerBig) > 0 then
+            state.equipmentCollection[item.equipmentId] = {
+                powerBig = powerBig,
+                level = item.level,
+                enhance = item.enhance,
+                star = item.star,
+                rarity = item.rarity,
+            }
+        end
+    end
+    for _, item in ipairs(state.overflowLoot) do
+        local powerBig = BigNumber.Normalize(item.power)
+        local record = state.equipmentCollection[item.equipmentId]
+        if not record or BigNumber.Compare(powerBig, record.powerBig) > 0 then
+            state.equipmentCollection[item.equipmentId] = {
+                powerBig = powerBig,
+                level = item.level,
+                enhance = item.enhance,
+                star = item.star,
+                rarity = item.rarity,
+            }
+        end
+    end
     local rawStats = type(rawState.stats) == "table" and rawState.stats or nil
     local rawStatsValid = false
     if sourceVersion >= 5 and rawStats then

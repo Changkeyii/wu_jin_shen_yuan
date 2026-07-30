@@ -22,6 +22,11 @@ function InventoryView.EllipsizeName(text, maxChars)
     return text
 end
 
+function InventoryView.ItemLevelText(item)
+    local level = item.level or item.dropLevel or item.floor or item.tier or 1
+    return "Lv" .. tostring(level)
+end
+
 function InventoryView.SortByRarityAndPower(items, rarities, compareItemPower)
     table.sort(items, function(left, right)
         local leftRank = rarities[left.rarity] and rarities[left.rarity].rank or 0
@@ -78,6 +83,7 @@ local function CreateInventoryView(context)
     local GetEquipmentPageScrollY = context.getEquipmentPageScrollY
     local SetEquipmentPageScrollY = context.setEquipmentPageScrollY
     local RequestPageRefresh = context.requestPageRefresh
+    local RequestDecomposePreview = context.requestDecomposePreview
     local EquipItem = context.equipItem
     local UnequipSlot = context.unequipSlot
     local DecomposeByRank = context.decomposeByRank
@@ -108,8 +114,8 @@ local function CreateInventoryView(context)
     local SectionTitle = context.sectionTitle
     local FormatInt = context.formatInt
     local GetItemById = context.getItemById
-    local ShowItemTooltip = context.showItemTooltip
-    local HideItemTooltip = context.hideItemTooltip
+    local ShowItemTips = context.showItemTips
+    local RegisterItemTipsTrigger = context.registerItemTipsTrigger
 
 local function ItemIcon(item, props, fallbackImage)
     props = props or {}
@@ -143,11 +149,6 @@ local function InventorySlotFrame(item, selected)
     if item.rarity == "artifact" or item.rarity == "rare" or item.rarity == "purple" then return ASSETS.ui.inventorySlotEpic end
     if item.rarity == "advanced" or item.rarity == "blue" then return ASSETS.ui.inventorySlotRare end
     return ASSETS.ui.inventorySlotCommon
-end
-
-function InventoryView.ItemLevelText(item)
-    local level = item.level or item.dropLevel or item.floor or item.tier or 1
-    return "Lv" .. tostring(level)
 end
 
 local ItemLevelText = InventoryView.ItemLevelText
@@ -270,18 +271,16 @@ local function CreateItemIconCard(item, width, height)
         height = height or width or 180,
         selected = selected,
         clickable = true,
-        onClick = function()
+        onClick = function(widget)
+            if selected and ShowItemTips then
+                local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                    and widget:GetAbsoluteLayoutForHitTest()
+                    or nil
+                ShowItemTips(item, bounds, { source = "inventory" })
+                return
+            end
             SetSelectedInventoryId(item.id)
             RequestPageRefresh()
-        end,
-        onPointerEnter = function(_, widget)
-            if ShowItemTooltip then
-                local bounds = widget and widget.GetAbsoluteLayoutForHitTest and widget:GetAbsoluteLayoutForHitTest() or nil
-                ShowItemTooltip(item, bounds)
-            end
-        end,
-        onPointerLeave = function()
-            if HideItemTooltip then HideItemTooltip() end
         end,
     })
 end
@@ -423,6 +422,31 @@ local function CreateSelectedItemDetail()
     end
     local slotText = item.slot and SlotName(item.slot) or (item.category or "物品")
     local setText = item.setId and (SETS[item.setId].short .. "套") or "散件"
+    local decomposeRefund = type(item.decomposeRefund) == "table" and item.decomposeRefund or nil
+    if item.id
+        and not decomposeRefund
+        and item.refundRequestPending ~= true
+        and RequestDecomposePreview
+    then
+        item.refundRequestPending = true
+        RequestDecomposePreview(item.id, function(response)
+            item.refundRequestPending = false
+            if response and response.ok and type(response.data) == "table" then
+                item.decomposeRefund = {
+                    gold = response.data.gold or 0,
+                    fragments = response.data.fragments or 0,
+                    rate = response.data.rate or 0,
+                    vipLevel = response.data.vipLevel or 0,
+                }
+                RequestPageRefresh()
+            end
+        end)
+    end
+    local refundText = decomposeRefund
+        and ("金币 " .. FormatInt(decomposeRefund.gold or 0)
+            .. " / 碎片 " .. FormatInt(decomposeRefund.fragments or 0)
+            .. "（" .. tostring(math.floor((decomposeRefund.rate or 0) * 100)) .. "%）")
+        or "正在获取真实返还…"
     local detailRows = {
         { "名称", item.name or "未知装备", RarityColor(item.rarity) },
         { "品质", RarityName(item.rarity), RarityColor(item.rarity) },
@@ -437,7 +461,7 @@ local function CreateSelectedItemDetail()
         { "保护", item.locked and "已锁定" or "未锁定", item.locked and C.gold or C.textDim },
         { "来源", item.source or "legacy", C.textSecondary },
         { "获取", item.acquiredAt and item.acquiredAt > 0 and os.date("%Y-%m-%d %H:%M", item.acquiredAt) or "旧存档", C.textSecondary },
-        { "返还", "金币" .. FormatInt(item.investedGold or 0) .. " / 碎片" .. FormatInt(item.investedFragments or 0), C.textSecondary },
+        { "分解返还", refundText, C.textSecondary },
     }
     local rows = {}
     for _, row in ipairs(detailRows) do
@@ -1000,6 +1024,7 @@ local function CreateEquipmentPage()
     local function CreateSlot(slot, left, top, animationIndex)
         local item = game.equipped and game.equipped[slot.id]
         local active = selectedSlot == slot.id
+        local longPressConsumed = false
         local slotWidget = UI.Panel {
             position = "absolute",
             left = left,
@@ -1012,10 +1037,14 @@ local function CreateEquipmentPage()
             onPointerUp = function()
                 if draggingItem then DropOnSlot(slot.id) end
             end,
-            onClick = function()
-                SetSelectedSlot(slot.id)
-                SetSelectedInventoryId(item and item.id or nil)
+            onClick = function(widget)
+                if longPressConsumed then
+                    longPressConsumed = false
+                    return
+                end
                 if drawMode then
+                    SetSelectedSlot(slot.id)
+                    SetSelectedInventoryId(item and item.id or nil)
                     if editorSelectedIndex and editorSelectedIndex ~= animationIndex then
                         RefreshConnector(editorSelectedIndex)
                     end
@@ -1029,9 +1058,26 @@ local function CreateEquipmentPage()
                     if dragHint then dragHint:SetText("原连线已隐藏，请在角色区域点击最终连接点") end
                     return
                 end
+                if active and item and ShowItemTips then
+                    local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                        and widget:GetAbsoluteLayoutForHitTest()
+                        or nil
+                    ShowItemTips(item, bounds, { source = "equipment" })
+                    return
+                end
+                SetSelectedSlot(slot.id)
+                SetSelectedInventoryId(item and item.id or nil)
                 SetEquipmentScrollY(0)
                 RequestPageRefresh()
             end,
+            onLongPress = item and function(_, widget)
+                if drawMode or not ShowItemTips then return end
+                longPressConsumed = true
+                local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                    and widget:GetAbsoluteLayoutForHitTest()
+                    or nil
+                ShowItemTips(item, bounds, { source = "equipment" })
+            end or nil,
             children = {
                 UI.Panel {
                     position = "absolute",
@@ -1078,6 +1124,9 @@ local function CreateEquipmentPage()
                 textStroke = { width = 1, color = "#000000" },
                 pointerEvents = "none",
             }))
+        end
+        if item and RegisterItemTipsTrigger then
+            RegisterItemTipsTrigger(slotWidget, item)
         end
         slotWidget:Animate {
             keyframes = {
@@ -1306,18 +1355,27 @@ local function CreateEquipmentPage()
             detailText = "战力 " .. ItemPowerText(item),
             onPointerDown = function() StartDrag(item) end,
             onPointerUp = function(event) DropAtPointer(event) end,
-            onClick = function()
+            onClick = function(widget)
+                if active and ShowItemTips then
+                    draggingItem = nil
+                    if dragHint then dragHint:SetText("") end
+                    local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                        and widget:GetAbsoluteLayoutForHitTest()
+                        or nil
+                    ShowItemTips(item, bounds, { source = "equipment" })
+                    return
+                end
                 SetSelectedInventoryId(item.id)
                 RequestPageRefresh()
             end,
-            onPointerEnter = function(_, widget)
-                if ShowItemTooltip then
-                    local bounds = widget and widget.GetAbsoluteLayoutForHitTest and widget:GetAbsoluteLayoutForHitTest() or nil
-                    ShowItemTooltip(item, bounds)
-                end
-            end,
-            onPointerLeave = function()
-                if HideItemTooltip then HideItemTooltip() end
+            onLongPress = function(_, widget)
+                draggingItem = nil
+                if dragHint then dragHint:SetText("") end
+                if not ShowItemTips then return end
+                local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                    and widget:GetAbsoluteLayoutForHitTest()
+                    or nil
+                ShowItemTips(item, bounds, { source = "equipment" })
             end,
         })
     end
