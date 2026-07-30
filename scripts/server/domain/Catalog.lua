@@ -37,6 +37,7 @@ for _, rarityId in ipairs(Catalog.RARITY_ORDER) do
         rank = rarity.rank,
         multiplier = rarity.multiplier,
         fragments = rarity.fragments or rarity.rank,
+        baseGold = rarity.baseGold or 0,
     }
 end
 
@@ -281,7 +282,8 @@ function Catalog.GetEquipmentRecoveryValue(item)
     if not item then return { gold = 0, fragments = 0 } end
     local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
     return {
-        gold = math.max(0, math.floor(item.investedGold or 0)),
+        gold = (rarity.baseGold or 0)
+            + math.max(0, math.floor(item.investedGold or 0)),
         fragments = rarity.fragments
             + math.max(0, math.floor(item.investedFragments or 0)),
     }

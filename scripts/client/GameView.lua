@@ -1567,12 +1567,21 @@ actionFns_.DecomposeByRank = function(maxRank)
                 width = "100%", height = 22, textAlign = "center",
                 textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
             })
+        local card = OfflineRewardItemCard(
+            ItemImage(item),
+            item.name or "装备",
+            nil,
+            item.rarity or "common",
+            item
+        )
+        card:SetProp("pointerEvents", "none")
         local cell = UI.Panel {
             width = 186,
             height = 216,
             flexShrink = 0,
             clickable = true,
             alignItems = "center",
+            justifyContent = "center",
             gap = 4,
             paddingTop = 6,
             paddingBottom = 6,
@@ -1586,13 +1595,7 @@ actionFns_.DecomposeByRank = function(maxRank)
                 UpdateTotalsInPlace()
             end,
             children = {
-                OfflineRewardItemCard(
-                    ItemImage(item),
-                    item.name or "装备",
-                    nil,
-                    item.rarity or "common",
-                    item
-                ),
+                card,
                 label,
             },
         }
@@ -1619,46 +1622,60 @@ actionFns_.DecomposeByRank = function(maxRank)
 
     local content = UI.Panel {
         width = "100%",
+        height = 660,
         flexShrink = 0,
-        alignItems = "center",
-        gap = 16,
+        gap = 12,
         children = {
             headerCountText,
-            UI.Panel {
+            UI.ScrollView {
                 width = "100%",
-                flexShrink = 0,
-                flexWrap = "wrap",
-                gap = 12,
-                justifyContent = "center",
-                children = gridChildren,
+                flexGrow = 1,
+                flexBasis = 0,
+                scrollX = false,
+                scrollY = true,
+                showScrollbar = false,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexShrink = 0,
+                        flexWrap = "wrap",
+                        gap = 12,
+                        justifyContent = "center",
+                        alignItems = "flex-start",
+                        paddingBottom = 12,
+                        children = gridChildren,
+                    },
+                },
             },
             UI.Panel {
-                width = 720,
+                width = "100%",
+                height = 64,
                 flexShrink = 0,
                 flexDirection = "row",
                 alignItems = "center",
-                justifyContent = "space-between",
-                paddingTop = 12,
+                justifyContent = "center",
+                gap = 32,
+                paddingTop = 10,
                 borderTopWidth = 2,
                 borderColor = C.border,
                 children = {
                     CompactTxt("分解总获得", 21, C.text, {
-                        width = 180, height = 34, textAlign = "left",
+                        width = 150, height = 34, textAlign = "left",
                         textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
                     }),
                     UI.Panel {
-                        width = 220, height = 60, flexShrink = 0,
-                        flexDirection = "row", alignItems = "center", gap = 8,
+                        width = 200, height = 44, flexShrink = 0,
+                        flexDirection = "row", alignItems = "center", justifyContent = "center", gap = 8,
                         children = {
-                            UI.Panel { width = 40, height = 40, flexShrink = 0, backgroundImage = ASSETS.items.gold, backgroundFit = "contain" },
+                            UI.Panel { width = 36, height = 36, flexShrink = 0, backgroundImage = ASSETS.items.gold, backgroundFit = "contain" },
                             totalGoldText,
                         },
                     },
                     UI.Panel {
-                        width = 220, height = 60, flexShrink = 0,
-                        flexDirection = "row", alignItems = "center", gap = 8,
+                        width = 200, height = 44, flexShrink = 0,
+                        flexDirection = "row", alignItems = "center", justifyContent = "center", gap = 8,
                         children = {
-                            UI.Panel { width = 40, height = 40, flexShrink = 0, backgroundImage = ASSETS.items.crystal, backgroundFit = "contain" },
+                            UI.Panel { width = 36, height = 36, flexShrink = 0, backgroundImage = ASSETS.items.crystal, backgroundFit = "contain" },
                             totalFragText,
                         },
                     },
@@ -1681,6 +1698,7 @@ actionFns_.DecomposeByRank = function(maxRank)
         danger = true,
         closeOnOverlay = false,
         zIndex = 2500,
+        bodyScrollY = false,
         content = content,
         onConfirm = DoDecompose,
     }
