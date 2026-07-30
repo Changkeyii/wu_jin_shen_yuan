@@ -1316,18 +1316,43 @@ local function DecomposeRankLabel(maxRank)
     return "指定品质"
 end
 
-local function CollectDecomposeCandidates(maxRank)
+local function CollectDecomposeCandidateItems(maxRank)
     game = GameStateAdapter.GetViewState()
-    local candidateIds = {}
+    local items = {}
     for _, item in ipairs(game.inventory or {}) do
         local rarity = RARITIES[item.rarity]
         if item.equipmentId and item.id ~= nil
             and rarity and rarity.rank <= maxRank
             and not item.locked and not IsEquipped(item) then
-            candidateIds[#candidateIds + 1] = item.id
+            items[#items + 1] = item
         end
     end
-    return candidateIds
+    return items
+end
+
+local function CollectDecomposeCandidates(maxRank)
+    local items = CollectDecomposeCandidateItems(maxRank)
+    local ids = {}
+    for _, item in ipairs(items) do ids[#ids + 1] = item.id end
+    return ids
+end
+
+local function ShowDecomposeRewardDialog(gold, fragments, count)
+    local cards = {}
+    if gold and gold > 0 then
+        AddRewardCard(cards, ASSETS.items.gold, "金币", "+" .. FormatInt(gold), "epic")
+    end
+    if fragments and fragments > 0 then
+        AddRewardCard(cards, ASSETS.items.crystal, "碎片", "+" .. FormatInt(fragments), "rare")
+    end
+    if #cards == 0 then return end
+    ShowRewardDialog {
+        title = "分解成功",
+        message = "已分解 " .. tostring(count) .. " 件装备",
+        lines = { "返还资源已存入账户" },
+        cards = cards,
+        confirmText = "确认收取",
+    }
 end
 
 local actionFns_ = {}
@@ -1453,27 +1478,225 @@ actionFns_.UnequipSlot = function(slotId)
 end
 actionFns_.AutoEquipBest = function() ServerClient.AutoEquip(ActionResult) end
 actionFns_.DecomposeByRank = function(maxRank)
-    local candidateIds = CollectDecomposeCandidates(maxRank)
-    local count = #candidateIds
-    if count <= 0 then
+    local items = CollectDecomposeCandidateItems(maxRank)
+    if #items == 0 then
         UI.Toast.Show("没有符合条件的未锁定、未穿戴装备", { duration = 1.8, variant = "info", position = "bottom" })
         return
     end
+    local selected = {}
+    for _, item in ipairs(items) do selected[item.id] = true end
+    local refunds = {}
+    local totalGoldText, totalFragText, headerCountText
+    local cellRefs = {}
+
+    local function RecomputeTotals()
+        local gold, frag = 0, 0
+        for _, item in ipairs(items) do
+            if selected[item.id] then
+                local r = refunds[item.id]
+                if r then
+                    gold = gold + (r.gold or 0)
+                    frag = frag + (r.fragments or 0)
+                end
+            end
+        end
+        return gold, frag
+    end
+
+    local function SelectedCount()
+        local n = 0
+        for _, item in ipairs(items) do
+            if selected[item.id] then n = n + 1 end
+        end
+        return n
+    end
+
+    local function UpdateTotalsInPlace()
+        local gold, frag = RecomputeTotals()
+        if totalGoldText then totalGoldText:SetText("+" .. FormatInt(gold)) end
+        if totalFragText then totalFragText:SetText("+" .. FormatInt(frag)) end
+        if headerCountText then
+            headerCountText:SetText("即将分解 " .. tostring(SelectedCount()) .. " / "
+                .. tostring(#items) .. " 件装备（" .. DecomposeRankLabel(maxRank) .. "及以下）")
+        end
+    end
+
+    local function UpdateCellInPlace(itemId)
+        local ref = cellRefs[itemId]
+        if not ref then return end
+        local on = selected[itemId]
+        ref.cell:SetBackgroundColor(on and { 30, 90, 150, 120 } or { 12, 22, 40, 120 })
+        ref.cell:SetBorderColor(on and C.focus or C.border)
+        ref.label:SetText(on and "✓ 已选择" or "○ 未选择")
+        ref.label:SetFontColor(on and C.success or C.textDim)
+    end
+
+    local function DoDecompose()
+        local ids = {}
+        for _, item in ipairs(items) do
+            if selected[item.id] then ids[#ids + 1] = item.id end
+        end
+        if #ids == 0 then
+            UI.Toast.Show("请至少选择一件装备", { duration = 1.6, variant = "info", position = "bottom" })
+            return false
+        end
+        ServerClient.Decompose(maxRank, ids, function(response)
+            if not (response and response.ok) then
+                ActionResult(response)
+                return
+            end
+            local gold, frag, count = 0, 0, #ids
+            local events = response.data and response.data.delta and response.data.delta.events
+            for _, ev in ipairs(events or {}) do
+                if ev.kind == "equipment_decomposed" then
+                    gold = ev.gold or gold
+                    frag = ev.fragments or frag
+                    count = ev.count or count
+                end
+            end
+            RequestPageRefresh()
+            UI.Toast.Show("分解成功", { duration = 2.0, variant = "success", position = "bottom" })
+            ShowDecomposeRewardDialog(gold, frag, count)
+        end)
+    end
+
+    local gridChildren = {}
+    for _, item in ipairs(items) do
+        local label = CompactTxt(selected[item.id] and "✓ 已选择" or "○ 未选择", 15,
+            selected[item.id] and C.success or C.textDim, {
+                width = "100%", height = 22, textAlign = "center",
+                textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+            })
+        local cell = UI.Panel {
+            width = 186,
+            height = 216,
+            flexShrink = 0,
+            clickable = true,
+            alignItems = "center",
+            gap = 4,
+            paddingTop = 6,
+            paddingBottom = 6,
+            backgroundColor = selected[item.id] and { 30, 90, 150, 120 } or { 12, 22, 40, 120 },
+            borderWidth = 2,
+            borderColor = selected[item.id] and C.focus or C.border,
+            borderRadius = 10,
+            onClick = function()
+                selected[item.id] = not selected[item.id]
+                UpdateCellInPlace(item.id)
+                UpdateTotalsInPlace()
+            end,
+            children = {
+                OfflineRewardItemCard(
+                    ItemImage(item),
+                    item.name or "装备",
+                    nil,
+                    item.rarity or "common",
+                    item
+                ),
+                label,
+            },
+        }
+        cellRefs[item.id] = { cell = cell, label = label }
+        gridChildren[#gridChildren + 1] = cell
+    end
+
+    local gold0, frag0 = RecomputeTotals()
+    totalGoldText = CompactTxt("+" .. FormatInt(gold0), 24, C.gold, {
+        width = 200, height = 34, textAlign = "right",
+        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+    })
+    totalFragText = CompactTxt("+" .. FormatInt(frag0), 24, C.secondary, {
+        width = 200, height = 34, textAlign = "right",
+        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+    })
+    headerCountText = CompactTxt(
+        "即将分解 " .. tostring(SelectedCount()) .. " / " .. tostring(#items)
+            .. " 件装备（" .. DecomposeRankLabel(maxRank) .. "及以下）",
+        24, C.text, {
+            width = "100%", height = 36, textAlign = "center",
+            textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+        })
+
+    local content = UI.Panel {
+        width = "100%",
+        flexShrink = 0,
+        alignItems = "center",
+        gap = 16,
+        children = {
+            headerCountText,
+            UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                flexWrap = "wrap",
+                gap = 12,
+                justifyContent = "center",
+                children = gridChildren,
+            },
+            UI.Panel {
+                width = 720,
+                flexShrink = 0,
+                flexDirection = "row",
+                alignItems = "center",
+                justifyContent = "space-between",
+                paddingTop = 12,
+                borderTopWidth = 2,
+                borderColor = C.border,
+                children = {
+                    CompactTxt("分解总获得", 21, C.text, {
+                        width = 180, height = 34, textAlign = "left",
+                        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                    }),
+                    UI.Panel {
+                        width = 220, height = 60, flexShrink = 0,
+                        flexDirection = "row", alignItems = "center", gap = 8,
+                        children = {
+                            UI.Panel { width = 40, height = 40, flexShrink = 0, backgroundImage = ASSETS.items.gold, backgroundFit = "contain" },
+                            totalGoldText,
+                        },
+                    },
+                    UI.Panel {
+                        width = 220, height = 60, flexShrink = 0,
+                        flexDirection = "row", alignItems = "center", gap = 8,
+                        children = {
+                            UI.Panel { width = 40, height = 40, flexShrink = 0, backgroundImage = ASSETS.items.crystal, backgroundFit = "contain" },
+                            totalFragText,
+                        },
+                    },
+                },
+            },
+        },
+    }
+
     CommonPromptDialog.Show {
         kind = "confirm",
-        title = "确认批量分解",
-        message = "将永久分解 " .. tostring(count) .. " 件装备",
-        lines = {
-            "品质范围：" .. DecomposeRankLabel(maxRank) .. "及以下。",
-            "已穿戴和已锁定装备会自动跳过；分解完成后无法撤销。",
-        },
+        priority = 150,
+        queueKey = "decompose-preview",
+        title = "分解预览",
+        dialogWidth = 900,
+        dialogHeight = 1040,
+        message = nil,
+        lines = { "点击卡片可取消选择；分解完成后无法撤销。" },
         cancelText = "取消",
         confirmText = "确认分解",
         danger = true,
         closeOnOverlay = false,
         zIndex = 2500,
-        onConfirm = function() ServerClient.Decompose(maxRank, candidateIds, ActionResult) end,
+        content = content,
+        onConfirm = DoDecompose,
     }
+
+    for _, item in ipairs(items) do
+        ServerClient.DecomposePreview(item.id, function(response)
+            if response and response.ok and type(response.data) == "table" then
+                refunds[item.id] = {
+                    gold = response.data.gold or 0,
+                    fragments = response.data.fragments or 0,
+                    rate = response.data.rate or 0,
+                }
+                UpdateTotalsInPlace()
+            end
+        end)
+    end
 end
 actionFns_.SetEquipmentLock = function(item) ServerClient.SetEquipmentLock(item.id, not item.locked, ActionResult) end
 actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, ActionResult) end
