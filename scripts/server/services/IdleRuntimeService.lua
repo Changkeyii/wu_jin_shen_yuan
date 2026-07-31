@@ -28,22 +28,40 @@ end
 
 function IdleRuntimeService:Remove(userId)
     self.elapsed[userId] = nil
+    self.pending[userId] = nil
 end
 
 function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
     if self.pending[userId] then return end
-    self.pending[userId] = true
+    local queuedSession = self.profileService:GetSession(userId)
+    if not queuedSession or not self.profileService:IsOnline(userId) then return end
+    local generation = queuedSession.generation
+    local token = {}
+    self.pending[userId] = token
     local rng = self.rng
     self.operationQueue:Enqueue(userId, function(done)
         local function finish()
-            self.pending[userId] = nil
+            if self.pending[userId] == token then self.pending[userId] = nil end
             done()
         end
         local session = self.profileService:GetSession(userId)
-        if not session or not session.ready or not session.state.autoRun
+        if not self.profileService:IsOnline(userId)
+            or not session or session.generation ~= generation
+            or not session.state.autoRun
             or session.state.pendingStoryGate
         then finish(); return end
         self.profileService:ApplyRuntime(userId, "auto combat tick", function(state, now)
+            local current = self.profileService:GetSession(userId)
+            if not self.profileService:IsOnline(userId)
+                or not current or current.generation ~= generation
+            then
+                return {
+                    ok = true,
+                    state = state,
+                    delta = { events = {}, changes = {} },
+                    commit = { kind = "none" },
+                }
+            end
             return GameEngine.AdvanceCombatTick(state, rng, now, elapsedSeconds)
         end, function(result)
             if result.ok then

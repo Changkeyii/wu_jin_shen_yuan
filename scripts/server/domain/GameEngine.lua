@@ -647,7 +647,9 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         return false, nil, false
     end
     state.inventory[#state.inventory + 1] = item
-    addToLootStash(state, item.id)
+    if not options or options.trackInLootStash ~= false then
+        addToLootStash(state, item.id)
+    end
     events[#events + 1] = event("equipment_drop", {
         itemId = item.id,
         equipmentId = item.equipmentId,
@@ -1994,6 +1996,18 @@ function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
     return finalize(inputState, working, now, kind, events, inventoryChanged, false, true)
 end
 
+function GameEngine.ClaimLootStash(inputState, now)
+    local working = stateCopy(inputState, now)
+    local count = #(working.lootStash or {})
+    if count == 0 then
+        return noCommit(inputState, now, "loot_stash_empty")
+    end
+    working.lootStash = {}
+    return finalize(inputState, working, now, "loot_stash_claimed", {
+        event("loot_stash_claimed", { count = count }),
+    }, false, false)
+end
+
 function GameEngine.Equip(inputState, itemId, now)
     local working = stateCopy(inputState, now)
     local item = findItem(working, itemId)
@@ -3112,6 +3126,7 @@ local function simulateOfflineCollection(inputState, now, rng)
         for index, slot in ipairs(Catalog.SLOTS) do allSlots[index] = slot.id end
         local options = {
             floor = floor,
+            trackInLootStash = false,
             slot = RewardPolicy.PickDropSlot(
                 allSlots,
                 weakSlots,

@@ -589,6 +589,7 @@ function ServerClient.AcknowledgeRules(ruleId, callback)
     return ServerClient.Send("Game.AcknowledgeRules", { ruleId = ruleId }, callback)
 end
 function ServerClient.ClaimAid(callback) return ServerClient.Send("Game.ClaimAid", {}, callback) end
+function ServerClient.ClaimLootStash(callback) return ServerClient.Send("Game.ClaimLootStash", {}, callback) end
 function ServerClient.Sell(maxRank, candidateIds, callback)
     return ServerClient.Send("Game.Sell", { maxRank = maxRank, candidateIds = candidateIds }, callback)
 end

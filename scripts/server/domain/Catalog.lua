@@ -37,7 +37,7 @@ for _, rarityId in ipairs(Catalog.RARITY_ORDER) do
         rank = rarity.rank,
         multiplier = rarity.multiplier,
         fragments = rarity.fragments or rarity.rank,
-        baseGold = rarity.baseGold or 0,
+        recoveryBattles = rarity.recoveryBattles or 1,
     }
 end
 
@@ -281,11 +281,16 @@ end
 function Catalog.GetEquipmentRecoveryValue(item)
     if not item then return { gold = 0, fragments = 0 } end
     local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
+    local level = math.max(1, math.floor(tonumber(item.level) or 1))
+    local sameLevelBattleGold = level * 8 + 25
+    local levelFragmentScale = 1 + math.floor(math.sqrt(level) / 10)
     return {
-        gold = (rarity.baseGold or 0)
-            + math.max(0, math.floor(item.investedGold or 0)),
-        fragments = rarity.fragments
-            + math.max(0, math.floor(item.investedFragments or 0)),
+        gold = math.min(Catalog.MAX_VALUE,
+            math.floor(sameLevelBattleGold * rarity.recoveryBattles)
+                + math.max(0, math.floor(item.investedGold or 0))),
+        fragments = math.min(Catalog.MAX_VALUE,
+            rarity.fragments * levelFragmentScale
+                + math.max(0, math.floor(item.investedFragments or 0))),
     }
 end
 
@@ -301,10 +306,7 @@ end
 
 function Catalog.GetSellValue(item)
     if not item then return 0 end
-    local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
-    local level = math.max(1, math.floor(item.level or 1))
-    return math.floor((50 + level * 15) * rarity.multiplier)
-        + math.max(0, math.floor(item.investedGold or 0))
+    return Catalog.GetEquipmentRecoveryValue(item).gold
 end
 
 function Catalog.GetItemPower(item)

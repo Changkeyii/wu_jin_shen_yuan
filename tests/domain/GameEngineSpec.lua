@@ -378,6 +378,20 @@ function Spec.CurrencyDropPresentationEventPreservesRewardTotal()
     assertTrue(drop.dropCount >= 1 and drop.dropCount <= 12)
 end
 
+function Spec.OnlineEquipmentDropEntersLootStash()
+    local state = skipIntro(StateFactory.Create(1000))
+    state.autoRun = true
+    local started = enterNextEncounter(state, queueRng(), 1001)
+    assertTrue(started.ok and started.state.currentMonster ~= nil)
+    local inventoryBefore = #started.state.inventory
+    local won = GameEngine.AdvanceCombatTick(started.state, queueRng({}, { 0, 0.99 }), 1002, 60)
+    assertTrue(won.ok)
+    assertEqual(#won.state.inventory, inventoryBefore + 1)
+    assertEqual(#won.state.lootStash, 1)
+    assertEqual(won.state.lootStash[1], won.state.inventory[#won.state.inventory].id)
+    assertTrue(findEvent(won.delta.events, "equipment_drop") ~= nil)
+end
+
 function Spec.OnlineAttackAlwaysSettlesFourConfiguredHits()
     local state = skipIntro(StateFactory.Create(1000))
     state.autoRun = true
@@ -591,6 +605,8 @@ function Spec.OfflineBatchSettlementIsConstantShapeAndUsesCurrentFloorEquipmentL
     state.pendingOfflineSeconds = Catalog.OFFLINE_MAX_SECONDS
     state.pendingStoryGate = nil
     state.pauseReason = nil
+    state.lootStash = { state.inventory[1].id }
+    local existingStashId = state.lootStash[1]
     local before = TableUtils.DeepCopy(state)
     local preview = GameEngine.PreviewOffline(state, 1001, queueRng({}, { 0.99 }))
 
@@ -601,7 +617,10 @@ function Spec.OfflineBatchSettlementIsConstantShapeAndUsesCurrentFloorEquipmentL
     assertEqual(preview.preview.floor, 30)
     assertTrue(preview.preview.fixedFloor)
     assertTrue(#preview.previewEvents < 100, "offline preview emitted per-cycle events")
+    assertTrue(preview.preview.equipment > 0, "offline preview must exercise equipment generation")
     assertTrue(preview.preview.equipment <= Catalog.INVENTORY_CAP - #state.inventory)
+    assertEqual(#preview.previewState.lootStash, 1, "offline equipment must not enter online loot stash")
+    assertEqual(preview.previewState.lootStash[1], existingStashId)
     for _, item in ipairs(preview.preview.equipmentItems) do
         assertEqual(item.level, 30, "offline equipment must use the current floor")
     end
@@ -836,6 +855,26 @@ function Spec.FullModelAutoEquipAndUndoUseOneAuthoritativeLoadout()
     assertEqual(eventCount(undone.delta.events, "equipment_reverted"), 1)
 end
 
+function Spec.ClaimLootStashClearsMarkersWithoutDeletingInventory()
+    local state = skipIntro(StateFactory.Create(1000))
+    local firstId = state.inventory[1].id
+    local secondId = state.inventory[2].id
+    state.lootStash = { firstId, secondId }
+    local inventoryBefore = TableUtils.DeepCopy(state.inventory)
+
+    local claimed = GameEngine.ClaimLootStash(state, 1001)
+    assertTrue(claimed.ok)
+    assertEqual(#claimed.state.lootStash, 0)
+    assertTrue(TableUtils.DeepEqual(claimed.state.inventory, inventoryBefore))
+    assertTrue(claimed.delta.inventoryChanged == false)
+    assertTrue(claimed.delta.equippedChanged == false)
+    assertEqual(claimed.delta.changed.lootStash and #claimed.delta.changed.lootStash or -1, 0)
+    local eventValue = findEvent(claimed.delta.events, "loot_stash_claimed")
+    assertTrue(eventValue ~= nil)
+    assertEqual(eventValue.count, 2)
+    assertTrue(GameStateSchema.ValidateState(claimed.state))
+end
+
 function Spec.LootStashKeepsDropsUntilManualEquip()
     local state = skipIntro(StateFactory.Create(1000))
     local definition = Catalog.GetEquipmentDefinition(state.inventory[1].equipmentId)
@@ -864,18 +903,18 @@ function Spec.DecomposeRefundUsesVipRate()
         investedFragments = 82,
     }
     local base = Catalog.GetDecomposeRefund(item, 0)
-    assertEqual(base.gold, 600)
-    assertEqual(base.fragments, 60)
+    assertEqual(base.gold, 3570)
+    assertEqual(base.fragments, 97)
     assertEqual(base.rate, 0.60)
 
     local vipTen = Catalog.GetDecomposeRefund(item, 10)
-    assertEqual(vipTen.gold, 700)
-    assertEqual(vipTen.fragments, 70)
+    assertEqual(vipTen.gold, 4165)
+    assertEqual(vipTen.fragments, 113)
     assertEqual(vipTen.rate, 0.70)
 
     local capped = Catalog.GetDecomposeRefund(item, 99)
-    assertEqual(capped.gold, 1000)
-    assertEqual(capped.fragments, 100)
+    assertEqual(capped.gold, 5950)
+    assertEqual(capped.fragments, 162)
     assertEqual(capped.rate, 1)
 end
 

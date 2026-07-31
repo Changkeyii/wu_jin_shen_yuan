@@ -28,8 +28,28 @@ function Spec.Run()
         profileService = {
             Apply = function(_, uid, operationName, mutator, callback)
                 assert(uid == 7)
-                assert(operationName == "set auto run")
                 assert(type(mutator) == "function")
+                if operationName == "decompose equipment" then
+                    callback({
+                        ok = true,
+                        data = {
+                            committed = true,
+                            state = { revision = 43 },
+                            delta = {
+                                revision = 43,
+                                changes = {},
+                                events = {{
+                                    kind = "equipment_decomposed",
+                                    gold = 12345,
+                                    fragments = 678,
+                                    count = 9,
+                                }},
+                            },
+                        },
+                    })
+                    return
+                end
+                assert(operationName == "set auto run")
                 callback({
                     ok = true,
                     data = {
@@ -62,6 +82,24 @@ function Spec.Run()
     assert(response.data.committed == true)
     assert(response.data.state == nil, "mutation responses must never include the full profile state")
     assert(response.data.delta == nil, "mutation responses must never duplicate the delta payload")
+
+    local decomposeDefinition = assert(definitions["Game.Decompose"])
+    local decomposeResponse = nil
+    local decomposeResult = decomposeDefinition.handler(
+        { uid = 7 },
+        { maxRank = 3, candidateIds = { "00000000-0000-4000-8000-000000000001" } },
+        function(okValue, value)
+            assert(okValue == true)
+            decomposeResponse = value
+        end
+    )
+    assert(decomposeResult == CommandRouter.PENDING)
+    assert(decomposeResponse.data.revision == 43)
+    assert(decomposeResponse.data.reward.gold == 12345)
+    assert(decomposeResponse.data.reward.fragments == 678)
+    assert(decomposeResponse.data.reward.count == 9)
+    assert(decomposeResponse.data.state == nil)
+    assert(decomposeResponse.data.delta == nil)
 
     local ok, cjson = pcall(require, "cjson")
     if ok and cjson then

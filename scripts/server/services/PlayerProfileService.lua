@@ -154,6 +154,15 @@ function PlayerProfileService:IsOnline(userId)
     return session ~= nil and session.connection ~= nil and session.ready == true
 end
 
+function PlayerProfileService:MarkDisconnected(userId, generation)
+    local session = self.sessions[userId]
+    if not session or session.generation ~= generation then return false end
+    session.connection = nil
+    session.ready = false
+    session.disconnectedAt = self.clock()
+    return true
+end
+
 local function PruneOfflineReceipts(session, now)
     for token, receipt in pairs(session.offlineReceipts or {}) do
         if type(receipt) ~= "table" or (receipt.expiresAt or 0) <= now then

@@ -28,16 +28,28 @@ local function MutationResponse(result)
     if not result or not result.ok then return result end
     local data = result.data or {}
     local state = data.state or {}
+    local responseData = {
+        committed = data.committed == true,
+        runtimeOnly = data.runtimeOnly == true,
+        alreadyApplied = data.alreadyApplied == true,
+        revision = state.revision,
+    }
+    for _, value in ipairs((data.delta and data.delta.events) or {}) do
+        local kind = value.kind or value.type
+        if kind == "equipment_decomposed" then
+            responseData.reward = {
+                gold = value.gold or 0,
+                fragments = value.fragments or 0,
+                count = value.count or 0,
+            }
+            break
+        end
+    end
     return {
         ok = true,
         code = result.code,
         reason = result.reason,
-        data = {
-            committed = data.committed == true,
-            runtimeOnly = data.runtimeOnly == true,
-            alreadyApplied = data.alreadyApplied == true,
-            revision = state.revision,
-        },
+        data = responseData,
     }
 end
 
@@ -211,6 +223,16 @@ function GameCommands.Register(router, services)
         async = true,
         handler = AsyncMutation(services, "claim tower aid", function(state, payload, now)
             return GameEngine.ClaimAid(state, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.ClaimLootStash",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "claim loot stash", function(state, payload, now)
+            return GameEngine.ClaimLootStash(state, now)
         end),
     })
 

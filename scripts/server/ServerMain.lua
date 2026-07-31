@@ -529,6 +529,7 @@ local function HandleClientDisconnected(eventType, eventData)
     if not entry then return end
     print("[Server] ClientDisconnected uid=" .. tostring(entry.uid) .. " current=" .. tostring(wasCurrent))
     if not wasCurrent or not entry.uid then return end
+    profileService_:MarkDisconnected(entry.uid, entry.generation)
     idleService_:Remove(entry.uid)
     router_:Clear(entry.uid)
     operationQueue_:Enqueue(entry.uid, function(done)

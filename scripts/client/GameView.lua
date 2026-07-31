@@ -39,6 +39,9 @@ local screenRoot_ = nil
 local idleSettingsOverlay_ = nil
 local idleSettingTipOverlay_ = nil
 local lootStashOverlay_ = nil
+local lootStashForced_ = false
+local lootStashClaimPending_ = false
+local lootStashLoginGuideShown_ = false
 local equipmentUpgradeOverlay_ = nil
 local equipmentUpgradeItemId_ = nil
 local pageContainer_ = nil
@@ -1545,15 +1548,10 @@ actionFns_.DecomposeByRank = function(maxRank)
                 ActionResult(response)
                 return
             end
-            local gold, frag, count = 0, 0, #ids
-            local events = response.data and response.data.delta and response.data.delta.events
-            for _, ev in ipairs(events or {}) do
-                if ev.kind == "equipment_decomposed" then
-                    gold = ev.gold or gold
-                    frag = ev.fragments or frag
-                    count = ev.count or count
-                end
-            end
+            local reward = response.data and response.data.reward or {}
+            local gold = reward.gold or 0
+            local frag = reward.fragments or 0
+            local count = reward.count or #ids
             RequestPageRefresh()
             UI.Toast.Show("分解成功", { duration = 2.0, variant = "success", position = "bottom" })
             ShowDecomposeRewardDialog(gold, frag, count)
@@ -1638,12 +1636,21 @@ actionFns_.DecomposeByRank = function(maxRank)
                     UI.Panel {
                         width = "100%",
                         flexShrink = 0,
-                        flexWrap = "wrap",
-                        gap = 12,
-                        justifyContent = "center",
-                        alignItems = "flex-start",
+                        alignItems = "center",
                         paddingBottom = 12,
-                        children = gridChildren,
+                        children = {
+                            UI.Panel {
+                                width = 582,
+                                flexShrink = 0,
+                                flexDirection = "row",
+                                flexWrap = "wrap",
+                                gap = 12,
+                                justifyContent = "flex-start",
+                                alignItems = "flex-start",
+                                alignContent = "flex-start",
+                                children = gridChildren,
+                            },
+                        },
                     },
                 },
             },
@@ -2817,9 +2824,12 @@ local function ShowStoryGate(story)
     }
 end
 
-local function CloseLootStash()
+local function CloseLootStash(force)
+    if lootStashForced_ and force ~= true then return false end
     if lootStashOverlay_ and uiRoot_ then uiRoot_:RemoveChild(lootStashOverlay_) end
     lootStashOverlay_ = nil
+    lootStashForced_ = false
+    return true
 end
 
 local function LootStashItems()
@@ -2832,10 +2842,13 @@ local function LootStashItems()
     return items
 end
 
-local function ShowLootStash()
+local function ShowLootStash(forced)
     if not uiRoot_ then return false end
-    CloseLootStash()
+    CloseLootStash(true)
+    lootStashForced_ = forced == true
     local items = LootStashItems()
+    local claimedItems = {}
+    for _, item in ipairs(items) do claimedItems[#claimedItems + 1] = item end
     local cards = {}
     local slotContext = BuildInventoryContext()
     for _, item in ipairs(items) do
@@ -2861,6 +2874,63 @@ local function ShowLootStash()
         })
         content = OfflineRewardCardPanel(cards, pageLabel)
     end
+
+    local dialogChildren = {
+        Txt("在线挂机暂存箱", 32, C.text, {
+            position = "absolute", left = 80, top = 30,
+            width = 740, height = 54, textAlign = "center",
+            textStroke = { width = 2, color = "#000000" },
+        }),
+        CompactTxt("在线挂机获得的装备已进入背包；点击格子可穿戴，或全部收取后关闭暂存箱", 18, C.textSecondary, {
+            position = "absolute", left = 80, top = 88,
+            width = 740, height = 34, textAlign = "center",
+        }),
+        UI.Panel {
+            position = "absolute", left = 90, top = 140,
+            width = 720, height = 620, children = { content },
+        },
+        UI.Panel {
+            position = "absolute", left = 300, top = 790,
+            width = 300, height = 72,
+            children = { ImageButton("全部收取", 300, 72, ASSETS.ui.buttonGreen, function()
+                if lootStashClaimPending_ then return end
+                lootStashClaimPending_ = true
+                ServerClient.ClaimLootStash(function(response)
+                    lootStashClaimPending_ = false
+                    if not ActionResult(response, "暂存装备已全部收取") then return end
+                    CloseLootStash(true)
+                    local rewardCards = {}
+                    for _, item in ipairs(claimedItems) do
+                        AddRewardCard(
+                            rewardCards,
+                            ItemImage(item),
+                            item.name or "装备",
+                            nil,
+                            item.rarity or "common",
+                            item
+                        )
+                    end
+                    ShowRewardDialog {
+                        title = "暂存箱收取成功",
+                        message = "已收取 " .. tostring(#claimedItems) .. " 件在线挂机装备",
+                        lines = { "装备已存入背包，可前往背包查看或穿戴。" },
+                        confirmText = "确认收取",
+                        cards = rewardCards,
+                    }
+                    ServerClient.RequestSnapshot()
+                end)
+            end, false) },
+        },
+    }
+    if not lootStashForced_ then
+        dialogChildren[#dialogChildren + 1] = UI.Panel {
+            position = "absolute", right = 22, top = 22,
+            width = 64, height = 64, clickable = true,
+            backgroundImage = "image/ui/dialog/close_button.png",
+            backgroundFit = "contain", onClick = CloseLootStash,
+        }
+    end
+
     lootStashOverlay_ = UI.Panel {
         position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
         zIndex = 2200, pointerEvents = "box-none",
@@ -2876,32 +2946,36 @@ local function ShowLootStash()
                 clickable = true, overflow = "hidden",
                 backgroundImage = ASSETS.ui.panelLarge, backgroundFit = "sliced",
                 backgroundSlice = { 14, 14, 14, 14 },
-                children = {
-                    Txt("暂存箱", 32, C.text, {
-                        position = "absolute", left = 80, top = 30,
-                        width = 740, height = 54, textAlign = "center",
-                        textStroke = { width = 2, color = "#000000" },
-                    }),
-                    CompactTxt("当前刷宝获得的装备；点击格子可手动穿戴", 18, C.textSecondary, {
-                        position = "absolute", left = 80, top = 88,
-                        width = 740, height = 34, textAlign = "center",
-                    }),
-                    UI.Panel {
-                        position = "absolute", left = 90, top = 140,
-                        width = 720, height = 620, children = { content },
-                    },
-                    UI.Panel {
-                        position = "absolute", right = 22, top = 22,
-                        width = 64, height = 64, clickable = true,
-                        backgroundImage = "image/ui/dialog/close_button.png",
-                        backgroundFit = "contain", onClick = CloseLootStash,
-                    },
-                },
+                children = dialogChildren,
             },
         },
     }
     uiRoot_:AddChild(lootStashOverlay_)
     return true
+end
+
+local function MaybeShowLootStashLoginGuide()
+    if lootStashLoginGuideShown_ then return false end
+    lootStashLoginGuideShown_ = true
+    if #(game.lootStash or {}) == 0 then return false end
+    local count = #game.lootStash
+    local shown = CommonPromptDialog.Show {
+        kind = "confirm",
+        priority = 1000,
+        queueKey = "loot_stash_login_guide",
+        title = "在线挂机暂存箱待收取",
+        message = "上次在线挂机还有 " .. tostring(count) .. " 件装备留在暂存箱中。",
+        lines = {
+            "请先前往暂存箱确认并全部收取。",
+            "离线期间不会继续推进在线挂机，也不会向该暂存箱新增装备。",
+        },
+        closeOnOverlay = false,
+        showClose = false,
+        confirmText = "前往收取",
+        onConfirm = function() ShowLootStash(true) end,
+    }
+    if not shown then lootStashLoginGuideShown_ = false end
+    return shown
 end
 
 local function ShowEquipmentUpgrade(value)
@@ -2958,7 +3032,7 @@ local function ShowEquipmentUpgrade(value)
                 Close()
                 ServerClient.DecideEquip("equip", value.itemId, function(response)
                     ActionResult(response, response and response.ok and "装备已穿戴" or nil)
-                    if lootStashOverlay_ then ShowLootStash() end
+                    if lootStashOverlay_ then ShowLootStash(lootStashForced_) end
                 end)
             end, false) },
         },
@@ -3438,6 +3512,7 @@ local function BindServerEvents()
             idleRewardTracking_ = false
             ResetIdleRewardSummary()
         end
+        MaybeShowLootStashLoginGuide()
         PlayPresentation.HandleSnapshot()
         UpdateTopBar()
         if pageContainer_ then
@@ -3476,6 +3551,10 @@ local function BindServerEvents()
             if offlineDialogKey_ then DialogCoordinator.CancelByKey(offlineDialogKey_) end
             offlineClaimState_ = OFFLINE_CLAIM_IDLE
             offlineDialogKey_ = nil
+            lootStashLoginGuideShown_ = false
+            lootStashClaimPending_ = false
+            DialogCoordinator.CancelByKey("loot_stash_login_guide")
+            CloseLootStash(true)
             PlayPresentation.CancelPendingAutoRun()
         end
         LoadingController.HandleStatus(state)
@@ -3494,6 +3573,10 @@ local function BindServerEvents()
         if offlineDialogKey_ then DialogCoordinator.CancelByKey(offlineDialogKey_) end
         offlineClaimState_ = OFFLINE_CLAIM_IDLE
         offlineDialogKey_ = nil
+        lootStashLoginGuideShown_ = false
+        lootStashClaimPending_ = false
+        DialogCoordinator.CancelByKey("loot_stash_login_guide")
+        CloseLootStash(true)
         PlayPresentation.CancelPendingAutoRun()
         LoadingController.HandleDisconnected()
         if not LoadingController.IsActive() then
