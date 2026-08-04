@@ -2887,6 +2887,49 @@ local function ShowStoryGate(story)
     }
 end
 
+local EVENT_LABELS = {
+    chest = { title = "发现宝箱", confirm = "开启宝箱" },
+    merchant = { title = "神秘商人", confirm = "确认购买" },
+    randomEvent = { title = "奇遇事件", confirm = "接受" },
+}
+
+local function SendEventDecision(pendingEvent, action)
+    if not pendingEvent or not pendingEvent.eventId then return end
+    ServerClient.ResolveEvent(pendingEvent.eventId, action, function(response)
+        if not response or not response.ok then ActionResult(response) end
+    end)
+end
+
+-- 交互事件弹窗：玩家必须主动选择；服务端超时会按 skip 结算。
+local function ShowPendingEvent(pendingEvent)
+    if type(pendingEvent) ~= "table" or not pendingEvent.eventId then return false end
+    local label = EVENT_LABELS[pendingEvent.eventType] or { title = "遭遇事件", confirm = "确认" }
+
+    local lines = {}
+    if pendingEvent.description then lines[#lines + 1] = tostring(pendingEvent.description) end
+    if pendingEvent.goldCost then
+        lines[#lines + 1] = "花费金币：" .. LargeNumber.ToString(pendingEvent.goldCost)
+    end
+    if pendingEvent.fragmentsReward then
+        lines[#lines + 1] = "获得碎片：" .. tostring(pendingEvent.fragmentsReward)
+    end
+    local remaining = math.max(0, (tonumber(pendingEvent.expiresAt) or 0) - os.time())
+    lines[#lines + 1] = "未选择将在 " .. tostring(remaining) .. " 秒后自动跳过"
+
+    return CommonPromptDialog.Show {
+        kind = "event",
+        queueKey = "event:" .. tostring(pendingEvent.eventId),
+        title = pendingEvent.title or label.title,
+        lines = lines,
+        confirmText = label.confirm,
+        cancelText = "跳过",
+        closeOnOverlay = false,
+        showClose = false,
+        onConfirm = function() SendEventDecision(pendingEvent, "accept") end,
+        onCancel = function() SendEventDecision(pendingEvent, "skip") end,
+    }
+end
+
 local function CloseLootStash(force)
     if lootStashForced_ and force ~= true then return false end
     if lootStashOverlay_ and uiRoot_ then uiRoot_:RemoveChild(lootStashOverlay_) end
@@ -3227,6 +3270,7 @@ local function ConfigurePlayPresentation()
             return proceed()
         end,
         showStoryGate = ShowStoryGate,
+        showPendingEvent = ShowPendingEvent,
         showEquipmentUpgrade = ShowEquipmentUpgrade,
         showTowerRules = ShowTowerRules,
         showAidPrompt = ShowAidPrompt,

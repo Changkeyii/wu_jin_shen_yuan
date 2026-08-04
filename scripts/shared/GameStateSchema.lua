@@ -9,7 +9,7 @@ local BigNumber = require("shared.BigNumber")
 
 local GameStateSchema = {}
 
-GameStateSchema.VERSION = 5
+GameStateSchema.VERSION = 6
 GameStateSchema.INVENTORY_CAP = 300
 GameStateSchema.TEMPORARY_LOOT_CAP = 60
 GameStateSchema.LOOT_STASH_CAP = 60
@@ -50,6 +50,7 @@ local PERSISTED_FIELDS = {
     "pendingOfflineSeconds",
     "level",
     "vipLevel",
+    "dailyVip",
     "exp",
     "floor",
     "maxFloor",
@@ -61,7 +62,6 @@ local PERSISTED_FIELDS = {
     "aidGrantedFloors",
     "gold",
     "fragments",
-    "mythShards",
     "autoRun",
     "pauseReason",
     "nextItemId",
@@ -80,6 +80,7 @@ local PERSISTED_FIELDS = {
     "rewardPity",
     "storyProgress",
     "pendingStoryGate",
+    "pendingEvent",
     "ruleAcknowledgements",
     "pendingEquipDecision",
     "previousLoadout",
@@ -92,6 +93,7 @@ local PERSISTED_FIELDS = {
 local SNAPSHOT_FIELDS = {
     "level",
     "vipLevel",
+    "dailyVip",
     "exp",
     "floor",
     "maxFloor",
@@ -102,7 +104,6 @@ local SNAPSHOT_FIELDS = {
     "aidPending",
     "gold",
     "fragments",
-    "mythShards",
     "autoRun",
     "pauseReason",
     "pendingOfflineSeconds",
@@ -121,6 +122,7 @@ local SNAPSHOT_FIELDS = {
     "rewardPity",
     "storyProgress",
     "pendingStoryGate",
+    "pendingEvent",
     "ruleAcknowledgements",
     "pendingEquipDecision",
     "previousLoadout",
@@ -643,6 +645,15 @@ local AUTOMATION_POLICY_SCHEMA = {
     },
 }
 
+local DAILY_VIP_SCHEMA = {
+    type = "object", allowUnknown = false,
+    required = { "signInDay", "adDay" },
+    fields = {
+        signInDay = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        adDay = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+    },
+}
+
 local REWARD_PITY_SCHEMA = {
     type = "object", allowUnknown = false,
     required = { "epicMisses", "mythMisses" },
@@ -677,6 +688,42 @@ local STORY_GATE_SCHEMA = {
     validate = function(value)
         if value.lineIndex > #value.lines then
             return false, "Story line index exceeds the available lines"
+        end
+        return true
+    end,
+}
+
+local PENDING_EVENT_SCHEMA = {
+    type = "object", allowUnknown = false,
+    required = { "eventId", "eventType", "floor", "room", "encounterId", "createdAt", "expiresAt", "actions" },
+    fields = {
+        eventId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+        eventType = { type = "string", enum = { "chest", "merchant", "randomEvent" } },
+        floor = { type = "integer", min = 1, max = 1000000000 },
+        room = { type = "integer", min = 1, max = 10 },
+        encounterId = { type = "string", minLength = 1, maxLength = 96 },
+        createdAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        expiresAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        actions = {
+            type = "array", minLength = 1, maxLength = 4,
+            items = { type = "string", enum = { "open", "buy", "accept", "skip" } },
+        },
+        title = { type = "string", minLength = 1, maxLength = 64 },
+        description = { type = "string", minLength = 1, maxLength = 256 },
+        goldCost = CURRENCY_SCHEMA,
+        fragmentsReward = { type = "integer", min = 0, max = 1000000000 },
+        variant = { type = "integer", min = 1, max = 8 },
+    },
+    validate = function(value)
+        if value.expiresAt < value.createdAt then
+            return false, "pendingEvent expiresAt precedes createdAt"
+        end
+        local hasSkip = false
+        for _, action in ipairs(value.actions) do
+            if action == "skip" then hasSkip = true end
+        end
+        if not hasSkip then
+            return false, "pendingEvent must always allow skip"
         end
         return true
     end,
@@ -942,6 +989,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "pendingOfflineSeconds",
         "level",
         "vipLevel",
+        "dailyVip",
         "exp",
         "floor",
         "maxFloor",
@@ -953,7 +1001,6 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "aidGrantedFloors",
         "gold",
         "fragments",
-        "mythShards",
         "autoRun",
         "nextItemId",
         "inventory",
@@ -981,7 +1028,8 @@ GameStateSchema.PERSISTED_SCHEMA = {
         lastActiveAt = SAFE_INTEGER_SCHEMA,
         pendingOfflineSeconds = { type = "integer", min = 0, max = GameStateSchema.OFFLINE_MAX_SECONDS },
         level = { type = "integer", min = 1, max = 1000000 },
-        vipLevel = { type = "integer", min = 0, max = 40 },
+        vipLevel = { type = "integer", min = 0, max = 10 },
+        dailyVip = DAILY_VIP_SCHEMA,
         exp = { type = "integer", min = 0, max = 1000000000 },
         floor = { type = "integer", min = 1, max = 1000000000 },
         maxFloor = { type = "integer", min = 1, max = 1000000000 },
@@ -997,7 +1045,6 @@ GameStateSchema.PERSISTED_SCHEMA = {
         },
         gold = CURRENCY_SCHEMA,
         fragments = CURRENCY_SCHEMA,
-        mythShards = CURRENCY_SCHEMA,
         autoRun = { type = "boolean" },
         pauseReason = { type = "string", maxLength = 64 },
         nextItemId = { type = "integer", min = 1, max = LargeNumber.MAX_SAFE_INTEGER },
@@ -1029,6 +1076,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         rewardPity = REWARD_PITY_SCHEMA,
         storyProgress = STORY_PROGRESS_SCHEMA,
         pendingStoryGate = STORY_GATE_SCHEMA,
+        pendingEvent = PENDING_EVENT_SCHEMA,
         ruleAcknowledgements = { type = "object", validate = validateAcknowledgements },
         equipmentCollection = { type = "object", validate = validateEquipmentCollection },
         pendingEquipDecision = PENDING_EQUIP_SCHEMA,
@@ -1052,6 +1100,8 @@ local PERSISTED_VALUE_SCHEMAS = GameStateSchema.PERSISTED_SCHEMA.fields
 
 local SNAPSHOT_VALUE_SCHEMAS = {
     level = PERSISTED_VALUE_SCHEMAS.level,
+    vipLevel = PERSISTED_VALUE_SCHEMAS.vipLevel,
+    dailyVip = PERSISTED_VALUE_SCHEMAS.dailyVip,
     exp = PERSISTED_VALUE_SCHEMAS.exp,
     floor = PERSISTED_VALUE_SCHEMAS.floor,
     maxFloor = PERSISTED_VALUE_SCHEMAS.maxFloor,
@@ -1062,7 +1112,6 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     aidPending = PERSISTED_VALUE_SCHEMAS.aidPending,
     gold = PERSISTED_VALUE_SCHEMAS.gold,
     fragments = PERSISTED_VALUE_SCHEMAS.fragments,
-    mythShards = PERSISTED_VALUE_SCHEMAS.mythShards,
     autoRun = PERSISTED_VALUE_SCHEMAS.autoRun,
     pauseReason = PERSISTED_VALUE_SCHEMAS.pauseReason,
     pendingOfflineSeconds = PERSISTED_VALUE_SCHEMAS.pendingOfflineSeconds,
@@ -1081,6 +1130,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     rewardPity = PERSISTED_VALUE_SCHEMAS.rewardPity,
     storyProgress = PERSISTED_VALUE_SCHEMAS.storyProgress,
     pendingStoryGate = PERSISTED_VALUE_SCHEMAS.pendingStoryGate,
+    pendingEvent = PERSISTED_VALUE_SCHEMAS.pendingEvent,
     ruleAcknowledgements = PERSISTED_VALUE_SCHEMAS.ruleAcknowledgements,
     equipmentCollection = PERSISTED_VALUE_SCHEMAS.equipmentCollection,
     pendingEquipDecision = PERSISTED_VALUE_SCHEMAS.pendingEquipDecision,
@@ -1148,9 +1198,9 @@ local DELTA_ENVELOPE_SCHEMAS = {
 local SNAPSHOT_REQUIRED_FIELDS = {
     "kind", "schemaVersion", "revision", "updatedAt", "serverTime", "status",
     "isAdmin", "playerNickname", "inventoryCapacity",
-    "level", "exp", "floor", "maxFloor", "position", "transitionRemaining",
+    "level", "vipLevel", "dailyVip", "exp", "floor", "maxFloor", "position", "transitionRemaining",
     "attemptId", "floorDefeats", "aidPending",
-    "gold", "fragments", "mythShards", "autoRun", "pendingOfflineSeconds",
+    "gold", "fragments", "autoRun", "pendingOfflineSeconds",
     "inventory", "overflowLoot", "lootStash", "equipped", "consumables", "hpBig",
     "floorKillBonus", "permanentBonus", "inventoryPolicy", "automationPolicy",
     "interactionMode", "rewardPity", "storyProgress", "ruleAcknowledgements",
@@ -1172,6 +1222,7 @@ function GameStateSchema.NewInitialState(now)
         pendingOfflineSeconds = 0,
         level = 1,
         vipLevel = 0,
+        dailyVip = { signInDay = 0, adDay = 0 },
         exp = 0,
         floor = 1,
         maxFloor = 1,
@@ -1183,7 +1234,6 @@ function GameStateSchema.NewInitialState(now)
         aidGrantedFloors = {},
         gold = LargeNumber.Zero(),
         fragments = LargeNumber.Zero(),
-        mythShards = LargeNumber.Zero(),
         autoRun = false,
         nextItemId = 1,
         inventory = {},
@@ -1207,6 +1257,7 @@ function GameStateSchema.NewInitialState(now)
         rewardPity = { epicMisses = 0, mythMisses = 0 },
         storyProgress = { introCompleted = false, highestCompletedChapter = 0, contentVersion = 1 },
         pendingStoryGate = nil,
+        pendingEvent = nil,
         ruleAcknowledgements = {},
         equipmentCollection = {}, marketListings = {},
         pendingEquipDecision = nil,
@@ -1302,7 +1353,12 @@ function GameStateSchema.NormalizeState(rawState, now)
     end
     local sourceVersion = tonumber(rawState.schemaVersion) or 3
     normalized.schemaVersion = GameStateSchema.VERSION
-    normalized.vipLevel = math.max(0, math.min(40, math.floor(tonumber(normalized.vipLevel) or 0)))
+    normalized.vipLevel = math.max(0, math.min(10, math.floor(tonumber(normalized.vipLevel) or 0)))
+    normalized.dailyVip = type(normalized.dailyVip) == "table" and normalized.dailyVip or {}
+    normalized.dailyVip.signInDay = math.max(0,
+        math.floor(tonumber(normalized.dailyVip.signInDay) or 0))
+    normalized.dailyVip.adDay = math.max(0,
+        math.floor(tonumber(normalized.dailyVip.adDay) or 0))
     if sourceVersion < 4 then
         normalized.position = 0
         normalized.currentMonster = nil

@@ -25,6 +25,7 @@ ServerConfig.RATES = {
     Progression = { refillRate = 1, burst = 3 },
     PreviewOffline = { refillRate = 1, burst = 2 },
     CollectOffline = { refillRate = 0.1, burst = 1 },
+    DailyClaim = { refillRate = 0.1, burst = 1 },
     AdminQuery = { refillRate = 1, burst = 3 },
     AdminMutation = { refillRate = 0.2, burst = 2 },
     -- 市场：浏览走分片内缓存所以可以稍宽松；写操作会触发云事务，必须收紧。

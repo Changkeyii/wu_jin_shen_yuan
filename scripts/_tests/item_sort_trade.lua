@@ -48,7 +48,7 @@ local function run()
     equal(sorted[3].id, "b", "lower enhance follows")
     equal(sorted[4].id, "c", "rarity outranks all lower rarity stats")
 
-    equal(ItemTradeRules.GetTradeableChanceUnits("artifact"), 4000, "artifact chance")
+    equal(ItemTradeRules.GetTradeableChanceUnits("artifact"), 3000, "artifact chance")
     equal(ItemTradeRules.GetTradeableChanceUnits("legendary"), 1500, "legendary chance")
     equal(ItemTradeRules.GetTradeableChanceUnits("epic"), 700, "epic chance")
     equal(ItemTradeRules.GetTradeableChanceUnits("myth"), 250, "myth chance")
@@ -56,9 +56,9 @@ local function run()
 
     equal(ItemTradeRules.RollDropTradeable("monster_drop", "artifact", 0), true,
         "artifact zero roll")
-    equal(ItemTradeRules.RollDropTradeable("boss_drop", "artifact", 0.399999), true,
+    equal(ItemTradeRules.RollDropTradeable("boss_drop", "artifact", 0.299999), true,
         "artifact below boundary")
-    equal(ItemTradeRules.RollDropTradeable("elite_drop", "artifact", 0.4), false,
+    equal(ItemTradeRules.RollDropTradeable("elite_drop", "artifact", 0.3), false,
         "artifact boundary excluded")
     equal(ItemTradeRules.RollDropTradeable("chest_drop", "legendary", 0.149999), true,
         "legendary below boundary")
@@ -81,7 +81,7 @@ local function run()
 
     currencyEqual(
         MarketCatalog.GetMinimumListingPrice(LargeNumber.FromNumber(1), "artifact"),
-        LargeNumber.FromNumber(3),
+        LargeNumber.FromNumber(4),
         "artifact minimum rounds upward"
     )
     currencyEqual(

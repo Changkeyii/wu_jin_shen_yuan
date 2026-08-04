@@ -3,7 +3,7 @@ local ItemTradeRules = {}
 --- 可交易资格按最终品质独立判定，使用万分比整数避免小数配置漂移。
 ItemTradeRules.TRADEABLE_CHANCE_SCALE = 10000
 ItemTradeRules.DROP_TRADEABLE_CHANCE_UNITS = {
-    artifact = 4000,
+    artifact = 3000,
     legendary = 1500,
     epic = 700,
     myth = 250,

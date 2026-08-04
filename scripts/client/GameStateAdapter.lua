@@ -231,6 +231,22 @@ local function ApplyEvents(state, events)
         elseif kind == "story_completed" or kind == "story_skipped" then
             state.pendingStoryGate = nil
             state.pendingStory = nil
+        elseif kind == "event_pending" then
+            state.pendingEvent = {
+                eventId = value.eventId,
+                eventType = value.eventType,
+                floor = value.floor,
+                room = value.room,
+                encounterId = value.encounterId,
+                expiresAt = value.expiresAt,
+                actions = value.actions,
+                title = value.title,
+                description = value.description,
+                goldCost = value.goldCost,
+                fragmentsReward = value.fragmentsReward,
+            }
+        elseif kind == "event_resolved" then
+            state.pendingEvent = nil
         elseif kind == "equip_decision_applied" then
             state.pendingEquipDecision = nil
         elseif kind == "battle" then
@@ -290,18 +306,19 @@ end
 
 local function EmptyView()
     return {
-        schemaVersion = 5,
+        schemaVersion = 6,
         revision = 0,
         updatedAt = 0,
         floor = 1,
         maxFloor = 1,
         position = 0,
         level = 1,
+        vipLevel = 0,
+        dailyVip = { signInDay = 0, adDay = 0 },
         exp = 0,
         nextExp = 100,
         gold = LargeNumber.Zero(),
         fragments = LargeNumber.Zero(),
-        mythShards = LargeNumber.Zero(),
         autoRun = false,
         pendingOfflineSeconds = 0,
         offlineSeconds = 0,

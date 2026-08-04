@@ -147,10 +147,10 @@ local function PlayerSummary()
     local presence = player.online and "在线" or "离线"
     local ban = player.banned and ("已封禁：" .. tostring(player.ban and player.ban.reason or "未填写原因")) or "正常"
     return string.format(
-        "玩家 %s | %s | %s\n等级%s  第%s层 %s格  战力%s\n金币%s  碎片%s  神话碎片%s  装备%s件  版本%s",
+        "玩家 %s | %s | %s\n等级%s  第%s层 %s格  战力%s\n金币%s  碎片%s  装备%s件  版本%s",
         tostring(player.targetUid), presence, ban,
         tostring(player.level or "-"), tostring(player.floor or "-"), tostring(player.position or "-"), tostring(player.power or "-"),
-        LargeNumber.Format(player.gold or 0), LargeNumber.Format(player.fragments or 0), LargeNumber.Format(player.mythShards or 0), tostring(player.inventoryCount or "-"), tostring(player.revision or "-")
+        LargeNumber.Format(player.gold or 0), LargeNumber.Format(player.fragments or 0), tostring(player.inventoryCount or "-"), tostring(player.revision or "-")
     )
 end
 
@@ -209,7 +209,6 @@ function AdminPanel.Build(UI, options)
                             options = {
                                 { value = "gold", label = "金币" },
                                 { value = "fragments", label = "深渊碎片" },
-                                { value = "mythShards", label = "神话碎片" },
                             },
                             onChange = function(self, value) form_.currency = value end,
                         },

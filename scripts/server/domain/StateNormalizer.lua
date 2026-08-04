@@ -262,9 +262,6 @@ end
 
 local function materialKind(item)
     local name = type(item.name) == "string" and item.name or ""
-    if name:find("神话") or name:lower():find("myth") then
-        return "mythShards"
-    end
     if name:find("碎片") or name:lower():find("fragment") then
         return "fragments"
     end
@@ -369,6 +366,78 @@ local function sanitizeStoryGate(value)
     return gate
 end
 
+local PENDING_EVENT_TYPES = {
+    chest = true,
+    merchant = true,
+    randomEvent = true,
+}
+
+local PENDING_EVENT_ACTIONS = {
+    open = true,
+    buy = true,
+    accept = true,
+    skip = true,
+}
+
+-- 交互事件必须保留 skip：超时结算只会跳过，永不代替玩家消费。
+local function sanitizePendingEvent(value)
+    if type(value) ~= "table" then return nil end
+    local eventType = value.eventType
+    if not PENDING_EVENT_TYPES[eventType] then return nil end
+    local eventId = value.eventId
+    if type(eventId) ~= "string"
+        or #eventId < 1
+        or #eventId > 96
+        or not eventId:match("^[%w%._:%-]+$")
+    then
+        return nil
+    end
+    local encounterId = value.encounterId
+    if type(encounterId) ~= "string" or #encounterId < 1 or #encounterId > 96 then
+        return nil
+    end
+
+    local actions = {}
+    local hasSkip = false
+    for _, action in ipairs(type(value.actions) == "table" and value.actions or {}) do
+        if PENDING_EVENT_ACTIONS[action] and #actions < 4 then
+            actions[#actions + 1] = action
+            if action == "skip" then hasSkip = true end
+        end
+    end
+    if not hasSkip then actions[#actions + 1] = "skip" end
+
+    local createdAt = math.max(0, TableUtils.ToInteger(value.createdAt, 0))
+    return {
+        eventId = eventId,
+        eventType = eventType,
+        floor = clampInteger(value.floor, 1, 1000000000, 1),
+        room = clampInteger(value.room, 1, 10, 1),
+        encounterId = encounterId,
+        createdAt = createdAt,
+        expiresAt = math.max(createdAt, TableUtils.ToInteger(value.expiresAt, createdAt)),
+        actions = actions,
+        title = type(value.title) == "string" and #value.title >= 1
+            and value.title:sub(1, 64) or nil,
+        description = type(value.description) == "string" and #value.description >= 1
+            and value.description:sub(1, 256) or nil,
+        goldCost = LargeNumber.IsLargeNumber(value.goldCost)
+            and LargeNumber.Normalize(value.goldCost) or nil,
+        fragmentsReward = value.fragmentsReward ~= nil
+            and clampInteger(value.fragmentsReward, 0, 1000000000, 0) or nil,
+        variant = value.variant ~= nil
+            and clampInteger(value.variant, 1, 8, 1) or nil,
+    }
+end
+
+local function sanitizeDailyVip(value)
+    value = type(value) == "table" and value or {}
+    return {
+        signInDay = math.max(0, TableUtils.ToInteger(value.signInDay, 0)),
+        adDay = math.max(0, TableUtils.ToInteger(value.adDay, 0)),
+    }
+end
+
 local function safePauseReason(value)
     if type(value) ~= "string" or #value > 64 then return nil end
     return value
@@ -389,6 +458,7 @@ function StateNormalizer.Normalize(rawState, now)
         pendingOfflineSeconds = clampInteger(rawState.pendingOfflineSeconds or rawState.offlineSeconds, 0, Catalog.OFFLINE_MAX_SECONDS, 0),
         level = clampInteger(rawState.level, 1, 1000000, 1),
         vipLevel = clampInteger(rawState.vipLevel, 0, Catalog.MAX_VIP_LEVEL, 0),
+        dailyVip = sanitizeDailyVip(rawState.dailyVip),
         exp = clampInteger(rawState.exp, 0, 1000000000, 0),
         floor = normalizedFloor,
         maxFloor = normalizedMaxFloor,
@@ -401,7 +471,6 @@ function StateNormalizer.Normalize(rawState, now)
         aidGrantedFloors = sourceVersion < 4 and {} or sanitizeAidFloors(rawState.aidGrantedFloors),
         gold = LargeNumber.Normalize(rawState.gold),
         fragments = LargeNumber.Normalize(rawState.fragments),
-        mythShards = LargeNumber.Normalize(rawState.mythShards),
         autoRun = rawState.autoRun == true,
         pauseReason = safePauseReason(rawState.pauseReason),
         floorKillBonus = clampNumber(rawState.floorKillBonus, 0, 0.50, 0),
@@ -425,6 +494,7 @@ function StateNormalizer.Normalize(rawState, now)
         rewardPity = sanitizeRewardPity(rawState.rewardPity),
         storyProgress = sanitizeStoryProgress(rawState.storyProgress, sourceVersion, normalizedMaxFloor),
         pendingStoryGate = sourceVersion < 4 and nil or sanitizeStoryGate(rawState.pendingStoryGate),
+        pendingEvent = sanitizePendingEvent(rawState.pendingEvent),
         ruleAcknowledgements = sanitizeRuleAcknowledgements(rawState.ruleAcknowledgements),
         equipmentCollection = sanitizeEquipmentCollection(rawState.equipmentCollection), marketListings = GameStateSchema.NormalizeMarketListings(rawState.marketListings),
         pendingEquipDecision = nil,
@@ -541,7 +611,7 @@ function StateNormalizer.Normalize(rawState, now)
     local usedIds = {}
     local legacyIdMap = {}
     local legacyObjectMap = {}
-    local materialFallback = { fragments = 0, mythShards = 0 }
+    local materialFallback = { fragments = 0 }
     local droppedOverflowCount = 0
 
     local function appendEquipment(rawItem, preferredTarget, isInventorySource)
@@ -588,9 +658,6 @@ function StateNormalizer.Normalize(rawState, now)
 
     if rawState.fragments == nil then
         state.fragments = LargeNumber.FromNumber(materialFallback.fragments)
-    end
-    if rawState.mythShards == nil then
-        state.mythShards = LargeNumber.FromNumber(materialFallback.mythShards)
     end
 
     local byId = {}

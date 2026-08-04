@@ -21,6 +21,8 @@ local storyGateEvent
 local SCALAR_DELTA_FIELDS = {
     "pendingOfflineSeconds",
     "level",
+    "vipLevel",
+    "dailyVip",
     "exp",
     "nextExp",
     "floor",
@@ -29,7 +31,6 @@ local SCALAR_DELTA_FIELDS = {
     "transitionRemaining",
     "gold",
     "fragments",
-    "mythShards",
     "autoRun",
     "pauseReason",
     "hp",
@@ -1821,6 +1822,46 @@ maybeQueueStoryGate = function(state, chapter, phase, context, events)
     return true
 end
 
+local function serverDayKey(now)
+    return math.floor((nowInteger(now) + 8 * 60 * 60) / (24 * 60 * 60))
+end
+
+local function claimDailyVip(inputState, source, now)
+    if source ~= "signIn" and source ~= "ad" then
+        return failure(inputState, now, "INVALID_ARGUMENT", "unknown VIP daily source")
+    end
+    local working = stateCopy(inputState, now)
+    working.dailyVip = type(working.dailyVip) == "table"
+        and working.dailyVip or { signInDay = 0, adDay = 0 }
+    local dayKey = serverDayKey(now)
+    local field = source == "signIn" and "signInDay" or "adDay"
+    if working.dailyVip[field] == dayKey then
+        return failure(inputState, now, "DAILY_VIP_ALREADY_CLAIMED",
+            source == "signIn" and "今日已签到" or "今日广告奖励已领取")
+    end
+    if working.vipLevel >= Catalog.MAX_VIP_LEVEL then
+        return failure(inputState, now, "VIP_LEVEL_MAX", "VIP 已达到 V10")
+    end
+    working.dailyVip[field] = dayKey
+    working.vipLevel = math.min(Catalog.MAX_VIP_LEVEL, working.vipLevel + 1)
+    local events = { event("vip_level_up", {
+        source = source,
+        vipLevel = working.vipLevel,
+        dayKey = dayKey,
+    }) }
+    print(string.format("[VIP] source=%s day=%d level=%d",
+        source, dayKey, working.vipLevel))
+    return finalize(inputState, working, now, "vip_daily_claimed", events, false, false)
+end
+
+function GameEngine.ClaimDailySignInVip(inputState, now)
+    return claimDailyVip(inputState, "signIn", now)
+end
+
+function GameEngine.ClaimDailyAdVip(inputState, now)
+    return claimDailyVip(inputState, "ad", now)
+end
+
 function GameEngine.SetAutoRun(inputState, enabled, now)
     if type(enabled) ~= "boolean" then
         return failure(inputState, now, "INVALID_ARGUMENT", "enabled must be a boolean")
@@ -1960,6 +2001,58 @@ function GameEngine.AdvanceOneCell(inputState, rng, now)
     return finalize(inputState, working, now, kind, events, inventoryChanged, false)
 end
 
+-- 交互事件：服务端生成待决状态，玩家必须主动选择；超时只会跳过。
+local function buildPendingEvent(state, encounter, now)
+    local floor = state.floor or 1
+    local variant = encounter.variant or 1
+    local pending = {
+        eventId = string.format("ev.%d.%d.%d", floor, encounter.room or 1, now),
+        eventType = encounter.kind,
+        floor = floor,
+        room = encounter.room or 1,
+        encounterId = encounter.encounterId,
+        createdAt = now,
+        expiresAt = now + Catalog.EVENT_DECISION_SECONDS,
+        variant = variant,
+    }
+
+    if encounter.kind == "chest" then
+        pending.actions = { "open", "skip" }
+        pending.title = "迷雾宝箱"
+        pending.description = "开启宝箱可获得金币与碎片，跳过则不会有任何消耗。"
+        pending.fragmentsReward = Catalog.EVENT_CHEST_FRAGMENTS * variant
+    elseif encounter.kind == "merchant" then
+        pending.actions = { "buy", "skip" }
+        pending.title = "深渊商人"
+        pending.description = "支付金币换取强化碎片，也可以直接离开。"
+        pending.goldCost = Catalog.GetEventMerchantCost(floor, variant)
+        pending.fragmentsReward = Catalog.EVENT_MERCHANT_FRAGMENTS * variant
+    else
+        pending.actions = { "accept", "skip" }
+        pending.title = "未知遗迹"
+        pending.description = "接受试炼可能获得碎片奖励，跳过则安全通过。"
+        pending.fragmentsReward = Catalog.EVENT_RANDOM_FRAGMENTS * variant
+    end
+
+    return pending
+end
+
+local function pendingEventPayload(pending)
+    return {
+        eventId = pending.eventId,
+        eventType = pending.eventType,
+        floor = pending.floor,
+        room = pending.room,
+        encounterId = pending.encounterId,
+        expiresAt = pending.expiresAt,
+        actions = TableUtils.DeepCopy(pending.actions),
+        title = pending.title,
+        description = pending.description,
+        goldCost = pending.goldCost and LargeNumber.ToString(pending.goldCost) or nil,
+        fragmentsReward = pending.fragmentsReward,
+    }
+end
+
 function GameEngine.EnterEncounter(inputState, request, rng, now)
     request = type(request) == "table" and request or {}
     local working = stateCopy(inputState, now)
@@ -1972,6 +2065,12 @@ function GameEngine.EnterEncounter(inputState, request, rng, now)
     end
     if working.pendingStoryGate then
         return failure(inputState, now, "STORY_GATE_PENDING", "剧情尚未完成")
+    end
+    if working.pendingEvent then
+        if working.pendingEvent.encounterId == request.encounterId then
+            return noCommit(inputState, now, "event_already_pending")
+        end
+        return failure(inputState, now, "EVENT_DECISION_PENDING", "请先处理当前事件")
     end
     if working.aidPending then
         return failure(inputState, now, "TOWER_AID_PENDING", "请先领取深渊援助")
@@ -2030,8 +2129,109 @@ function GameEngine.EnterEncounter(inputState, request, rng, now)
             encounterKind = expected.kind,
         }),
     }
+    if TowerRules.IsInteractiveEvent(expected.kind) then
+        local pending = buildPendingEvent(working, expected, now)
+        working.pendingEvent = pending
+        events[#events + 1] = event("event_pending", pendingEventPayload(pending))
+        return finalize(inputState, working, now, "event_pending", events, false, false, true)
+    end
+
     beginOnlineBattle(working, expected.eventType, rng, events)
     return finalize(inputState, working, now, "battle_started", events, false, false, true)
+end
+
+local function applyEventOutcome(working, pending, action)
+    local granted = { fragments = 0 }
+    if action == "skip" then
+        return granted
+    end
+
+    if pending.eventType == "chest" then
+        local gold = Catalog.GetEventChestGold(pending.floor, pending.variant or 1)
+        working.gold = LargeNumber.Add(working.gold, gold)
+        granted.gold = gold
+        granted.fragments = pending.fragmentsReward or 0
+    elseif pending.eventType == "merchant" then
+        granted.fragments = pending.fragmentsReward or 0
+        granted.goldSpent = pending.goldCost
+    else
+        granted.fragments = pending.fragmentsReward or 0
+    end
+
+    if granted.fragments > 0 then
+        working.fragments = LargeNumber.Add(
+            working.fragments,
+            LargeNumber.FromNumber(granted.fragments)
+        )
+    end
+    return granted
+end
+
+-- 超时结算只允许 skip，绝不代替玩家花费金币。
+function GameEngine.ResolveEvent(inputState, request, now, options)
+    request = type(request) == "table" and request or {}
+    options = type(options) == "table" and options or {}
+    local working = stateCopy(inputState, now)
+    local pending = working.pendingEvent
+    if not pending then
+        return noCommit(inputState, now, "event_not_pending")
+    end
+
+    local timedOut = options.timeout == true
+    local action = timedOut and "skip" or tostring(request.action or "")
+    if not timedOut then
+        if request.eventId ~= pending.eventId then
+            return failure(inputState, now, "STALE_EVENT", "事件已失效，请刷新")
+        end
+        if now > pending.expiresAt then
+            action = "skip"
+            timedOut = true
+        else
+            local allowed = false
+            for _, candidate in ipairs(pending.actions or {}) do
+                if candidate == action then
+                    allowed = true
+                    break
+                end
+            end
+            if not allowed then
+                return failure(inputState, now, "INVALID_EVENT_ACTION", "该事件不支持此操作")
+            end
+        end
+    end
+
+    if action == "buy" then
+        local cost = pending.goldCost or LargeNumber.Zero()
+        if LargeNumber.Compare(working.gold, cost) < 0 then
+            return failure(inputState, now, "INSUFFICIENT_GOLD", "金币不足")
+        end
+        working.gold = LargeNumber.Subtract(working.gold, cost)
+    end
+
+    local granted = applyEventOutcome(working, pending, action)
+    working.pendingEvent = nil
+    working.currentEvent = nil
+
+    local events = {
+        event("event_resolved", {
+            eventId = pending.eventId,
+            eventType = pending.eventType,
+            action = action,
+            timedOut = timedOut,
+            floor = pending.floor,
+            room = pending.room,
+            fragments = granted.fragments,
+            gold = granted.gold and LargeNumber.ToString(granted.gold) or nil,
+        }),
+    }
+    print(string.format(
+        "[Event] resolved id=%s type=%s action=%s timeout=%s",
+        tostring(pending.eventId),
+        tostring(pending.eventType),
+        tostring(action),
+        tostring(timedOut)
+    ))
+    return finalize(inputState, working, now, "event_resolved", events, false, false, true)
 end
 
 function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
@@ -3100,7 +3300,10 @@ local function accumulateOfflineEvent(summary, value)
     end
 end
 
+-- 离线期间无人操作，交互事件按"超时默认跳过"处理：不产出金币也不产出掉落。
 local function offlineEncounterKind(floor, room)
+    local encounter = TowerRules.GetEncounter(room, floor)
+    if encounter and encounter.isInteractive then return nil end
     if room <= TowerRules.NORMAL_ENCOUNTERS then return "normal" end
     if room <= TowerRules.NORMAL_ENCOUNTERS + TowerRules.ELITE_ENCOUNTERS then return "elite" end
     return floor % 10 == 0 and "chapterBoss" or "boss"
@@ -3111,14 +3314,14 @@ local function offlineEncounterCounts(floor, position, cycles)
     local fullRounds = math.floor(cycles / TowerRules.ENCOUNTERS_PER_FLOOR)
     for room = 1, TowerRules.ENCOUNTERS_PER_FLOOR do
         local kind = offlineEncounterKind(floor, room)
-        counts[kind] = counts[kind] + fullRounds
+        if kind then counts[kind] = counts[kind] + fullRounds end
     end
     local remainder = cycles - fullRounds * TowerRules.ENCOUNTERS_PER_FLOOR
     for offset = 1, remainder do
         local room = (math.max(0, position) + offset - 1)
             % TowerRules.ENCOUNTERS_PER_FLOOR + 1
         local kind = offlineEncounterKind(floor, room)
-        counts[kind] = counts[kind] + 1
+        if kind then counts[kind] = counts[kind] + 1 end
     end
     return counts
 end
@@ -3420,7 +3623,7 @@ function GameEngine.ClaimOfflineReward(inputState, ledger, now)
 end
 
 function GameEngine.GrantCurrency(inputState, currency, amount, now)
-    if currency ~= "gold" and currency ~= "fragments" and currency ~= "mythShards" then
+    if currency ~= "gold" and currency ~= "fragments" then
         return failure(inputState, now, "INVALID_CURRENCY", "currency is not grantable")
     end
     amount = TableUtils.ToInteger(amount, 0)

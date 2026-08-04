@@ -24,9 +24,6 @@ PlayerProfileRepository.Keys = {
     FRAGMENTS_HIGH = "abyss_fragments_high",
     FRAGMENTS_MID = "abyss_fragments_mid",
     FRAGMENTS_LOW = "abyss_fragments_low",
-    MYTH_SHARDS_HIGH = "abyss_myth_shards_high",
-    MYTH_SHARDS_MID = "abyss_myth_shards_mid",
-    MYTH_SHARDS_LOW = "abyss_myth_shards_low",
     BAN = "abyss_ban",
     INVENTORY = "abyss_inventory",
     CONSUMABLE = "abyss_consumable",
@@ -47,9 +44,6 @@ local LOAD_KEYS = {
     PlayerProfileRepository.Keys.FRAGMENTS_HIGH,
     PlayerProfileRepository.Keys.FRAGMENTS_MID,
     PlayerProfileRepository.Keys.FRAGMENTS_LOW,
-    PlayerProfileRepository.Keys.MYTH_SHARDS_HIGH,
-    PlayerProfileRepository.Keys.MYTH_SHARDS_MID,
-    PlayerProfileRepository.Keys.MYTH_SHARDS_LOW,
     PlayerProfileRepository.Keys.BAN,
 }
 
@@ -140,11 +134,6 @@ local function PrintProfileSummary(userId, profile, scores, iscores, inventoryRo
             PlayerProfileRepository.Keys.FRAGMENTS_MID,
             PlayerProfileRepository.Keys.FRAGMENTS_LOW,
         })
-        .. " mythShardSegments=" .. ScorePresence(iscores, {
-            PlayerProfileRepository.Keys.MYTH_SHARDS_HIGH,
-            PlayerProfileRepository.Keys.MYTH_SHARDS_MID,
-            PlayerProfileRepository.Keys.MYTH_SHARDS_LOW,
-        })
         .. " hasInventoryPolicy=" .. tostring(profileType == "table" and type(profile.inventoryPolicy) == "table")
         .. " hasCurrentMonster=" .. tostring(profileType == "table" and type(profile.currentMonster) == "table"))
 end
@@ -154,7 +143,6 @@ local function ProfileCore(state)
     persisted.inventory = nil
     persisted.gold = nil
     persisted.fragments = nil
-    persisted.mythShards = nil
     persisted.consumables = nil
     return persisted
 end
@@ -227,9 +215,6 @@ function PlayerProfileRepository:Load(userId, onComplete)
                 or iscores[self.Keys.FRAGMENTS_HIGH] ~= nil
                 or iscores[self.Keys.FRAGMENTS_MID] ~= nil
                 or iscores[self.Keys.FRAGMENTS_LOW] ~= nil
-                or iscores[self.Keys.MYTH_SHARDS_HIGH] ~= nil
-                or iscores[self.Keys.MYTH_SHARDS_MID] ~= nil
-                or iscores[self.Keys.MYTH_SHARDS_LOW] ~= nil
                 or iscores[self.Keys.REVISION] ~= nil
             if hasOrphanedData then
                 onComplete(Result(false, {}, "ORPHANED_PROFILE", "profile header is missing while domain data exists"))
@@ -249,7 +234,6 @@ function PlayerProfileRepository:Load(userId, onComplete)
         raw.updatedAt = iscores[self.Keys.UPDATED_AT] or raw.updatedAt
         raw.gold = ReadLargeValue(iscores, self.Keys.GOLD_HIGH, self.Keys.GOLD_MID, self.Keys.GOLD_LOW)
         raw.fragments = ReadLargeValue(iscores, self.Keys.FRAGMENTS_HIGH, self.Keys.FRAGMENTS_MID, self.Keys.FRAGMENTS_LOW)
-        raw.mythShards = ReadLargeValue(iscores, self.Keys.MYTH_SHARDS_HIGH, self.Keys.MYTH_SHARDS_MID, self.Keys.MYTH_SHARDS_LOW)
         raw.inventory = {}
 
         local listMap = {}
@@ -359,7 +343,6 @@ function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
     }
     AppendLargeValueOperations(operations, operation, userId, self.Keys.GOLD_HIGH, self.Keys.GOLD_MID, self.Keys.GOLD_LOW, newState.gold)
     AppendLargeValueOperations(operations, operation, userId, self.Keys.FRAGMENTS_HIGH, self.Keys.FRAGMENTS_MID, self.Keys.FRAGMENTS_LOW, newState.fragments)
-    AppendLargeValueOperations(operations, operation, userId, self.Keys.MYTH_SHARDS_HIGH, self.Keys.MYTH_SHARDS_MID, self.Keys.MYTH_SHARDS_LOW, newState.mythShards)
 
     local oldItems = IndexInventory(oldState and PersistedInventory(oldState) or {})
     local newItems = IndexInventory(PersistedInventory(newState))

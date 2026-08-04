@@ -559,6 +559,10 @@ function ServerClient.Send(command, payload, callback)
 end
 
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
+function ServerClient.ClaimDailyVip(callback) return ServerClient.Send("Game.ClaimDailyVip", {}, callback) end
+function ServerClient.ResolveEvent(eventId, action, callback)
+    return ServerClient.Send("Game.ResolveEvent", { eventId = eventId, action = action }, callback)
+end
 function ServerClient.AutoRun(enabled, callback) return ServerClient.Send("Game.SetAutoRun", { enabled = enabled }, callback) end
 function ServerClient.EnterEncounter(routeId, encounterId, room, callback)
     return ServerClient.Send("Game.EnterEncounter", {

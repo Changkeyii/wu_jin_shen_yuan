@@ -7,7 +7,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 local RewardPolicy = require("shared.RewardPolicy")
 local TowerRules = require("shared.TowerRules")
 
-Catalog.SCHEMA_VERSION = 5
+Catalog.SCHEMA_VERSION = 6
 Catalog.STEP_SECONDS = 12
 Catalog.COMBAT_TICK_SECONDS = 0.10
 Catalog.OFFLINE_REWARD_RATE = 0.20
@@ -19,13 +19,14 @@ Catalog.INVENTORY_CAP = 300
 Catalog.MAX_LOG_EVENTS = 40
 Catalog.MAX_STAR = 5
 Catalog.MAX_ENHANCE = 1000
-Catalog.MAX_VIP_LEVEL = 40
+Catalog.MAX_VIP_LEVEL = 10
+Catalog.VIP_DAMAGE_RATE_PER_LEVEL = 0.005
 Catalog.DECOMPOSE_BASE_REFUND_RATE = 0.25
 Catalog.DECOMPOSE_INVESTED_GOLD_BASE_REFUND_RATE = 0.45
-Catalog.DECOMPOSE_INVESTED_GOLD_VIP_RATE_PER_LEVEL = 0.0075
+Catalog.DECOMPOSE_INVESTED_GOLD_VIP_RATE_PER_LEVEL = 0.03
 Catalog.DECOMPOSE_INVESTED_GOLD_MAX_REFUND_RATE = 0.75
 Catalog.DECOMPOSE_INVESTED_FRAGMENT_BASE_REFUND_RATE = 0.50
-Catalog.DECOMPOSE_INVESTED_FRAGMENT_VIP_RATE_PER_LEVEL = 0.0075
+Catalog.DECOMPOSE_INVESTED_FRAGMENT_VIP_RATE_PER_LEVEL = 0.03
 Catalog.DECOMPOSE_INVESTED_FRAGMENT_MAX_REFUND_RATE = 0.80
 -- 金币经济以同层装备价值为统一锚点：50级史诗基础售价约300万，
 -- 完成同层10场战斗约获得一件同层史诗的NPC回收价。
@@ -40,6 +41,17 @@ Catalog.STRENGTHEN_GOLD_RATE = 0.20
 Catalog.STRENGTHEN_GOLD_GROWTH = 1.22
 Catalog.STAR_GOLD_RATE = 0.75
 Catalog.STAR_GOLD_GROWTH = 1.65
+-- 碎片消耗递增模型：强化用幂函数抑制刷层收益，升星用指数拉开阶段门槛
+Catalog.STRENGTHEN_FRAGMENT_BASE = 8
+Catalog.STRENGTHEN_FRAGMENT_SCALE = 6
+Catalog.STRENGTHEN_FRAGMENT_EXPONENT = 2.35
+Catalog.STAR_FRAGMENT_BASE = 20
+Catalog.STAR_FRAGMENT_GROWTH = 2.6
+-- 交互事件：固定奖励数值与超时时长
+Catalog.EVENT_DECISION_SECONDS = 90
+Catalog.EVENT_CHEST_FRAGMENTS = 15
+Catalog.EVENT_MERCHANT_FRAGMENTS = 12
+Catalog.EVENT_RANDOM_FRAGMENTS = 20
 Catalog.SELL_VALUE_BASE = 5000
 Catalog.SELL_LEVEL_SOFT_START = Catalog.ECONOMY_LEVEL_SOFT_START
 Catalog.SELL_LEVEL_EXPONENT = Catalog.ECONOMY_LEVEL_EXPONENT
@@ -58,8 +70,16 @@ Catalog.SELL_SLOT_MULTIPLIERS = {
     jewelry = 1.00,
     special = 1.10,
 }
+Catalog.SELL_STAR_MULTIPLIERS = {
+    1.00,
+    1.15,
+    1.35,
+    1.65,
+    2.10,
+    2.80,
+}
 Catalog.SELL_INVESTED_GOLD_BASE_REFUND_RATE = 0.35
-Catalog.SELL_INVESTED_GOLD_VIP_RATE_PER_LEVEL = 0.005
+Catalog.SELL_INVESTED_GOLD_VIP_RATE_PER_LEVEL = 0.02
 Catalog.SELL_INVESTED_GOLD_MAX_REFUND_RATE = 0.55
 Catalog.MAX_VALUE = 9007199254740991
 Catalog.ENEMY_ATTACK_SECONDS = 1.5
@@ -217,6 +237,23 @@ function Catalog.GetBattleGold(level, encounterKind)
     )
 end
 
+-- 交互事件奖励/成本按 variant 分档，服务端确定性计算。
+function Catalog.GetEventChestGold(level, variant)
+    variant = Catalog.Clamp(math.floor(tonumber(variant) or 1), 1, 3)
+    return EconomyValue(
+        level,
+        Catalog.BATTLE_GOLD_BASE * (3 + variant * 2)
+    )
+end
+
+function Catalog.GetEventMerchantCost(level, variant)
+    variant = Catalog.Clamp(math.floor(tonumber(variant) or 1), 1, 3)
+    return EconomyValue(
+        level,
+        Catalog.BATTLE_GOLD_BASE * (4 + variant * 3)
+    )
+end
+
 function Catalog.GetChestGold(level, roll)
     roll = Catalog.Clamp(tonumber(roll) or 0, 0, 1)
     local multiplier = Catalog.CHEST_GOLD_MULTIPLIER_MIN
@@ -276,7 +313,14 @@ function Catalog.GetStrengthenCost(item, enhance)
             Catalog.STRENGTHEN_GOLD_RATE
                 * Catalog.STRENGTHEN_GOLD_GROWTH ^ enhance
         ),
-        fragments = 8 + enhance * 5,
+        fragments = math.min(
+            Catalog.MAX_VALUE,
+            math.floor(
+                Catalog.STRENGTHEN_FRAGMENT_BASE
+                    * (1 + enhance / Catalog.STRENGTHEN_FRAGMENT_SCALE)
+                        ^ Catalog.STRENGTHEN_FRAGMENT_EXPONENT
+            )
+        ),
     }
 end
 
@@ -292,7 +336,13 @@ function Catalog.GetStarCost(item, star)
             Catalog.STAR_GOLD_RATE
                 * Catalog.STAR_GOLD_GROWTH ^ star
         ),
-        fragments = 20 + star * 10,
+        fragments = math.min(
+            Catalog.MAX_VALUE,
+            math.floor(
+                Catalog.STAR_FRAGMENT_BASE
+                    * Catalog.STAR_FRAGMENT_GROWTH ^ star
+            )
+        ),
         duplicateCount = 1,
     }
 end
@@ -514,9 +564,13 @@ local function EquipmentSellBaseBig(item)
             * RewardPolicy.EnhanceMultiplier(
                 item and item.enhance or 0
             )
-            * RewardPolicy.StarMultiplier(
-                item and item.star or 0
-            )
+            * (Catalog.SELL_STAR_MULTIPLIERS[
+                Catalog.Clamp(
+                    math.floor(tonumber(item and item.star) or 0),
+                    0,
+                    Catalog.MAX_STAR
+                ) + 1
+            ] or 1)
     ))
 end
 
@@ -778,6 +832,9 @@ function Catalog.CalculateStats(state, options)
         applySetTierBonuses(stats, state, setId, setProgress.count)
     end
 
+    stats.damageBonus = stats.damageBonus
+        + Catalog.Clamp(math.floor(tonumber(state.vipLevel) or 0), 0, Catalog.MAX_VIP_LEVEL)
+            * Catalog.VIP_DAMAGE_RATE_PER_LEVEL
     stats.setProgress = progress
 
     stats.crit = Catalog.Clamp(stats.crit, 0, 0.80)

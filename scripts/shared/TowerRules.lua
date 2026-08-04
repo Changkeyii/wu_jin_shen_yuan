@@ -234,6 +234,48 @@ function TowerRules.MonsterStats(floor, kind)
     }
 end
 
+-- 交互事件只占用普通房，精英房与 Boss 房永不被替换。
+TowerRules.EVENT_ROOMS = { 3, 6 }
+TowerRules.EVENT_START_FLOOR = 2
+TowerRules.INTERACTIVE_EVENTS = { "chest", "merchant", "randomEvent" }
+
+TowerRules.INTERACTIVE_EVENT_SET = {
+    chest = true,
+    merchant = true,
+    randomEvent = true,
+}
+
+function TowerRules.IsInteractiveEvent(kind)
+    return TowerRules.INTERACTIVE_EVENT_SET[kind] == true
+end
+
+-- 纯函数散列：同一 floor/room 在服务端与客户端得到相同事件，无需同步随机数。
+local function eventHash(floor, room)
+    local hash = (floor * 2654435761 + room * 40503) % 2147483647
+    hash = (hash * 1103515245 + 12345) % 2147483647
+    return hash
+end
+
+local function interactiveEventFor(floor, room)
+    if floor < TowerRules.EVENT_START_FLOOR then return nil end
+
+    local slot = nil
+    for index, eventRoom in ipairs(TowerRules.EVENT_ROOMS) do
+        if eventRoom == room then
+            slot = index
+            break
+        end
+    end
+    if not slot then return nil end
+
+    local hash = eventHash(floor, room)
+    -- 每个候选房约 50% 概率出现事件，避免战斗节奏被完全打断。
+    if hash % 2 == 0 then return nil end
+
+    local pick = math.floor(hash / 2) % #TowerRules.INTERACTIVE_EVENTS
+    return TowerRules.INTERACTIVE_EVENTS[pick + 1], (math.floor(hash / 8) % 3) + 1
+end
+
 function TowerRules.GetEncounter(room, floor)
     room = math.floor(tonumber(room) or 0)
     floor = math.floor(positiveFloor(floor))
@@ -250,6 +292,16 @@ function TowerRules.GetEncounter(room, floor)
         kind = "boss"
     end
 
+    local variant = nil
+    if kind == "normal" then
+        local eventKind, eventVariant = interactiveEventFor(floor, room)
+        if eventKind then
+            kind = eventKind
+            variant = eventVariant
+        end
+    end
+
+    local interactive = TowerRules.IsInteractiveEvent(kind)
     return {
         room = room,
         floor = floor,
@@ -257,6 +309,8 @@ function TowerRules.GetEncounter(room, floor)
         eventType = kind,
         isBoss = kind == "boss" or kind == "chapterBoss",
         isChapterBoss = kind == "chapterBoss",
+        isInteractive = interactive,
+        variant = variant,
     }
 end
 

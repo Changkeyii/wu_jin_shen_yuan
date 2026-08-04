@@ -1560,6 +1560,9 @@ function PlayPresentation.HandleDelta(payload)
         elseif kind == "story_gate" and context_.showStoryGate then
             pendingEncounterId_ = nil
             context_.showStoryGate(value)
+        elseif kind == "event_pending" and context_.showPendingEvent then
+            pendingEncounterId_ = nil
+            context_.showPendingEvent(value)
         elseif kind == "equipment_upgrade_available" and context_.showEquipmentUpgrade then
             context_.showEquipmentUpgrade(value)
         elseif (kind == "aid_pending" or kind == "tower_aid_requested") and context_.showAidPrompt then
@@ -1628,6 +1631,9 @@ function PlayPresentation.HandleSnapshot()
     sessionAutoStartAttempted_ = true
     local pendingStoryGate = game.pendingStoryGate or game.pendingStory
     if pendingStoryGate and context_.showStoryGate then context_.showStoryGate(pendingStoryGate) end
+    if game.pendingEvent and context_.showPendingEvent then
+        context_.showPendingEvent(game.pendingEvent)
+    end
     if game.pendingEquipDecision and context_.showEquipmentUpgrade then
         context_.showEquipmentUpgrade(game.pendingEquipDecision)
     end

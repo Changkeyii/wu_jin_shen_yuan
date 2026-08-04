@@ -42,7 +42,7 @@ function AdminCommands.Register(router, adminService)
         allowUnknown = false,
         fields = {
             targetUid = UID,
-            currency = { type = "string", enum = { "gold", "fragments", "mythShards" } },
+            currency = { type = "string", enum = { "gold", "fragments" } },
             amount = { type = "integer", min = 1, max = 1000000 },
             reason = REASON,
         },

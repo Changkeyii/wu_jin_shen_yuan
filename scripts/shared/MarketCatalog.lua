@@ -18,17 +18,16 @@ MarketCatalog.LISTABLE_RARITIES = {
 --- 底价版本用于挂单快照审计；升级公式时旧挂单仍可追溯。
 MarketCatalog.MINIMUM_PRICE_VERSION = 1
 
---- 手续费：基准 8%，每 VIP 等级降低 0.2%，VIP40 归零。
---- 与 Catalog.DECOMPOSE_BASE_REFUND_RATE + vip * PER_LEVEL 同构。
+--- 手续费：基准 8%，每 VIP 等级降低 0.7 个百分点，V10 为 1%。
 MarketCatalog.FEE_RATE_SCALE = 1000
 MarketCatalog.BASE_FEE_UNITS = 80
-MarketCatalog.VIP_FEE_REDUCTION_UNITS = 2
+MarketCatalog.VIP_FEE_REDUCTION_UNITS = 7
 MarketCatalog.BASE_FEE_RATE = MarketCatalog.BASE_FEE_UNITS
     / MarketCatalog.FEE_RATE_SCALE
 MarketCatalog.VIP_FEE_REDUCTION_PER_LEVEL =
     MarketCatalog.VIP_FEE_REDUCTION_UNITS
     / MarketCatalog.FEE_RATE_SCALE
-MarketCatalog.MAX_VIP_LEVEL = 40
+MarketCatalog.MAX_VIP_LEVEL = 10
 
 --- 购买等级准入线。取自 docs/tower-balance-simulation.md 的难度偏移 D(f) 上限 +10。
 --- 这是防止越级购买击穿纵向曲线的核心阀门，不是价格限制。
@@ -36,7 +35,7 @@ MarketCatalog.PURCHASE_LEVEL_HEADROOM = 10
 
 --- 同时挂单数（数量上限，非价格上限），用于约束云账本体量。
 MarketCatalog.BASE_LISTING_SLOTS = 8
-MarketCatalog.VIP_LEVELS_PER_EXTRA_SLOT = 4
+MarketCatalog.VIP_LEVELS_PER_EXTRA_SLOT = 2
 
 --- 挂单有效期 48 小时，到期退回卖家信箱。
 MarketCatalog.LISTING_DURATION_SECONDS = 48 * 60 * 60
@@ -85,7 +84,7 @@ function MarketCatalog.IsListableItem(item)
         and ItemTradeRules.IsTradeable(item)
 end
 
---- 手续费率。VIP 越高越低，VIP40 为 0。
+--- 手续费率。VIP 越高越低，V10 为 1%。
 ---@param vipLevel number|nil
 ---@return number
 function MarketCatalog.GetFeeUnits(vipLevel)

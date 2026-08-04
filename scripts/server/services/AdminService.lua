@@ -177,7 +177,6 @@ function AdminService:Query(actorUserId, targetUserId, onComplete)
             summary.position = state.position
             summary.gold = state.gold
             summary.fragments = state.fragments
-            summary.mythShards = state.mythShards
             summary.inventoryCount = #state.inventory
             summary.power = state.stats and state.stats.power or 0
         end
@@ -328,7 +327,7 @@ function AdminService:Execute(actorUserId, action, payload, onComplete)
     local sanitized = {}
     if action == "grant_currency" then
         local amount = tonumber(payload.amount)
-        if (payload.currency ~= "gold" and payload.currency ~= "fragments" and payload.currency ~= "mythShards")
+        if (payload.currency ~= "gold" and payload.currency ~= "fragments")
             or not amount or amount ~= math.floor(amount) or amount < 1 or amount > 1000000 then
             onComplete(Result(false, {}, "INVALID_GRANT", "currency or amount is outside the grant boundary"))
             return

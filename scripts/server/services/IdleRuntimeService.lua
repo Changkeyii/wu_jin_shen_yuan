@@ -31,6 +31,46 @@ function IdleRuntimeService:Remove(userId)
     self.pending[userId] = nil
 end
 
+-- 事件超时：服务端权威地按 skip 结算，不会代替玩家花费金币。
+function IdleRuntimeService:_enqueueEventTimeout(userId, pendingEvent)
+    if self.pending[userId] then return end
+    local expiresAt = tonumber(pendingEvent and pendingEvent.expiresAt) or 0
+    if os.time() <= expiresAt then return end
+
+    local session = self.profileService:GetSession(userId)
+    if not session or not self.profileService:IsOnline(userId) then return end
+    local generation = session.generation
+    local token = {}
+    self.pending[userId] = token
+
+    self.operationQueue:Enqueue(userId, function(done)
+        local function finish()
+            if self.pending[userId] == token then self.pending[userId] = nil end
+            done()
+        end
+        local current = self.profileService:GetSession(userId)
+        if not self.profileService:IsOnline(userId)
+            or not current or current.generation ~= generation
+            or not current.state.pendingEvent
+        then finish(); return end
+
+        self.profileService:ApplyRuntime(userId, "event timeout skip", function(state, now)
+            return GameEngine.ResolveEvent(state, {}, now, { timeout = true })
+        end, function(result)
+            if result.ok then
+                local delta = result.data and result.data.delta
+                if delta and delta.events and #delta.events > 0 then
+                    print("[IdleEvent] timeout skip uid=" .. tostring(userId))
+                    self.onDelta(userId, delta)
+                end
+            else
+                self.onError(userId, result)
+            end
+            finish()
+        end)
+    end)
+end
+
 function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
     if self.pending[userId] then return end
     local queuedSession = self.profileService:GetSession(userId)
@@ -49,6 +89,7 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
             or not session or session.generation ~= generation
             or not session.state.autoRun
             or session.state.pendingStoryGate
+            or session.state.pendingEvent
         then finish(); return end
         self.profileService:ApplyRuntime(userId, "auto combat tick", function(state, now)
             local current = self.profileService:GetSession(userId)
@@ -95,7 +136,13 @@ function IdleRuntimeService:Update(timeStep)
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         online[userId] = true
         local state = self.profileService:GetState(userId)
-        if state and state.autoRun and state.currentMonster and not state.pendingStoryGate then
+        -- 超时结算交互事件：玩家未选择时服务端强制跳过
+        if state and state.pendingEvent and not self.pending[userId] then
+            self:_enqueueEventTimeout(userId, state.pendingEvent)
+        end
+
+        if state and state.autoRun and state.currentMonster
+            and not state.pendingStoryGate and not state.pendingEvent then
             local elapsed =
                 (self.elapsed[userId] or 0)
                 + timeStep

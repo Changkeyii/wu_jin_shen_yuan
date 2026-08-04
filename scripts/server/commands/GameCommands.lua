@@ -87,6 +87,34 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
+        name = "Game.ClaimDailyVip",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.DailyClaim,
+        async = true,
+        handler = AsyncMutation(services, "claim daily VIP sign-in", function(state, payload, now)
+            return GameEngine.ClaimDailySignInVip(state, now)
+        end),
+    })
+
+    router:Register({
+        name = "Game.ResolveEvent",
+        schema = {
+            type = "object",
+            required = { "eventId", "action" },
+            allowUnknown = false,
+            fields = {
+                eventId = { type = "string", maxLength = 64 },
+                action = { type = "string", enum = { "open", "buy", "accept", "skip" } },
+            },
+        },
+        rate = ServerConfig.RATES.Encounter,
+        async = true,
+        handler = AsyncMutation(services, "resolve tower event", function(state, payload, now)
+            return GameEngine.ResolveEvent(state, payload, now)
+        end),
+    })
+
+    router:Register({
         name = "Game.SetAutoRun",
         schema = {
             type = "object",

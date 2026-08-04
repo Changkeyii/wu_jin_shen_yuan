@@ -86,6 +86,7 @@ local KNOWN = {
     tower_aid_equipment = true,
     tower_aid_pending = true,
     tower_aid_requested = true,
+    vip_level_up = true,
     wish_pool = true,
 }
 
