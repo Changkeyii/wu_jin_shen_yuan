@@ -9,6 +9,7 @@
 local Catalog = require("server.domain.Catalog")
 local GameEngine = require("server.domain.GameEngine")
 local MarketCatalog = require("shared.MarketCatalog")
+local ItemTradeRules = require("shared.ItemTradeRules")
 local LargeNumber = require("shared.LargeNumber")
 local TableUtils = require("server.domain.TableUtils")
 
@@ -49,6 +50,11 @@ end
 ---@return table
 function MarketEngine.BuildListingRecord(item, sellerUid, price, feeRate, now)
     local normalizedPrice = MarketCatalog.NormalizePrice(price)
+    local standardValue = Catalog.GetMarketStandardValue(item)
+    local minimumPrice = MarketCatalog.GetMinimumListingPrice(
+        standardValue,
+        item.rarity
+    )
     local feeUnits = math.max(0, math.min(
         MarketCatalog.FEE_RATE_SCALE,
         math.floor((tonumber(feeRate) or 0)
@@ -58,7 +64,12 @@ function MarketEngine.BuildListingRecord(item, sellerUid, price, feeRate, now)
         itemId = item.id,
         sellerUid = sellerUid,
         price = normalizedPrice,
-        standardValue = Catalog.GetMarketStandardValue(item),
+        standardValue = standardValue,
+        minimumPrice = minimumPrice,
+        minimumPriceVersion = MarketCatalog.MINIMUM_PRICE_VERSION,
+        tradeableChanceUnits = ItemTradeRules.GetTradeableChanceUnits(
+            item.rarity
+        ),
         feeRate = feeUnits / MarketCatalog.FEE_RATE_SCALE,
         feeUnits = feeUnits,
         rarity = item.rarity,
@@ -88,10 +99,23 @@ function MarketEngine.List(inputState, payload, now)
         return failure(inputState, now, "ITEM_NOT_FOUND", "装备不存在")
     end
     if not MarketCatalog.IsListableRarity(item.rarity) then
-        return failure(inputState, now, "RARITY_NOT_LISTABLE", "仅传说及以上装备可以上架")
+        return failure(inputState, now, "RARITY_NOT_LISTABLE", "仅神器及以上装备可以上架")
     end
     if type(item.equipmentId) ~= "string" or item.tradeable ~= true then
         return failure(inputState, now, "ITEM_NOT_TRADABLE", "该装备没有可交易资格")
+    end
+
+    local standardValue = Catalog.GetMarketStandardValue(item)
+    local meetsMinimum, minimumPrice = MarketCatalog.MeetsMinimumListingPrice(
+        price,
+        standardValue,
+        item.rarity
+    )
+    if not meetsMinimum then
+        return failure(inputState, now, "PRICE_BELOW_MINIMUM", string.format(
+            "该装备最低上架价为 %s 金币",
+            LargeNumber.ToString(minimumPrice)
+        ))
     end
 
     local equipped = equippedIdSet(inputState)
@@ -128,6 +152,9 @@ function MarketEngine.List(inputState, payload, now)
         itemId = record.itemId,
         price = record.price,
         standardValue = record.standardValue,
+        minimumPrice = record.minimumPrice,
+        minimumPriceVersion = record.minimumPriceVersion,
+        tradeableChanceUnits = record.tradeableChanceUnits,
         feeRate = record.feeRate,
         feeUnits = record.feeUnits,
         rarity = record.rarity,
@@ -214,6 +241,16 @@ function MarketEngine.Purchase(inputState, payload, now)
         return failure(inputState, now, "INVALID_PRICE", priceReason or "挂单价格异常")
     end
     local price = normalizedPrice
+    local standardValue = Catalog.GetMarketStandardValue(record.item)
+    local meetsMinimum = MarketCatalog.MeetsMinimumListingPrice(
+        price,
+        standardValue,
+        record.item.rarity
+    )
+    if not meetsMinimum then
+        return failure(inputState, now, "PRICE_BELOW_MINIMUM",
+            "挂单价格低于该装备的最低上架价")
+    end
 
     if not MarketCatalog.CanPurchaseLevel(record.level, inputState.floor) then
         return failure(inputState, now, "LEVEL_GATE_BLOCKED", string.format(

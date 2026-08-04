@@ -9,6 +9,7 @@
 --- 业务规则和服务器权威结算不在此文件实现。
 local UI = require("urhox-libs/UI")
 local MarketCatalog = require("shared.MarketCatalog")
+local ItemTradeRules = require("shared.ItemTradeRules")
 local ItemSort = require("shared.ItemSort")
 local ItemPresentation = require("shared.ItemPresentation")
 local LargeNumber = require("shared.LargeNumber")
@@ -68,7 +69,7 @@ end
 
 local function FormatGold(value)
     if context_ and context_.formatInt then return context_.formatInt(value) end
-    return tostring(math.floor(tonumber(value) or 0))
+    return LargeNumber.Format(value)
 end
 
 local function FormatDuration(seconds)
@@ -374,16 +375,18 @@ local function BuildBrowse(game)
         ImageButton("全部", rarityFilter_ == nil and context_.ASSETS.ui.inventoryActionGold
             or context_.ASSETS.ui.inventoryActionBlue, function()
                 rarityFilter_ = nil; LoadBrowse(true)
-            end),
+            end, false, 132),
     }
-    for _, rarityId in ipairs({ "myth", "epic", "legendary" }) do
+    for _, rarityId in ipairs({ "myth", "epic", "legendary", "artifact" }) do
         filterButtons[#filterButtons + 1] = ImageButton(RarityName(rarityId),
             rarityFilter_ == rarityId and context_.ASSETS.ui.inventoryActionGold
                 or context_.ASSETS.ui.inventoryActionBlue,
-            function() rarityFilter_ = rarityId; LoadBrowse(true) end)
+            function() rarityFilter_ = rarityId; LoadBrowse(true) end,
+            false,
+            132)
     end
     filterButtons[#filterButtons + 1] = ImageButton("刷新", context_.ASSETS.ui.inventoryActionBlue,
-        function() LoadBrowse(true) end)
+        function() LoadBrowse(true) end, false, 132)
 
     local sweepIn = math.max(0,
         (browseCache_.nextSweepAt or 0) - (browseCache_.serverTime or os.time()))
@@ -449,23 +452,76 @@ local function BuildListingComposer(game)
             active = listDraft_.itemId == item.id,
             detailText = listDraft_.itemId == item.id and "已选择" or "点击选择",
             onClick = function()
-                listDraft_.itemId = listDraft_.itemId == item.id and nil or item.id
+                if listDraft_.itemId == item.id then
+                    listDraft_ = { itemId = nil, price = "" }
+                else
+                    listDraft_.itemId = item.id
+                    listDraft_.price = LargeNumber.ToString(
+                        item.marketMinimumPrice or LargeNumber.Zero()
+                    )
+                end
                 Refresh()
             end,
         })
     end
     if #candidateCards == 0 then
-        candidateCards[1] = EmptyMessage("背包中没有可交易的传说及以上装备")
+        candidateCards[1] = EmptyMessage("背包中没有可交易的神器及以上装备")
     end
 
+    local selectedItem = nil
+    for _, item in ipairs(candidates) do
+        if item.id == listDraft_.itemId then
+            selectedItem = item
+            break
+        end
+    end
+    if listDraft_.itemId ~= nil and not selectedItem then
+        listDraft_ = { itemId = nil, price = "" }
+    end
+
+    local minimumPrice = selectedItem
+        and MarketCatalog.NormalizePrice(selectedItem.marketMinimumPrice)
+        or LargeNumber.Zero()
+    local standardValue = selectedItem
+        and MarketCatalog.NormalizePrice(selectedItem.marketStandardValue)
+        or LargeNumber.Zero()
+    local chance = selectedItem
+        and ItemTradeRules.GetTradeableChance(selectedItem.rarity)
+        or 0
+    local scarcityMultiplier = selectedItem
+        and ItemTradeRules.GetScarcityMultiplier(selectedItem.rarity)
+        or 0
     local validPrice, _, price = MarketCatalog.ValidatePrice(listDraft_.price)
     price = price or LargeNumber.Zero()
+    local meetsMinimum = selectedItem ~= nil and validPrice
+        and LargeNumber.Compare(price, minimumPrice) >= 0
     local feeBreakdown = MarketCatalog.GetFeeBreakdown(price, game.vipLevel)
-    local canSubmit = listDraft_.itemId ~= nil and validPrice
+    local canSubmit = selectedItem ~= nil and meetsMinimum
         and #listings < listingSlots and not game.readOnly
 
+    local quoteText = "选择装备后将自动填入服务器权威最低价"
+    if selectedItem then
+        quoteText = string.format(
+            "黑市基础价值 %s · 可交易率 %.1f%% · 稀缺系数 %.2f倍 · 最低上架价 %s",
+            FormatGold(standardValue),
+            chance * 100,
+            scarcityMultiplier,
+            FormatGold(minimumPrice)
+        )
+    end
+    local priceStatus
+    if not selectedItem then
+        priceStatus = "请先选择装备"
+    elseif not validPrice then
+        priceStatus = "请输入整数价格"
+    elseif not meetsMinimum then
+        priceStatus = "不得低于 " .. FormatGold(minimumPrice)
+    else
+        priceStatus = "成交实得 " .. FormatGold(feeBreakdown.proceeds)
+    end
+
     return UI.Panel {
-        width = 900, height = 370, flexShrink = 0, position = "relative",
+        width = 900, height = 430, flexShrink = 0, position = "relative",
         backgroundImage = context_.ASSETS.ui.panelLarge,
         backgroundFit = "sliced", backgroundSlice = { 36, 36, 36, 36 },
         children = {
@@ -489,8 +545,12 @@ local function BuildListingComposer(game)
                     },
                 },
             },
+            context_.compactTxt(quoteText, 15, C.warning, {
+                position = "absolute", left = 42, top = 270,
+                width = 816, height = 40, textAlign = "center",
+            }),
             UI.Panel {
-                position = "absolute", left = 36, top = 280,
+                position = "absolute", left = 36, top = 334,
                 width = 500, height = 64,
                 backgroundImage = context_.ASSETS.ui.infoBarBlue,
                 backgroundFit = "sliced", backgroundSlice = { 22, 22, 22, 22 },
@@ -499,7 +559,9 @@ local function BuildListingComposer(game)
                     UI.TextField {
                         width = 460, height = 46,
                         value = listDraft_.price,
-                        placeholder = "输入任意上架价格（金币）",
+                        placeholder = selectedItem
+                            and ("最低 " .. LargeNumber.ToString(minimumPrice))
+                            or "先选择可交易装备",
                         borderColor = C.focus,
                         borderWidth = 1,
                         onChange = function(_, value)
@@ -508,15 +570,13 @@ local function BuildListingComposer(game)
                     },
                 },
             },
-            context_.compactTxt(validPrice
-                and string.format("成交实得 %s", FormatGold(feeBreakdown.proceeds))
-                or "价格不限；异常低价会被扫货",
-                16, C.textSecondary, {
-                    position = "absolute", left = 548, top = 284,
+            context_.compactTxt(priceStatus,
+                16, meetsMinimum and C.textSecondary or C.warning, {
+                    position = "absolute", left = 548, top = 338,
                     width = 170, height = 58, textAlign = "center",
                 }),
             UI.Panel {
-                position = "absolute", left = 724, top = 280,
+                position = "absolute", left = 724, top = 334,
                 width = 160, height = 58,
                 children = {
                     ImageButton("确认上架", context_.ASSETS.ui.inventoryActionGold, function()
@@ -695,7 +755,7 @@ local function BuildAuction(game)
                 position = "absolute", right = 16, top = 0,
                 width = 64, height = 64,
                 children = {
-                    RulesButton("交易行规则", "交易行仅允许上架传说及以上、且掉落时获得可交易资格的装备。每件真实掉落装备有2.5%概率获得该资格；锁定、穿戴或援助占用的装备仍无法上架。挂单价格不设上下限。成交时按VIP等级减免手续费，基础手续费为8%，VIP40及以上为0%。购买装备受当前层数+10的等级范围限制。\n\n价格不高于装备标准值10%的挂单，会在每日07:00与20:00（UTC+8）由系统低价扫货；到期挂单会退回交易信箱。", "rules:auction-house"),
+                    RulesButton("交易行规则", "交易行仅允许上架神器及以上、且掉落时获得可交易资格的装备。可交易率按最终品质递减：神器40%、传说15%、史诗7%、神话2.5%；锁定、穿戴或援助占用的装备仍无法上架。\n\n最低上架价按“向上取整（黑市基础价值 ÷ 可交易率）”计算，对应稀缺系数分别为2.5倍、6.67倍、14.29倍、40倍。成交时按VIP等级减免手续费，基础手续费为8%，VIP40及以上为0%。购买装备受当前层数+10的等级范围限制。挂单48小时到期后会退回交易信箱。", "rules:auction-house"),
                 },
             },
             UI.Panel {

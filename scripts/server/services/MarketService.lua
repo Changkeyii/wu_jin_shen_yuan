@@ -13,6 +13,7 @@
 local ItemSort = require("shared.ItemSort")
 local MarketCatalog = require("shared.MarketCatalog")
 local LargeNumber = require("shared.LargeNumber")
+local Catalog = require("server.domain.Catalog")
 local MarketEngine = require("server.domain.MarketEngine")
 local ServerCloudGateway = require("server.dao.ServerCloudGateway")
 
@@ -162,17 +163,29 @@ function MarketService:Browse(query, onComplete)
                         and record.sellerUid ~= query.viewerUid
                         and MarketCatalog.IsListableItem(record.item)
                     then
-                        collected[#collected + 1] = {
-                            itemId = record.itemId,
-                            sellerUid = record.sellerUid,
-                            price = MarketCatalog.NormalizePrice(record.price),
-                            standardValue = MarketCatalog.NormalizePrice(record.standardValue),
-                            rarity = record.rarity,
-                            slot = record.slot,
-                            level = math.floor(tonumber(record.level) or 1),
-                            expiresAt = math.floor(tonumber(record.expiresAt) or 0),
-                            item = record.item,
-                        }
+                        local standardValue = Catalog.GetMarketStandardValue(
+                            record.item
+                        )
+                        local meetsMinimum, minimumPrice =
+                            MarketCatalog.MeetsMinimumListingPrice(
+                                record.price,
+                                standardValue,
+                                record.item.rarity
+                            )
+                        if meetsMinimum then
+                            collected[#collected + 1] = {
+                                itemId = record.itemId,
+                                sellerUid = record.sellerUid,
+                                price = MarketCatalog.NormalizePrice(record.price),
+                                standardValue = standardValue,
+                                minimumPrice = minimumPrice,
+                                rarity = record.rarity,
+                                slot = record.slot,
+                                level = math.floor(tonumber(record.level) or 1),
+                                expiresAt = math.floor(tonumber(record.expiresAt) or 0),
+                                item = record.item,
+                            }
+                        end
                     end
                 end
             end
@@ -339,6 +352,21 @@ function MarketService:Buy(uid, payload, onComplete)
                 and not MarketCatalog.PriceEquals(payload.expectedPrice, record.price)
             then
                 release(Result(false, {}, "LISTING_GONE", "价格已变化，请刷新"))
+                return
+            end
+            if not MarketCatalog.IsListableItem(record.item) then
+                release(Result(false, {}, "LISTING_GONE", "挂单不再符合交易规则"))
+                return
+            end
+            local standardValue = Catalog.GetMarketStandardValue(record.item)
+            local meetsMinimum = MarketCatalog.MeetsMinimumListingPrice(
+                record.price,
+                standardValue,
+                record.item.rarity
+            )
+            if not meetsMinimum then
+                release(Result(false, {}, "PRICE_BELOW_MINIMUM",
+                    "挂单价格低于当前最低价，已禁止购买"))
                 return
             end
 

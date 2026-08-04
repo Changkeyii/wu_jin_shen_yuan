@@ -19,6 +19,8 @@ local AdminCommands = require("server.commands.AdminCommands")
 local MarketCommands = require("server.commands.MarketCommands")
 local MarketService = require("server.services.MarketService")
 local GameEngine = require("server.domain.GameEngine")
+local Catalog = require("server.domain.Catalog")
+local MarketCatalog = require("shared.MarketCatalog")
 
 ---@type Scene
 local scene_ = nil
@@ -239,6 +241,16 @@ local function SendSnapshot(userId, snapshotEvents)
         isAdmin = adminPolicy_:IsAdmin(userId),
         stats = state.stats,
         itemPower = GameEngine.GetItemPower,
+        itemMarketQuote = function(item)
+            local standardValue = Catalog.GetMarketStandardValue(item)
+            return {
+                standardValue = standardValue,
+                minimumPrice = MarketCatalog.GetMinimumListingPrice(
+                    standardValue,
+                    item.rarity
+                ),
+            }
+        end,
         playerNickname = entry.nickname,
     })
     local stats = state.stats or {}

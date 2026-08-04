@@ -6,7 +6,10 @@ local ServerConfig = require("server.ServerConfig")
 local MarketCommands = {}
 
 local ITEM_ID_SCHEMA = { type = "string", minLength = 1, maxLength = 64 }
-local RARITY_SCHEMA = { type = "string", enum = { "epic", "myth" } }
+local RARITY_SCHEMA = {
+    type = "string",
+    enum = { "artifact", "legendary", "epic", "myth" },
+}
 local SLOT_SCHEMA = {
     type = "string",
     enum = {

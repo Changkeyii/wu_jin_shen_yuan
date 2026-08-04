@@ -505,6 +505,7 @@ local function generatedEquipment(state, rarityId, isBoss, rng, now, source, opt
     if options.rollTradeable == true then
         tradeable = ItemTradeRules.RollDropTradeable(
             itemSource,
+            targetRarity,
             randomFloat(rng)
         )
     end

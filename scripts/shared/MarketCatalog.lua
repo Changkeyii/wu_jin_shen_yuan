@@ -7,12 +7,16 @@ local LargeNumber = require("shared.LargeNumber")
 
 local MarketCatalog = {}
 
---- 可上架品质：传说及以上。
+--- 可上架品质：神器及以上。
 MarketCatalog.LISTABLE_RARITIES = {
+    artifact = true,
     legendary = true,
     epic = true,
     myth = true,
 }
+
+--- 底价版本用于挂单快照审计；升级公式时旧挂单仍可追溯。
+MarketCatalog.MINIMUM_PRICE_VERSION = 1
 
 --- 手续费：基准 8%，每 VIP 等级降低 0.2%，VIP40 归零。
 --- 与 Catalog.DECOMPOSE_BASE_REFUND_RATE + vip * PER_LEVEL 同构。
@@ -154,6 +158,36 @@ function MarketCatalog.PriceEquals(left, right)
         MarketCatalog.NormalizePrice(left),
         MarketCatalog.NormalizePrice(right)
     ) == 0
+end
+
+--- 交易底价 = ceil(装备黑市基础价值 / 该品质可交易概率)。
+--- 概率以整数万分比保存，保证服务端边界判断精确且不受浮点误差影响。
+---@param standardValue table|number|string
+---@param rarityId string|nil
+---@return table
+function MarketCatalog.GetMinimumListingPrice(standardValue, rarityId)
+    local chanceUnits = ItemTradeRules.GetTradeableChanceUnits(rarityId)
+    if chanceUnits <= 0 then return LargeNumber.Max() end
+    return LargeNumber.MultiplyRatioCeil(
+        MarketCatalog.NormalizePrice(standardValue),
+        ItemTradeRules.TRADEABLE_CHANCE_SCALE,
+        chanceUnits
+    )
+end
+
+---@param price table|number|string
+---@param standardValue table|number|string
+---@param rarityId string|nil
+---@return boolean, table
+function MarketCatalog.MeetsMinimumListingPrice(price, standardValue, rarityId)
+    local minimumPrice = MarketCatalog.GetMinimumListingPrice(
+        standardValue,
+        rarityId
+    )
+    return LargeNumber.Compare(
+        MarketCatalog.NormalizePrice(price),
+        minimumPrice
+    ) >= 0, minimumPrice
 end
 
 function MarketCatalog.GetSweepThreshold(standardValue)

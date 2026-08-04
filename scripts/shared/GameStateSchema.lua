@@ -223,6 +223,10 @@ local function networkItem(item)
             and LargeNumber.Normalize(item.investedGold)
             or LargeNumber.FromNumber(item.investedGold),
         investedFragments = item.investedFragments or 0,
+        marketStandardValue = LargeNumber.IsLargeNumber(item.marketStandardValue)
+            and LargeNumber.Normalize(item.marketStandardValue) or nil,
+        marketMinimumPrice = LargeNumber.IsLargeNumber(item.marketMinimumPrice)
+            and LargeNumber.Normalize(item.marketMinimumPrice) or nil,
         power = item.power,
     }
 end
@@ -441,6 +445,8 @@ local ITEM_SCHEMA = {
         tradeable = { type = "boolean" },
         investedGold = CURRENCY_SCHEMA,
         investedFragments = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        marketStandardValue = CURRENCY_SCHEMA,
+        marketMinimumPrice = CURRENCY_SCHEMA,
         power = MAGNITUDE_SCHEMA,
     },
 }
@@ -838,6 +844,13 @@ local function normalizeMarketListings(value)
                     itemId = itemId,
                     price = price,
                     standardValue = normalizeCurrencyValue(entry.standardValue),
+                    minimumPrice = normalizeCurrencyValue(entry.minimumPrice),
+                    minimumPriceVersion = math.max(1, math.floor(
+                        tonumber(entry.minimumPriceVersion) or 1
+                    )),
+                    tradeableChanceUnits = math.max(0, math.min(10000,
+                        math.floor(tonumber(entry.tradeableChanceUnits) or 0)
+                    )),
                     feeRate = math.max(0, math.min(1, tonumber(entry.feeRate) or 0)),
                     feeUnits = math.max(0, math.min(1000,
                         math.floor(tonumber(entry.feeUnits)
@@ -903,6 +916,9 @@ local MARKET_LISTINGS_SCHEMA = {
             itemId = { type = "string", minLength = 1, maxLength = 64 },
             price = CURRENCY_SCHEMA,
             standardValue = CURRENCY_SCHEMA,
+            minimumPrice = CURRENCY_SCHEMA,
+            minimumPriceVersion = { type = "integer", min = 1, max = 1000 },
+            tradeableChanceUnits = { type = "integer", min = 0, max = 10000 },
             feeRate = { type = "number", min = 0, max = 1 },
             feeUnits = { type = "integer", min = 0, max = 1000 },
             rarity = { type = "string", minLength = 1, maxLength = 32 },
@@ -1517,6 +1533,17 @@ function GameStateSchema.BuildSnapshot(state, options)
     if options.itemPower ~= nil then
         for _, item in ipairs(snapshot.inventory or {}) do
             item.power = options.itemPower(item)
+        end
+    end
+    if options.itemMarketQuote ~= nil then
+        for index, item in ipairs(snapshot.inventory or {}) do
+            local quote = options.itemMarketQuote(
+                (state.inventory or {})[index] or item
+            )
+            if type(quote) == "table" then
+                item.marketStandardValue = quote.standardValue
+                item.marketMinimumPrice = quote.minimumPrice
+            end
         end
     end
     return snapshot

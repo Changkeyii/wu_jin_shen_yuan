@@ -197,6 +197,48 @@ function LargeNumber.MultiplyRatio(value, numerator, denominator)
     return currency(quotientHigh, quotientMid, quotientLow)
 end
 
+--- 精确计算 ceil(value * numerator / denominator)。
+--- 先做整除再乘，避免中间乘积超过 27 位而最终商本可表示时被错误饱和。
+function LargeNumber.MultiplyRatioCeil(value, numerator, denominator)
+    value = LargeNumber.Normalize(value)
+    numerator = math.max(0, math.floor(tonumber(numerator) or 0))
+    denominator = math.max(1, math.floor(tonumber(denominator) or 1))
+    if numerator == 0 or LargeNumber.IsZero(value) then
+        return LargeNumber.Zero()
+    end
+
+    local function divideStep(remainder, segmentValue)
+        local combined = remainder * LargeNumber.BASE + segmentValue
+        return math.floor(combined / denominator), combined % denominator
+    end
+
+    local quotientHigh, remainder = divideStep(0, value.high)
+    local quotientMid
+    quotientMid, remainder = divideStep(remainder, value.mid)
+    local quotientLow
+    quotientLow, remainder = divideStep(remainder, value.low)
+
+    local function multiplySegment(segmentValue, carry)
+        local product = segmentValue * numerator + carry
+        return product % LargeNumber.BASE, math.floor(product / LargeNumber.BASE)
+    end
+
+    local low, carry = multiplySegment(quotientLow, 0)
+    local mid
+    mid, carry = multiplySegment(quotientMid, carry)
+    local high
+    high, carry = multiplySegment(quotientHigh, carry)
+    if carry > 0 or high >= LargeNumber.BASE then return LargeNumber.Max() end
+
+    local roundedRemainder = math.floor(
+        (remainder * numerator + denominator - 1) / denominator
+    )
+    return LargeNumber.Add(
+        currency(high, mid, low),
+        LargeNumber.FromNumber(roundedRemainder)
+    )
+end
+
 function LargeNumber.MultiplyScalar(value, scalar)
     scalar = tonumber(scalar) or 0
     if scalar <= 0 or scalar ~= scalar
