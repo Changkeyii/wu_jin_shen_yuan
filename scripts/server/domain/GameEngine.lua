@@ -376,6 +376,15 @@ local function findItem(state, itemId)
     return TableUtils.FindById(state.inventory, itemId)
 end
 
+local function bindEquipmentOnSuccessfulEquip(item)
+    if item and item.tradeable == true then
+        item.tradeable = false
+        print("[EquipmentTrade] bound after equip itemId=" .. tostring(item.id))
+        return true
+    end
+    return false
+end
+
 local function equippedIdSet(state)
     local ids = {}
     for _, itemId in pairs(state.equipped) do
@@ -797,16 +806,17 @@ local function upgradePayload(item, before, after)
 end
 
 local function considerEquipmentUpgrade(state, item, now, events)
-    if not item or item.aidLocked or not findItem(state, item.id) then return false end
+    if not item or item.aidLocked or not findItem(state, item.id) then return false, false end
     local current = findItem(state, state.equipped[item.slot])
-    if current and (current.locked or current.aidLocked) then return false end
+    if current and (current.locked or current.aidLocked) then return false, false end
     local before = evaluateLoadout(state, state.equipped, true)
     local candidateEquipped = TableUtils.DeepCopy(state.equipped)
     candidateEquipped[item.slot] = item.id
     local after = evaluateLoadout(state, candidateEquipped, true)
-    if not upgradePasses(before, after, RewardPolicy.AUTO_EQUIP_MINIMUM_GAIN) then return false end
+    if not upgradePasses(before, after, RewardPolicy.AUTO_EQUIP_MINIMUM_GAIN) then return false, false end
 
     local payload = upgradePayload(item, before, after)
+    local tradeabilityChanged = false
     if state.automationPolicy and state.automationPolicy.autoEquip then
         state.previousLoadout = {
             equipped = TableUtils.DeepCopy(state.equipped),
@@ -814,6 +824,7 @@ local function considerEquipmentUpgrade(state, item, now, events)
             available = true,
         }
         state.equipped = candidateEquipped
+        tradeabilityChanged = bindEquipmentOnSuccessfulEquip(item)
         removeFromLootStash(state, item.id)
         state.pendingEquipDecision = nil
         refreshDerived(state)
@@ -833,11 +844,11 @@ local function considerEquipmentUpgrade(state, item, now, events)
         }
         events[#events + 1] = event("equipment_upgrade_available", payload)
     end
-    return true
+    return true, tradeabilityChanged
 end
 
 local function optimizeWholeLoadout(state, now, events, force)
-    if not force and not (state.automationPolicy and state.automationPolicy.autoEquip) then return false end
+    if not force and not (state.automationPolicy and state.automationPolicy.autoEquip) then return false, false end
     local originalEquipped = TableUtils.DeepCopy(state.equipped)
     local original = evaluateLoadout(state, originalEquipped)
     local selected = TableUtils.DeepCopy(originalEquipped)
@@ -876,7 +887,7 @@ local function optimizeWholeLoadout(state, now, events, force)
     if TableUtils.DeepEqual(selected, originalEquipped)
         or not upgradePasses(original, optimized, RewardPolicy.AUTO_EQUIP_MINIMUM_GAIN)
     then
-        return false
+        return false, false
     end
     state.previousLoadout = {
         equipped = originalEquipped,
@@ -884,7 +895,12 @@ local function optimizeWholeLoadout(state, now, events, force)
         available = true,
     }
     state.equipped = selected
-    for _, itemId in pairs(selected) do
+    local tradeabilityChanged = false
+    for slotId, itemId in pairs(selected) do
+        if originalEquipped[slotId] ~= itemId then
+            tradeabilityChanged = bindEquipmentOnSuccessfulEquip(findItem(state, itemId))
+                or tradeabilityChanged
+        end
         removeFromLootStash(state, itemId)
     end
     state.pendingEquipDecision = nil
@@ -908,7 +924,7 @@ local function optimizeWholeLoadout(state, now, events, force)
         "displayedPowerDeltaBig",
         displayedPowerDelta(original.display, optimized.display))
     events[#events + 1] = event("equipment_equipped", equippedPayload)
-    return true
+    return true, tradeabilityChanged
 end
 
 local function encounterFor(room, floor, explicitType)
@@ -1222,9 +1238,13 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         })
     end
 
-    if droppedItem then considerEquipmentUpgrade(state, droppedItem, now, events) end
+    if droppedItem then
+        local _, boundOnEquip = considerEquipmentUpgrade(state, droppedItem, now, events)
+        inventoryChanged = inventoryChanged or boundOnEquip
+    end
     if isBoss and context and context.offline == true then
-        optimizeWholeLoadout(state, now, events)
+        local _, boundOnOptimize = optimizeWholeLoadout(state, now, events)
+        inventoryChanged = inventoryChanged or boundOnOptimize
         state.position = 0
         state.currentEvent = Catalog.GetCellType(1, state.floor)
         state.floorDefeats = 0
@@ -1234,7 +1254,8 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         return true, inventoryChanged
     end
     if isBoss then
-        optimizeWholeLoadout(state, now, events)
+        local _, boundOnOptimize = optimizeWholeLoadout(state, now, events)
+        inventoryChanged = inventoryChanged or boundOnOptimize
         local completedFloor = state.floor
         events[#events + 1] = event("floor_completed", {
             floor = completedFloor,
@@ -2058,11 +2079,12 @@ function GameEngine.Equip(inputState, itemId, now)
         return noCommit(inputState, now, "already_equipped")
     end
     working.equipped[item.slot] = item.id
+    local tradeabilityChanged = bindEquipmentOnSuccessfulEquip(item)
     removeFromLootStash(working, item.id)
     refreshDerived(working)
     return finalize(inputState, working, now, "equipment_changed", {
         event("equipment_equipped", { itemId = item.id, slot = item.slot }),
-    }, false, true)
+    }, tradeabilityChanged, true)
 end
 
 GameEngine.EquipItem = GameEngine.Equip
@@ -2088,11 +2110,12 @@ GameEngine.UnequipItem = GameEngine.Unequip
 function GameEngine.AutoEquip(inputState, now)
     local working = stateCopy(inputState, now)
     local events = {}
-    if not optimizeWholeLoadout(working, now, events, true) then
+    local changed, tradeabilityChanged = optimizeWholeLoadout(working, now, events, true)
+    if not changed then
         return noCommit(inputState, now, "auto_equip_unchanged")
     end
     events[#events + 1] = event("auto_equip", { evaluatedBy = "PowerEvaluator" })
-    return finalize(inputState, working, now, "auto_equip", events, false, true)
+    return finalize(inputState, working, now, "auto_equip", events, tradeabilityChanged, true)
 end
 
 GameEngine.AutoEquipBest = GameEngine.AutoEquip
@@ -2410,6 +2433,7 @@ function GameEngine.ClaimAid(inputState, rng, now)
         item.setId = nil
         item.setEnabled = false
         working.equipped[slotId] = item.id
+        bindEquipmentOnSuccessfulEquip(item)
         grantedItems[#grantedItems + 1] = item
         inventoryChanged = inventoryChanged or changed
         events[#events + 1] = event("tower_aid_equipment", {
@@ -2581,6 +2605,7 @@ function GameEngine.DecideEquip(inputState, decision, now)
     end
     local events = {}
     local equippedChanged = false
+    local tradeabilityChanged = false
     if decision.action == "equip" then
         local item = findItem(working, pending.itemId)
         if not item then
@@ -2606,6 +2631,7 @@ function GameEngine.DecideEquip(inputState, decision, now)
             available = true,
         }
         working.equipped = candidateEquipped
+        tradeabilityChanged = bindEquipmentOnSuccessfulEquip(item)
         removeFromLootStash(working, item.id)
         refreshDerived(working)
         equippedChanged = true
@@ -2634,7 +2660,8 @@ function GameEngine.DecideEquip(inputState, decision, now)
         })
     end
     working.pendingEquipDecision = nil
-    return finalize(inputState, working, now, "equip_decided", events, false, equippedChanged)
+    return finalize(inputState, working, now, "equip_decided", events,
+        tradeabilityChanged, equippedChanged)
 end
 
 function GameEngine.UndoEquip(inputState, now)
@@ -3238,7 +3265,7 @@ local function simulateOfflineCollection(inputState, now, rng)
             end
         end
     end
-    optimizeWholeLoadout(working, now, events)
+    local _, boundOnOptimize = optimizeWholeLoadout(working, now, events)
 
     local bossCycles = encounterCounts.chapterBoss or 0
     local missedBossCycles = math.max(0, bossCycles - generatedChapterDrops)
@@ -3285,7 +3312,7 @@ local function simulateOfflineCollection(inputState, now, rng)
     return {
         working = working,
         events = events,
-        inventoryChanged = generatedDrops > 0,
+        inventoryChanged = generatedDrops > 0 or boundOnOptimize,
         reward = reward,
         storyGate = false,
     }

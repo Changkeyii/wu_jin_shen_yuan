@@ -1,4 +1,5 @@
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local ItemPresentation = require("shared.ItemPresentation")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 
@@ -243,15 +244,28 @@ local function ApplyEvents(state, events)
 end
 
 local function ProjectEquipment(item)
-    if type(item) ~= "table" or not item.equipmentId then return item end
+    if type(item) ~= "table" then return item end
+    if not item.equipmentId then
+        local projected = DeepCopy(item)
+        projected.rawName = item.rawName or item.name
+        projected.name = ItemPresentation.DisplayName(projected, "未知道具")
+        return projected
+    end
     local definition = EquipmentCatalog.Get(item.equipmentId)
-    if not definition then return item end
+    if not definition then
+        local projected = DeepCopy(item)
+        projected.rawName = item.rawName or item.name
+        projected.name = ItemPresentation.DisplayName(projected, "未知装备")
+        return projected
+    end
     local projected = DeepCopy(definition)
     -- V5 instances carry their rolled authoritative stats. Definition values
     -- are visual/catalog fallbacks only; never overwrite server-provided data.
     for key, value in pairs(item) do projected[key] = DeepCopy(value) end
     projected.id = item.id
     projected.equipmentId = item.equipmentId or definition.id
+    projected.rawName = item.rawName or item.name or definition.name
+    projected.name = ItemPresentation.DisplayName(projected, definition.name)
     projected.level = item.level or definition.level
     projected.enhance = item.enhance or 0
     projected.star = item.star or 0
@@ -393,6 +407,15 @@ local function RebuildView()
             projected.quantity = projected.quantity or projected.count or 0
             nextView.inventory[#nextView.inventory + 1] = projected
         end
+    end
+
+    for _, item in ipairs(nextView.inventory) do
+        item.rawName = item.rawName or item.name
+        item.name = ItemPresentation.DisplayName(item, "未知道具")
+    end
+    for _, item in ipairs(nextView.overflowLoot) do
+        item.rawName = item.rawName or item.name
+        item.name = ItemPresentation.DisplayName(item, "未知道具")
     end
 
     local byId = {}

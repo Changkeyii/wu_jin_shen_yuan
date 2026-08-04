@@ -1,4 +1,5 @@
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local ItemPresentation = require("shared.ItemPresentation")
 local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
 local EquipmentIcon = require("client.EquipmentIcon")
 local BackpackItemSlot = require("client.BackpackItemSlot")
@@ -411,7 +412,7 @@ local function CreateSelectedItemDetail()
             }
         }
     end
-    local slotText = item.slot and SlotName(item.slot) or (item.category or "物品")
+    local slotText = item.slot and SlotName(item.slot) or ItemPresentation.CategoryName(item.category)
     local setText = item.setId and (SETS[item.setId].short .. "套") or "散件"
     local decomposeRefund = type(item.decomposeRefund) == "table" and item.decomposeRefund or nil
     if item.id
@@ -451,7 +452,7 @@ local function CreateSelectedItemDetail()
         { "状态", item.isEquipped and "已穿戴" or "未穿戴", item.isEquipped and C.success or C.textDim },
         { "保护", item.locked and "已锁定" or "未锁定", item.locked and C.gold or C.textDim },
         { "交易", item.tradeable == true and "可交易" or "不可交易", item.tradeable == true and C.success or C.textDim },
-        { "来源", item.source or "legacy", C.textSecondary },
+        { "来源", ItemPresentation.SourceName(item.source), C.textSecondary },
         { "获取", item.acquiredAt and item.acquiredAt > 0 and os.date("%Y-%m-%d %H:%M", item.acquiredAt) or "旧存档", C.textSecondary },
         { "分解返还", refundText, C.textSecondary },
     }

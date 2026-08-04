@@ -10,6 +10,7 @@
 local UI = require("urhox-libs/UI")
 local MarketCatalog = require("shared.MarketCatalog")
 local ItemSort = require("shared.ItemSort")
+local ItemPresentation = require("shared.ItemPresentation")
 local LargeNumber = require("shared.LargeNumber")
 local RarityCatalog = require("shared.RarityCatalog")
 local ServerClient = require("client.ServerClient")
@@ -258,16 +259,21 @@ end
 
 local function ListingItem(listing)
     local item = listing.item
-    if type(item) == "table" then return item end
-    return {
-        id = listing.itemId,
-        name = listing.name or "已上架装备",
-        rarity = listing.rarity,
-        slot = listing.slot,
-        level = listing.level,
-        enhance = listing.enhance or 0,
-        star = listing.star or 0,
-    }
+    if type(item) ~= "table" then
+        item = {
+            id = listing.itemId,
+            name = listing.name or "已上架装备",
+            rarity = listing.rarity,
+            slot = listing.slot,
+            level = listing.level,
+            enhance = listing.enhance or 0,
+            star = listing.star or 0,
+            tradeable = true,
+        }
+    end
+    item.rawName = item.rawName or item.name
+    item.name = ItemPresentation.DisplayName(item, "已上架装备")
+    return item
 end
 
 local function ListingCard(listing, buttonLabel, buttonImage, onClick, disabled, extraText)

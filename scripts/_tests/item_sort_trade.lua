@@ -1,8 +1,10 @@
 local GameStateSchema = require("shared.GameStateSchema")
+local ItemPresentation = require("shared.ItemPresentation")
 local ItemSort = require("shared.ItemSort")
 local ItemTradeRules = require("shared.ItemTradeRules")
 local LargeNumber = require("shared.LargeNumber")
 local MarketCatalog = require("shared.MarketCatalog")
+local GameEngine = require("server.domain.GameEngine")
 local MarketEngine = require("server.domain.MarketEngine")
 local StateFactory = require("server.domain.StateFactory")
 local StateNormalizer = require("server.domain.StateNormalizer")
@@ -81,6 +83,11 @@ local function run()
     local normalized = StateNormalizer.Normalize(base, now)
     equal(normalized.inventory[1].tradeable, true, "explicit tradeable preserved")
     equal(normalized.inventory[2].tradeable, false, "legacy defaults false")
+    equal(ItemPresentation.CategoryName("consumable"), "消耗品", "consumable category localized")
+    equal(ItemPresentation.DisplayName(normalized.inventory[1]),
+        "【可交易】" .. tostring(normalized.inventory[1].name), "tradeable name prefixed")
+    equal(ItemPresentation.DisplayName(normalized.inventory[2]),
+        tostring(normalized.inventory[2].name), "non-tradeable name unchanged")
 
     local persisted = GameStateSchema.ToPersistedState(normalized)
     equal(persisted.inventory[1].tradeable, true, "persisted field preserved")
@@ -89,6 +96,30 @@ local function run()
     local snapshot = GameStateSchema.BuildSnapshot(normalized, {})
     equal(snapshot.inventory[1].tradeable, true, "network field preserved")
     equal(snapshot.inventory[2].tradeable, false, "network legacy false")
+
+    local equipped = GameEngine.Equip(normalized, tradableId, now + 1)
+    equal(equipped.ok, true, "tradeable equipment can be equipped")
+    local equippedItem = nil
+    for _, item in ipairs(equipped.state.inventory) do
+        if item.id == tradableId then equippedItem = item break end
+    end
+    equal(equippedItem and equippedItem.tradeable, false, "equipping consumes tradeable status")
+
+    local unequipped = GameEngine.Unequip(equipped.state, equippedItem.slot, now + 2)
+    equal(unequipped.ok, true, "bound equipment can be unequipped")
+    local unequippedItem = nil
+    for _, item in ipairs(unequipped.state.inventory) do
+        if item.id == tradableId then unequippedItem = item break end
+    end
+    equal(unequippedItem and unequippedItem.tradeable, false, "unequip does not restore tradeable status")
+
+    local reboundListing = MarketEngine.List(unequipped.state, {
+        itemId = tradableId,
+        price = LargeNumber.FromNumber(1000),
+        sellerUid = 123,
+    }, now + 3)
+    equal(reboundListing.ok, false, "equipped-once item listing rejected")
+    equal(reboundListing.error.code, "ITEM_NOT_TRADABLE", "bound listing rejection code")
 
     local blocked = MarketEngine.List(normalized, {
         itemId = legacyId,

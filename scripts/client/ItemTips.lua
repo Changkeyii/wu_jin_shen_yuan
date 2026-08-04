@@ -2,6 +2,7 @@ local UI = require("urhox-libs/UI")
 local Input = require("urhox-libs/UI/Core/Input")
 local PointerEvent = require("urhox-libs/UI/Core/PointerEvent")
 local ItemSlotBase = require("client.ItemSlotBase")
+local ItemPresentation = require("shared.ItemPresentation")
 
 local ItemTips = {}
 
@@ -795,7 +796,8 @@ function ItemTips.Show(item, anchor, options, expanded)
                 }),
             context_.compactTxt(
                 context_.rarityName(item.rarity)
-                    .. " · " .. (item.slot and context_.slotName(item.slot) or (item.category or "道具")),
+                    .. " · " .. (item.slot and context_.slotName(item.slot)
+                        or ItemPresentation.CategoryName(item.category)),
                 19,
                 context_.rarityColor(item.rarity),
                 {

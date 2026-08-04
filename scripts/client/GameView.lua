@@ -1484,7 +1484,9 @@ actionFns_.CollectOffline = function(onCompleted)
     end)
 end
 actionFns_.EquipItem = function(item)
-    if item and item.id then
+    if not (item and item.id) then return end
+
+    local function EquipConfirmed()
         selectedSlot_ = item.slot or selectedSlot_
         ServerClient.Equip(item.id, function(response)
             if not ActionResult(response, "装备已穿戴") then return end
@@ -1494,6 +1496,29 @@ actionFns_.EquipItem = function(item)
             ServerClient.RequestSnapshot()
         end)
     end
+
+    if item.tradeable ~= true then
+        EquipConfirmed()
+        return
+    end
+
+    print("[EquipmentTrade] showing bind confirmation itemId=" .. tostring(item.id))
+    CommonPromptDialog.Show {
+        kind = "equipment",
+        priority = 420,
+        queueKey = "equip_tradeable:" .. tostring(item.id),
+        title = "确认装配可交易装备",
+        message = tostring(item.name or "该装备") .. "装配后将永久变为不可交易装备。",
+        lines = {
+            "该变化不可撤销。",
+            "卸下或撤销换装后也不会恢复可交易状态。",
+        },
+        closeOnOverlay = false,
+        showClose = true,
+        cancelText = "取消",
+        confirmText = "确认装配",
+        onConfirm = EquipConfirmed,
+    }
 end
 actionFns_.UnequipSlot = function(slotId)
     if slotId then
