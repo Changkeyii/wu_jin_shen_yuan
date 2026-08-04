@@ -16,6 +16,8 @@ local IdleRuntimeService = require("server.services.IdleRuntimeService")
 local AdminService = require("server.services.AdminService")
 local GameCommands = require("server.commands.GameCommands")
 local AdminCommands = require("server.commands.AdminCommands")
+local MarketCommands = require("server.commands.MarketCommands")
+local MarketService = require("server.services.MarketService")
 local GameEngine = require("server.domain.GameEngine")
 
 ---@type Scene
@@ -28,6 +30,7 @@ local repository_ = nil
 local profileService_ = nil
 local idleService_ = nil
 local adminService_ = nil
+local marketService_ = nil
 local adminPolicy_ = nil
 local snapshotTransferId_ = 0
 
@@ -548,6 +551,7 @@ local function HandleUpdate(eventType, eventData)
     local timeStep = eventData:GetFloat("TimeStep")
     idleService_:Update(timeStep)
     adminService_:Update(timeStep)
+    marketService_:Tick()
 end
 
 local function InitializeServices()
@@ -593,14 +597,23 @@ local function InitializeServices()
         end,
     })
 
+    marketService_ = MarketService.New({
+        gateway = gateway_,
+        profileService = profileService_,
+        clock = os.time,
+        log = function(message) print(message) end,
+    })
+
     local commandServices = {
         profileService = profileService_,
         idleService = idleService_,
+        marketService = marketService_,
         sendSnapshot = SendSnapshot,
         sendDelta = SendDelta,
     }
     GameCommands.Register(router_, commandServices)
     AdminCommands.Register(router_, adminService_)
+    MarketCommands.Register(router_, commandServices)
     -- 示例云变量命令依赖未随项目发布的示例模块，正式服务端不注册。
 end
 

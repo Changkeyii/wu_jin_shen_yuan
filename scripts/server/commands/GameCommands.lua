@@ -1,5 +1,6 @@
 local CommandRouter = require("server.core.CommandRouter")
 local GameEngine = require("server.domain.GameEngine")
+local EquipmentDisposition = require("server.domain.EquipmentDisposition")
 local ServerConfig = require("server.ServerConfig")
 
 local GameCommands = {}
@@ -40,6 +41,12 @@ local function MutationResponse(result)
             responseData.reward = {
                 gold = value.gold or 0,
                 fragments = value.fragments or 0,
+                count = value.count or 0,
+            }
+            break
+        elseif kind == "equipment_sold" then
+            responseData.reward = {
+                gold = value.gold or 0,
                 count = value.count or 0,
             }
             break
@@ -259,6 +266,54 @@ function GameCommands.Register(router, services)
         handler = AsyncMutation(services, "auto equip", function(state, payload, now)
             return GameEngine.AutoEquip(state, now)
         end),
+    })
+
+    router:Register({
+        name = "Game.DispositionPreview",
+        schema = {
+            type = "object",
+            required = { "mode", "candidateIds" },
+            allowUnknown = false,
+            fields = {
+                mode = { type = "string", enum = { "sell", "decompose" } },
+                candidateIds = {
+                    type = "array",
+                    minLength = 1,
+                    maxLength = ServerConfig.INVENTORY_CAP,
+                    items = { type = "string", minLength = 36, maxLength = 36 },
+                },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = function(context, payload, done)
+            local state = services.profileService:GetState(context.uid)
+            local result = EquipmentDisposition.Preview(state, payload.mode, payload.candidateIds)
+            done(result.ok, result)
+            return CommandRouter.PENDING
+        end,
+    })
+
+    router:Register({
+        name = "Game.SellPreview",
+        schema = {
+            type = "object",
+            required = { "itemId" },
+            allowUnknown = false,
+            fields = {
+                itemId = { type = "string", minLength = 36, maxLength = 36 },
+            },
+        },
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = function(context, payload, done)
+            local state = services.profileService:GetState(context.uid)
+            local result = state
+                and GameEngine.GetSellPreview(state, payload.itemId)
+                or { ok = false, code = "PROFILE_NOT_LOADED", reason = "profile is not loaded" }
+            done(result.ok, result)
+            return CommandRouter.PENDING
+        end,
     })
 
     router:Register({

@@ -7,7 +7,7 @@
   "entry": "main.lua",
   "entry@client": "main.lua",
   "entry@server": "server/ServerMain.lua",
-  "version": "1.0.4",
+  "version": "1.0.9",
   "taptap_publish": {
     "title": "无尽深渊挂机录",
     "description": "<game description>",
@@ -27,10 +27,10 @@
     "promotional_image": ""
   },
   "metadata": {
-    "updated_at": "2026-07-23T07:16:41.339Z"
+    "updated_at": "2026-08-03T09:34:33.205Z"
   },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_4mzc_1784791001228.png",
-    "generated_at": "2026-07-23T07:16:41.339Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_4mzc_1785749673095.png",
+    "generated_at": "2026-08-03T09:34:33.205Z"
   }
 }

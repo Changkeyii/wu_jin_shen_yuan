@@ -1,6 +1,14 @@
 local BigNumber = require("shared.BigNumber")
+local LargeNumber = require("shared.LargeNumber")
 
 local IdleRewardAccumulator = {}
+
+local function ToBigAmount(value)
+    if LargeNumber.IsLargeNumber(value) then
+        return LargeNumber.ToBigNumber(value)
+    end
+    return value or 0
+end
 
 function IdleRewardAccumulator.New()
     return {
@@ -49,8 +57,14 @@ function IdleRewardAccumulator.Accumulate(summary, events, options)
         elseif kind == "wish_pool" then
             summary.gold = BigNumber.Add(summary.gold, value.gold or 0)
         elseif kind == "equipment_auto_disposed" then
-            summary.gold = BigNumber.Add(summary.gold, value.gold or 0)
-            summary.fragments = BigNumber.Add(summary.fragments, value.fragments or 0)
+            summary.gold = BigNumber.Add(
+                summary.gold,
+                ToBigAmount(value.gold)
+            )
+            summary.fragments = BigNumber.Add(
+                summary.fragments,
+                ToBigAmount(value.fragments)
+            )
         elseif kind == "equipment_drop" or kind == "equipment_granted" then
             local itemId = tostring(value.itemId or value.equipmentId or "")
             if itemId ~= "" and not summary.equipmentById[itemId] then

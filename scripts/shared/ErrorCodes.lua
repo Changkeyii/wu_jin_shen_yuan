@@ -24,6 +24,17 @@ local ErrorCodes = {
     CLOUD_ERROR = "CLOUD_ERROR",
     OPERATION_FAILED = "OPERATION_FAILED",
     INTERNAL_ERROR = "INTERNAL_ERROR",
+    LISTING_NOT_FOUND = "LISTING_NOT_FOUND",
+    LISTING_GONE = "LISTING_GONE",
+    LISTING_CONTESTED = "LISTING_CONTESTED",
+    LISTING_SLOTS_FULL = "LISTING_SLOTS_FULL",
+    RARITY_NOT_LISTABLE = "RARITY_NOT_LISTABLE",
+    ITEM_NOT_TRADABLE = "ITEM_NOT_TRADABLE",
+    INVALID_PRICE = "INVALID_PRICE",
+    LEVEL_GATE_BLOCKED = "LEVEL_GATE_BLOCKED",
+    INSUFFICIENT_GOLD = "INSUFFICIENT_GOLD",
+    SELF_PURCHASE = "SELF_PURCHASE",
+    MAILBOX_FULL = "MAILBOX_FULL",
 }
 
 local DESCRIPTIONS = {
@@ -52,6 +63,17 @@ local DESCRIPTIONS = {
     [ErrorCodes.CLOUD_ERROR] = "The cloud operation failed",
     [ErrorCodes.OPERATION_FAILED] = "The operation failed",
     [ErrorCodes.INTERNAL_ERROR] = "An internal server error occurred",
+    [ErrorCodes.LISTING_NOT_FOUND] = "挂单不存在",
+    [ErrorCodes.LISTING_GONE] = "挂单已被买走或已下架",
+    [ErrorCodes.LISTING_CONTESTED] = "已有其他玩家抢先购买",
+    [ErrorCodes.LISTING_SLOTS_FULL] = "挂单数量已达上限",
+    [ErrorCodes.RARITY_NOT_LISTABLE] = "仅传说及以上装备可以上架",
+    [ErrorCodes.ITEM_NOT_TRADABLE] = "该装备不可交易或当前无法上架",
+    [ErrorCodes.INVALID_PRICE] = "价格不合法",
+    [ErrorCodes.LEVEL_GATE_BLOCKED] = "装备等级超出当前层数可购买范围",
+    [ErrorCodes.INSUFFICIENT_GOLD] = "金币不足",
+    [ErrorCodes.SELF_PURCHASE] = "不能购买自己的挂单",
+    [ErrorCodes.MAILBOX_FULL] = "信箱已满，请先领取",
 }
 
 ---@param code string|nil

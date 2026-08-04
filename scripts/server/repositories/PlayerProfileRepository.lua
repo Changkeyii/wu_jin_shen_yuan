@@ -391,7 +391,7 @@ function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
     return operations
 end
 
-function PlayerProfileRepository:Commit(userId, oldState, newState, description, onComplete)
+function PlayerProfileRepository:Commit(userId, oldState, newState, description, onComplete, extraOperations)
     if oldState and newState.revision <= oldState.revision then
         onComplete(Result(false, {}, "REVISION_MISMATCH", "new state revision must advance"))
         return
@@ -400,6 +400,11 @@ function PlayerProfileRepository:Commit(userId, oldState, newState, description,
     if not operations then
         onComplete(Result(false, {}, "PERSISTENCE_MAP_MISSING", buildReason))
         return
+    end
+    -- 领域层附带的跨域操作（市场账本、对方信箱）并入同一个 BatchCommit，
+    -- 使"扣款 + 摘牌 + 对方入信箱"要么全部生效、要么全部回滚。
+    for _, extraOperation in ipairs(extraOperations or {}) do
+        operations[#operations + 1] = extraOperation
     end
     if #operations > 1000 then
         onComplete(Result(false, {}, "BATCH_TOO_LARGE", "transaction exceeds serverCloud operation limit"))

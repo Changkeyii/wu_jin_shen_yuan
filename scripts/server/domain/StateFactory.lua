@@ -1,6 +1,7 @@
 local StateNormalizer = require("server.domain.StateNormalizer")
 local GameStateSchema = require("shared.GameStateSchema")
 local Catalog = require("server.domain.Catalog")
+local LargeNumber = require("shared.LargeNumber")
 
 local StateFactory = {}
 
@@ -45,7 +46,7 @@ local function starterLoadout(now)
             locked = false,
             acquiredAt = now,
             source = "starter",
-            investedGold = 0,
+            investedGold = LargeNumber.Zero(),
             investedFragments = 0,
         }
         equipped[slot.id] = itemId

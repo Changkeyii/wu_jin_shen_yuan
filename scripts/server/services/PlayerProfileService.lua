@@ -127,9 +127,13 @@ function PlayerProfileService:Attach(userId, connection, generation, loadData)
         ban = loadData.ban,
         ready = false,
         loadedAt = self.clock(),
-        offlineQuote = nil,
+        offlineLedger = nil,
+        offlineQuoteToken = nil,
+        offlineClaiming = false,
         offlineReceipts = {},
     }
+    -- 离线收益在上线时一次性由服务端权威结算并冻结，之后在线战斗不再影响它。
+    self:FreezeOfflineReward(userId)
     return self.sessions[userId]
 end
 
@@ -184,6 +188,39 @@ function PlayerProfileService:_nextOfflineQuoteToken(userId, generation, now)
     )
 end
 
+-- 登录或重连时一次性冻结离线收益。冻结后的账本不再受在线战斗影响。
+function PlayerProfileService:FreezeOfflineReward(userId)
+    local session = self.sessions[userId]
+    if not session or not session.state then return nil end
+    rawset(session, "offlineLedger", nil)
+    local ok, ledger, code, reason = pcall(
+        GameEngine.FreezeOfflineReward,
+        session.state,
+        self.clock()
+    )
+    if not ok then
+        print("[OfflineReward] uid=" .. tostring(userId)
+            .. " freeze failed: " .. tostring(ledger))
+        return nil
+    end
+    if type(ledger) ~= "table" then
+        print("[OfflineReward] uid=" .. tostring(userId)
+            .. " no offline reward code=" .. tostring(code)
+            .. " reason=" .. tostring(reason))
+        return nil
+    end
+    session.offlineLedger = ledger
+    print("[OfflineReward] uid=" .. tostring(userId)
+        .. " frozen seconds=" .. tostring(ledger.seconds)
+        .. " equipment=" .. tostring(#(ledger.items or {})))
+    return ledger
+end
+
+function PlayerProfileService:GetOfflineLedger(userId)
+    local session = self.sessions[userId]
+    return session and session.offlineLedger or nil
+end
+
 function PlayerProfileService:PreviewOffline(userId, onComplete)
     local session = self.sessions[userId]
     if not session or not session.state then
@@ -192,47 +229,22 @@ function PlayerProfileService:PreviewOffline(userId, onComplete)
     end
     local now = self.clock()
     PruneOfflineReceipts(session, now)
-    local ok, proposal = pcall(GameEngine.PreviewOffline, session.state, now)
-    if not ok then
-        onComplete(Result(false, {}, "DOMAIN_ERROR", proposal))
-        return
-    end
-    if type(proposal) ~= "table" or not proposal.ok then
-        local errorValue = type(proposal) == "table" and proposal.error or nil
-        onComplete(Result(false, {},
-            errorValue and errorValue.code or "INVALID_PROPOSAL",
-            errorValue and errorValue.reason or "offline preview failed"))
-        return
-    end
-    local valid, validationError = GameStateSchema.ValidateState(proposal.previewState)
-    if not valid then
-        onComplete(Result(false, {}, validationError.code, validationError.reason))
+
+    local ledger = session.offlineLedger
+    if type(ledger) ~= "table" or (ledger.seconds or 0) <= 0 then
+        onComplete(Result(false, {}, "NO_OFFLINE_REWARD", "no frozen offline reward is available"))
         return
     end
 
-    local token = self:_nextOfflineQuoteToken(userId, session.generation, now)
-    session.offlineQuote = {
-        token = token,
-        generation = session.generation,
-        revision = session.state.revision,
-        pendingOfflineSeconds = session.state.pendingOfflineSeconds,
-        lastActiveAt = session.state.lastActiveAt,
-        issuedAt = now,
-        expiresAt = now + OFFLINE_QUOTE_TTL_SECONDS,
-        state = proposal.previewState,
-        events = proposal.previewEvents,
-        inventoryChanged = proposal.previewInventoryChanged == true,
-        reward = proposal.preview,
-        claiming = false,
-    }
-    print("[OfflineQuote] uid=" .. tostring(userId)
-        .. " preview issued revision=" .. tostring(session.state.revision)
-        .. " seconds=" .. tostring(proposal.preview.seconds)
-        .. " processed=" .. tostring(proposal.preview.processedSeconds))
+    -- 账本在登录时已确定，预览只负责为本次领取签发幂等 token。
+    local token = session.offlineQuoteToken
+    if type(token) ~= "string" then
+        token = self:_nextOfflineQuoteToken(userId, session.generation, now)
+        session.offlineQuoteToken = token
+    end
     onComplete(Result(true, {
         quoteToken = token,
-        expiresAt = session.offlineQuote.expiresAt,
-        preview = TableUtils.DeepCopy(proposal.preview),
+        preview = TableUtils.DeepCopy(ledger.reward),
     }))
 end
 
@@ -249,46 +261,35 @@ function PlayerProfileService:ClaimOffline(userId, quoteToken, onComplete)
         onComplete(TableUtils.DeepCopy(receipt.result))
         return
     end
-    local quote = session.offlineQuote
-    if type(quote) ~= "table" or quote.token ~= quoteToken or quote.generation ~= session.generation then
+    if session.offlineQuoteToken ~= quoteToken then
         onComplete(Result(false, {}, "INVALID_OFFLINE_QUOTE", "offline quote is invalid"))
         return
     end
-    if quote.expiresAt <= now then
-        session.offlineQuote = nil
-        onComplete(Result(false, {}, "OFFLINE_QUOTE_EXPIRED", "offline quote expired; request a new preview"))
+    local ledger = session.offlineLedger
+    if type(ledger) ~= "table" or (ledger.seconds or 0) <= 0 then
+        onComplete(Result(false, {}, "NO_OFFLINE_REWARD", "offline reward was already collected"))
         return
     end
-    if quote.claiming then
-        onComplete(Result(false, {}, "OFFLINE_QUOTE_IN_PROGRESS", "offline quote is already being claimed"))
-        return
-    end
-    if quote.revision ~= session.state.revision
-        or quote.pendingOfflineSeconds ~= session.state.pendingOfflineSeconds
-        or quote.lastActiveAt ~= session.state.lastActiveAt
-    then
-        session.offlineQuote = nil
-        onComplete(Result(false, {}, "STALE_OFFLINE_QUOTE", "offline quote no longer matches player state"))
+    if session.offlineClaiming then
+        onComplete(Result(false, {}, "OFFLINE_QUOTE_IN_PROGRESS", "offline reward is already being claimed"))
         return
     end
 
-    quote.claiming = true
+    session.offlineClaiming = true
     self:Apply(userId, "collect offline reward", function(state, timestamp)
-        return GameEngine.CollectOfflineQuote(state, quote, timestamp)
+        return GameEngine.ClaimOfflineReward(state, ledger, timestamp)
     end, function(result)
-        quote.claiming = false
+        session.offlineClaiming = false
         local current = self.sessions[userId]
         if result.ok and current == session then
-            local replayResult = TableUtils.DeepCopy(result)
             session.offlineReceipts[quoteToken] = {
                 expiresAt = self.clock() + OFFLINE_QUOTE_RECEIPT_TTL_SECONDS,
-                result = replayResult,
+                result = TableUtils.DeepCopy(result),
             }
-            session.offlineQuote = nil
-            print("[OfflineQuote] uid=" .. tostring(userId)
+            rawset(session, "offlineLedger", nil)
+            session.offlineQuoteToken = nil
+            print("[OfflineReward] uid=" .. tostring(userId)
                 .. " claimed revision=" .. tostring(result.data.state and result.data.state.revision))
-        elseif current == session and result.code ~= "CLOUD_ERROR" then
-            session.offlineQuote = nil
         end
         onComplete(result)
     end)
@@ -386,6 +387,8 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
         return
     end
 
+    -- 领域层可附带跨域云操作（市场账本 / 对方信箱），与本次存档写入同批提交。
+    local extraOperations = proposal.cloudOperations
     self.repository:Commit(userId, persistedBefore, proposal.state, "abyss " .. tostring(operationName), function(commitResult)
         if not commitResult.ok then
             onComplete(Result(false, { rollbackRevision = before.revision }, commitResult.code, commitResult.reason))
@@ -403,8 +406,9 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
             delta = proposal.delta,
             committed = true,
             alreadyApplied = false,
+            market = proposal.market,
         }))
-    end)
+    end, extraOperations)
 end
 
 function PlayerProfileService:ApplyRuntime(userId, operationName, mutator, onComplete)

@@ -1,4 +1,5 @@
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
 local EquipmentIcon = require("client.EquipmentIcon")
 local BackpackItemSlot = require("client.BackpackItemSlot")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
@@ -27,14 +28,8 @@ function InventoryView.ItemLevelText(item)
     return "Lv" .. tostring(level)
 end
 
-function InventoryView.SortByRarityAndPower(items, rarities, compareItemPower)
-    table.sort(items, function(left, right)
-        local leftRank = rarities[left.rarity] and rarities[left.rarity].rank or 0
-        local rightRank = rarities[right.rarity] and rarities[right.rarity].rank or 0
-        if leftRank ~= rightRank then return leftRank > rightRank end
-        return compareItemPower(left, right) > 0
-    end)
-    return items
+function InventoryView.SortByRarityAndPower(items)
+    return require("shared.ItemSort").Sort(items)
 end
 
 -- 装备页手动布局参数：坐标均相对于 860 x 720 的角色装备区。
@@ -59,7 +54,6 @@ local function CreateInventoryView(context)
     local UI = context.UI
     local C = context.C
     local ASSETS = context.ASSETS
-    local RARITIES = context.RARITIES
     local SET_ORDER = context.SET_ORDER
     local SETS = context.SETS
     local SLOTS = context.SLOTS
@@ -86,7 +80,9 @@ local function CreateInventoryView(context)
     local RequestDecomposePreview = context.requestDecomposePreview
     local EquipItem = context.equipItem
     local UnequipSlot = context.unequipSlot
-    local DecomposeByRank = context.decomposeByRank
+    local DecomposeByFilter = context.decomposeByFilter
+    local ShowDecomposeFilter = context.showDecomposeFilter
+    local ShowDisposition = context.showDisposition
     local SetEquipmentLock = context.setEquipmentLock
     local AutoEquipBest = context.autoEquipBest
     local StrengthenSelected = context.strengthenSelected
@@ -96,12 +92,6 @@ local function CreateInventoryView(context)
     local RarityName = context.rarityName
     local SlotName = context.slotName
     local ItemPower = context.itemPower
-    local CompareItemPower = context.compareItemPower or function(left, right)
-        local leftPower = ItemPower(left)
-        local rightPower = ItemPower(right)
-        if leftPower == rightPower then return 0 end
-        return leftPower > rightPower and 1 or -1
-    end
     local ItemPowerText = context.itemPowerText or function(item) return context.formatInt(ItemPower(item)) end
     local ItemImage = context.itemImage
     local IsEquipped = context.isEquipped
@@ -137,7 +127,7 @@ local function FilteredInventory()
     for _, item in ipairs(game.inventory or {}) do
         if item.category == selectedCategory then list[#list + 1] = item end
     end
-    InventoryView.SortByRarityAndPower(list, RARITIES, CompareItemPower)
+    InventoryView.SortByRarityAndPower(list)
     return list
 end
 
@@ -271,6 +261,7 @@ local function CreateItemIconCard(item, width, height)
         height = height or width or 180,
         selected = selected,
         clickable = true,
+        showLockButton = true,
         onClick = function(widget)
             if selected and ShowItemTips then
                 local bounds = widget and widget.GetAbsoluteLayoutForHitTest
@@ -459,6 +450,7 @@ local function CreateSelectedItemDetail()
         { "数量", FormatInt(item.quantity or 1), C.textSecondary },
         { "状态", item.isEquipped and "已穿戴" or "未穿戴", item.isEquipped and C.success or C.textDim },
         { "保护", item.locked and "已锁定" or "未锁定", item.locked and C.gold or C.textDim },
+        { "交易", item.tradeable == true and "可交易" or "不可交易", item.tradeable == true and C.success or C.textDim },
         { "来源", item.source or "legacy", C.textSecondary },
         { "获取", item.acquiredAt and item.acquiredAt > 0 and os.date("%Y-%m-%d %H:%M", item.acquiredAt) or "旧存档", C.textSecondary },
         { "分解返还", refundText, C.textSecondary },
@@ -573,9 +565,9 @@ local function CreateSelectedItemDetail()
     }
 end
 
-local function CreateInventoryActionButton(text, image, maxRank)
+local function CreateInventoryActionButton(text, image, onClick)
     return UI.Panel {
-        width = 214,
+        width = 260,
         height = 58,
         flexShrink = 0,
         clickable = not readOnly,
@@ -583,7 +575,7 @@ local function CreateInventoryActionButton(text, image, maxRank)
         backgroundImage = image,
         backgroundFit = "contain",
         onClick = function()
-            if not readOnly then DecomposeByRank(maxRank) end
+            if not readOnly and onClick then onClick() end
         end,
         children = {
             Txt(text, 20, C.text, {
@@ -628,26 +620,30 @@ local function CreateInventoryPage()
             width = "100%",
             height = 76,
             flexShrink = 0,
+            flexDirection = "row",
+            justifyContent = "center",
+            alignItems = "center",
+            gap = 18,
             overflow = "hidden",
             children = {
-                UI.ScrollView {
-                    width = "100%", height = 76,
-                    scrollX = true, scrollY = false, showScrollbar = false, bounces = false,
-                    children = {
-                        UI.Panel {
-                            height = 76, flexDirection = "row", alignItems = "center", gap = 12,
-                            paddingLeft = 12, paddingRight = 12,
-                            children = {
-                                CreateInventoryActionButton("分解白", ASSETS.ui.inventoryActionBlue, 1),
-                                CreateInventoryActionButton("分解蓝", ASSETS.ui.inventoryActionBlue, 2),
-                                CreateInventoryActionButton("分解紫", ASSETS.ui.inventoryActionGold, 3),
-                                CreateInventoryActionButton("分解粉", ASSETS.ui.inventoryActionGold, 4),
-                                CreateInventoryActionButton("分解赤红", ASSETS.ui.inventoryActionRed, 5),
-                                CreateInventoryActionButton("分解橙金", ASSETS.ui.inventoryActionRed, 6),
-                            },
-                        },
-                    },
-                },
+                CreateInventoryActionButton("一键分解", ASSETS.ui.inventoryActionBlue, function()
+                    local filter = EquipmentRecycleFilter.Get("decompose")
+                    local candidates = {}
+                    for _, item in ipairs(game.inventory or {}) do
+                        if item.equipmentId and filter[item.rarity] == true
+                            and not item.locked and not item.aidLocked and not IsEquipped(item) then
+                            candidates[#candidates + 1] = item
+                        end
+                    end
+                    if #candidates > 0 then
+                        ShowDisposition("decompose", candidates)
+                    else
+                        DecomposeByFilter()
+                    end
+                end),
+                CreateInventoryActionButton("分解筛选", ASSETS.ui.inventoryActionBlue, function()
+                    ShowDecomposeFilter(RequestPageRefresh)
+                end),
             },
         },
     }
@@ -897,7 +893,7 @@ local function CreateEquipmentPage()
             filtered[#filtered + 1] = item
         end
     end
-    InventoryView.SortByRarityAndPower(filtered, RARITIES, CompareItemPower)
+    InventoryView.SortByRarityAndPower(filtered)
 
     local selectedCandidate = selectedInventoryId and GetItemById(selectedInventoryId) or nil
     if not selectedCandidate or selectedCandidate.slot ~= selectedSlot then

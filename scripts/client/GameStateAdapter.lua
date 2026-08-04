@@ -109,7 +109,8 @@ local function EventText(value)
     elseif kind == "chest_reward" then
         return "开启宝箱：金币" .. FormatValue(value.gold) .. "、碎片" .. FormatValue(value.fragments) .. "。"
     elseif kind == "merchant_trade" then
-        return string.format("商人交易：消耗金币%d，获得碎片%d。", value.goldSpent or 0, value.fragments or 0)
+        return "商人交易：消耗金币" .. FormatValue(value.goldSpent)
+            .. "，获得碎片" .. FormatValue(value.fragments) .. "。"
     elseif kind == "merchant_skipped" then
         return "遇到商人，但金币不足。"
     elseif kind == "wish_pool" then
@@ -257,7 +258,9 @@ local function ProjectEquipment(item)
     projected.locked = item.locked == true
     projected.acquiredAt = item.acquiredAt or 0
     projected.source = item.source or "legacy"
-    projected.investedGold = item.investedGold or 0
+    projected.investedGold = LargeNumber.IsLargeNumber(item.investedGold)
+        and LargeNumber.Normalize(item.investedGold)
+        or LargeNumber.FromNumber(item.investedGold)
     projected.investedFragments = item.investedFragments or 0
     return projected
 end
@@ -317,6 +320,7 @@ local function EmptyView()
         inventory = {},
         overflowLoot = {},
         lootStash = {},
+        marketListings = {},
         equipped = {},
         equippedSlots = {},
         logs = { "正在连接权威服务器..." },
@@ -348,6 +352,7 @@ local function RebuildView()
     nextView.inventory = ProjectInventory(nextView.inventory or {})
     nextView.overflowLoot = ProjectInventory(nextView.overflowLoot or {})
     nextView.lootStash = nextView.lootStash or {}
+    nextView.marketListings = nextView.marketListings or {}
     nextView.equipmentInventoryCount = #nextView.inventory
     nextView.inventoryCapacity = nextView.inventoryCapacity or 300
     nextView.equippedSlots = nextView.equippedSlots or nextView.equipped or {}

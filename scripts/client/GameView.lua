@@ -5,6 +5,8 @@ local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
 local AdminPanel = require("client.AdminPanel")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local ItemSort = require("shared.ItemSort")
+local RarityCatalog = require("shared.RarityCatalog")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local StoryCatalog = require("shared.StoryCatalog")
@@ -19,6 +21,9 @@ local CommonPromptDialog = require("client.CommonPromptDialog")
 local DialogCoordinator = require("client.DialogCoordinator")
 local AudioController = require("client.AudioController")
 local EquipmentCodexView = require("client.EquipmentCodexView")
+local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
+local EquipmentDispositionDialog = require("client.EquipmentDispositionDialog")
+local MarketView = require("client.MarketView")
 local IdleRewardAccumulator = require("client.IdleRewardAccumulator")
 
 local CONFIG = GameTheme.CONFIG
@@ -42,6 +47,10 @@ local lootStashOverlay_ = nil
 local lootStashForced_ = false
 local lootStashClaimPending_ = false
 local lootStashLoginGuideShown_ = false
+local offlineLoginGuideShown_ = false
+local offlineLoginFlowPending_ = false
+local MaybeShowOfflineLoginGuide
+local MaybeShowLootStashLoginGuide
 local equipmentUpgradeOverlay_ = nil
 local equipmentUpgradeItemId_ = nil
 local pageContainer_ = nil
@@ -123,6 +132,7 @@ local ASSETS = {
         statPower = "image/ui/brawlforge_stat_power.png",
         inventoryTitle = "image/ui/inventory/title_panel.png",
         inventoryDetail = "image/ui/inventory/detail_panel_tall.png",
+        inventoryDetailCompact = "image/ui/inventory/detail_panel.png",
         inventorySlotEmpty = "image/ui/inventory/slot_empty.png",
         inventorySlotCommon = "image/ui/inventory/slot_common.png",
         inventorySlotRare = "image/ui/inventory/slot_rare.png",
@@ -139,6 +149,13 @@ local ASSETS = {
         inventoryItemCard = "image/ui/inventory/item_card.png",
         inventoryEmptyState = "image/inventory_empty_state_20260720075957.png",
         inventoryItemCardSelected = "image/ui/inventory/item_card_selected.png",
+        marketBackground = "image/ui/market/background.png",
+        marketTitlePanel = "image/ui/market/title_panel.png",
+        marketMainFrame = "image/ui/market/main_frame.png",
+        marketTabOn = "image/ui/market/tab_on.png",
+        marketTabOff = "image/ui/market/tab_off.png",
+        marketListingCard = "image/ui/market/listing_card.png",
+        marketBlackCounter = "image/ui/market/black_counter.png",
         itemTipsMainFrame = "image/ui/itemtips/main_frame.png",
         itemTipsMainFrameCompare = "image/ui/itemtips/main_frame_compare.png",
         itemTipsDetailRow = "image/ui/itemtips/detail_row.png",
@@ -208,15 +225,15 @@ local ASSETS = {
         boss = "image/punk_mech_enemy_boss_alt_20260718113640.png",
     },
     items = {
-        sword = "image/cyber_item_sword_20260725004709.png",
-        armor = "image/cyber_item_armor_20260725004650.png",
-        ring = "image/cyber_item_ring_20260725004652.png",
-        boots = "image/cyber_item_boots_20260725004701.png",
-        amulet = "image/cyber_item_amulet_20260725004651.png",
-        chest = "image/cyber_item_chest_20260725004656.png",
-        gold = "image/cyber_gold_coin_clear_20260725054437.png",
-        potion = "image/cyber_item_potion_20260725004649.png",
-        crystal = "image/cyber_item_crystal_20260725004653.png",
+        sword = "image/pixel_item_sword_20260713175812.png",
+        armor = "image/pixel_item_armor_20260713175625.png",
+        ring = "image/pixel_item_ring_20260713175624.png",
+        boots = "image/pixel_item_boots_20260713175628.png",
+        amulet = "image/pixel_item_amulet_20260713175651.png",
+        chest = "image/pixel_item_chest_20260713175627.png",
+        gold = "image/pixel_item_gold_20260713175638.png",
+        potion = "image/pixel_item_potion_20260713175813.png",
+        crystal = "image/pixel_item_crystal_20260713175626.png",
     },
 }
 
@@ -1074,7 +1091,8 @@ local function OfflineRewardCards(value)
         OfflineRewardItemCard(ASSETS.items.crystal, "经验", "+" .. FormatInt(value.exp or 0), "advanced"),
         OfflineRewardItemCard(ASSETS.items.crystal, "碎片", "+" .. FormatInt(value.fragments or 0), "rare"),
     }
-    for _, item in ipairs(value.equipmentItems or {}) do
+    local equipmentItems = ItemSort.Sort(value.equipmentItems or {})
+    for _, item in ipairs(equipmentItems) do
         cards[#cards + 1] = OfflineRewardItemCard(
             ItemImage(item),
             item.name or "装备",
@@ -1255,7 +1273,7 @@ local function OfflinePreviewContent(value)
     }
 end
 
-local function ShowOfflineRewardDialog(value)
+local function ShowOfflineRewardDialog(value, onCompleted)
     value = value or {}
     local cards = OfflineRewardCards(value)
     local lines = {
@@ -1268,7 +1286,7 @@ local function ShowOfflineRewardDialog(value)
     elseif (value.remainingSeconds or 0) > 0 then
         lines[#lines + 1] = "剩余离线时间：" .. FormatDuration(value.remainingSeconds)
     end
-    ShowRewardDialog {
+    local shown = ShowRewardDialog {
         priority = 450,
         queueKey = "offline_reward:" .. tostring(value.processedSeconds or 0) .. ":" .. tostring(value.floor or 1),
         title = "获得离线奖励",
@@ -1276,12 +1294,18 @@ local function ShowOfflineRewardDialog(value)
         lines = lines,
         confirmText = "确认收取",
         cards = cards,
+        onConfirm = onCompleted,
+        onCancel = onCompleted,
     }
+    if not shown and onCompleted then onCompleted() end
+    return shown
 end
 
-local function ShowOfflinePreviewDialog(quoteToken, value, onClaim, onCancel)
+local function ShowOfflinePreviewDialog(quoteToken, value, onClaim, onCancel, forceClaim)
     value = value or {}
     local dialogKey = "offline_preview:" .. tostring(quoteToken)
+    local cancelText = "稍后领取"
+    if forceClaim then cancelText = nil end
     offlineDialogKey_ = dialogKey
     return CommonPromptDialog.Show {
         kind = "confirm",
@@ -1294,13 +1318,13 @@ local function ShowOfflinePreviewDialog(quoteToken, value, onClaim, onCancel)
         closeRight = 22,
         buttonTop = 1017,
         cancelButtonLeft = 108,
-        confirmButtonLeft = 492,
+        confirmButtonLeft = forceClaim and 300 or 492,
         cancelTextLeft = 2,
         cancelTextTop = -2,
-        cancelText = "稍后领取",
+        cancelText = cancelText,
+        showClose = not forceClaim,
         confirmText = "确认领取",
         closeOnOverlay = false,
-        showClose = true,
         contentBuilder = function()
             return OfflinePreviewContent(value)
         end,
@@ -1309,40 +1333,25 @@ local function ShowOfflinePreviewDialog(quoteToken, value, onClaim, onCancel)
     }
 end
 
-local function DecomposeRankLabel(maxRank)
-    for _, rarityId in ipairs(RARITY_ORDER) do
-        local rarity = RARITIES[rarityId]
-        if rarity.rank == maxRank then
-            return rarity.name .. "（" .. rarity.short .. "色）"
-        end
-    end
-    return "指定品质"
-end
-
-local function CollectDecomposeCandidateItems(maxRank)
+local function CollectDecomposeCandidateItems(selection)
     game = GameStateAdapter.GetViewState()
+    selection = type(selection) == "table" and selection or {}
     local items = {}
     for _, item in ipairs(game.inventory or {}) do
-        local rarity = RARITIES[item.rarity]
+        local rarityId = RarityCatalog.NormalizeId(item.rarity)
         if item.equipmentId and item.id ~= nil
-            and rarity and rarity.rank <= maxRank
-            and not item.locked and not IsEquipped(item) then
+            and selection[rarityId] == true
+            and rarityId ~= "myth"
+            and not item.locked and not item.aidLocked and not IsEquipped(item) then
             items[#items + 1] = item
         end
     end
     return items
 end
 
-local function CollectDecomposeCandidates(maxRank)
-    local items = CollectDecomposeCandidateItems(maxRank)
-    local ids = {}
-    for _, item in ipairs(items) do ids[#ids + 1] = item.id end
-    return ids
-end
-
 local function ShowDecomposeRewardDialog(gold, fragments, count)
     local cards = {}
-    if gold and gold > 0 then
+    if not LargeNumber.IsZero(gold) then
         AddRewardCard(cards, ASSETS.items.gold, "金币", "+" .. FormatInt(gold), "epic")
     end
     if fragments and fragments > 0 then
@@ -1358,8 +1367,20 @@ local function ShowDecomposeRewardDialog(gold, fragments, count)
     }
 end
 
+local function CompleteOfflineLoginFlow()
+    if not offlineLoginFlowPending_ then return end
+    offlineLoginFlowPending_ = false
+    game = GameStateAdapter.GetViewState()
+    if MaybeShowLootStashLoginGuide then
+        MaybeShowLootStashLoginGuide()
+    end
+end
+
 local actionFns_ = {}
-actionFns_.CollectOffline = function()
+actionFns_.CollectOffline = function(onCompleted)
+    if not onCompleted and offlineLoginFlowPending_ then
+        onCompleted = CompleteOfflineLoginFlow
+    end
     if offlineClaimState_ == OFFLINE_CLAIM_PREVIEWING then
         UI.Toast.Show("正在获取离线收益预览，请稍候", { duration = 1.5, variant = "info", position = "bottom" })
         return
@@ -1439,9 +1460,10 @@ actionFns_.CollectOffline = function()
                 print("[OfflineClaim] claim completed sequence=" .. tostring(sequence))
                 local reward = OfflineRewardEvent(claimResponse)
                 if reward then
-                    ShowOfflineRewardDialog(reward)
+                    ShowOfflineRewardDialog(reward, onCompleted)
                 else
                     UI.Toast.Show("离线收益已领取", { duration = 2.0, variant = "success", position = "bottom" })
+                    if onCompleted then onCompleted() end
                 end
                 ServerClient.RequestSnapshot()
             end)
@@ -1449,8 +1471,8 @@ actionFns_.CollectOffline = function()
             if sequence ~= offlineClaimSequence_ then return end
             offlineDialogKey_ = nil
             offlineClaimState_ = OFFLINE_CLAIM_IDLE
-            print("[OfflineClaim] preview cancelled sequence=" .. tostring(sequence))
-        end)
+            print("[OfflineClaim] preview closed sequence=" .. tostring(sequence))
+        end, offlineLoginFlowPending_)
         if not shown then
             offlineDialogKey_ = nil
             offlineClaimState_ = OFFLINE_CLAIM_IDLE
@@ -1480,8 +1502,10 @@ actionFns_.UnequipSlot = function(slotId)
     end
 end
 actionFns_.AutoEquipBest = function() ServerClient.AutoEquip(ActionResult) end
-actionFns_.DecomposeByRank = function(maxRank)
-    local items = CollectDecomposeCandidateItems(maxRank)
+actionFns_.DecomposeByFilter = function()
+    local filter = EquipmentRecycleFilter.Get("decompose")
+    local maximumRank = EquipmentRecycleFilter.MaxSelectedRank("decompose")
+    local items = CollectDecomposeCandidateItems(filter)
     if #items == 0 then
         UI.Toast.Show("没有符合条件的未锁定、未穿戴装备", { duration = 1.8, variant = "info", position = "bottom" })
         return
@@ -1493,12 +1517,13 @@ actionFns_.DecomposeByRank = function(maxRank)
     local cellRefs = {}
 
     local function RecomputeTotals()
-        local gold, frag = 0, 0
+        local gold = LargeNumber.Zero()
+        local frag = 0
         for _, item in ipairs(items) do
             if selected[item.id] then
                 local r = refunds[item.id]
                 if r then
-                    gold = gold + (r.gold or 0)
+                    gold = LargeNumber.Add(gold, r.gold or 0)
                     frag = frag + (r.fragments or 0)
                 end
             end
@@ -1520,7 +1545,8 @@ actionFns_.DecomposeByRank = function(maxRank)
         if totalFragText then totalFragText:SetText("+" .. FormatInt(frag)) end
         if headerCountText then
             headerCountText:SetText("即将分解 " .. tostring(SelectedCount()) .. " / "
-                .. tostring(#items) .. " 件装备（" .. DecomposeRankLabel(maxRank) .. "及以下）")
+                .. tostring(#items) .. " 件装备（筛选："
+                .. EquipmentRecycleFilter.Summary("decompose") .. "）")
         end
     end
 
@@ -1543,7 +1569,7 @@ actionFns_.DecomposeByRank = function(maxRank)
             UI.Toast.Show("请至少选择一件装备", { duration = 1.6, variant = "info", position = "bottom" })
             return false
         end
-        ServerClient.Decompose(maxRank, ids, function(response)
+        ServerClient.Decompose(maximumRank, ids, function(response)
             if not (response and response.ok) then
                 ActionResult(response)
                 return
@@ -1612,7 +1638,7 @@ actionFns_.DecomposeByRank = function(maxRank)
     })
     headerCountText = CompactTxt(
         "即将分解 " .. tostring(SelectedCount()) .. " / " .. tostring(#items)
-            .. " 件装备（" .. DecomposeRankLabel(maxRank) .. "及以下）",
+            .. " 件装备（筛选：" .. EquipmentRecycleFilter.Summary("decompose") .. "）",
         24, C.text, {
             width = "100%", height = 36, textAlign = "center",
             textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
@@ -1723,7 +1749,12 @@ actionFns_.DecomposeByRank = function(maxRank)
         end)
     end
 end
-actionFns_.SetEquipmentLock = function(item) ServerClient.SetEquipmentLock(item.id, not item.locked, ActionResult) end
+actionFns_.SetEquipmentLock = function(item)
+    ServerClient.SetEquipmentLock(item.id, not item.locked, function(response)
+        if not ActionResult(response, item.locked and "装备已解锁" or "装备已锁定") then return end
+        RequestPageRefresh()
+    end)
+end
 actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, ActionResult) end
 actionFns_.StrengthenSelected = function()
     local slotId = selectedSlot_
@@ -2703,6 +2734,7 @@ local function CreateHomePage()
 end
 
 local InventoryView = require("client.InventoryView")
+local BuildDispositionContext
 
 local function BuildInventoryContext()
     return {
@@ -2735,7 +2767,13 @@ local function BuildInventoryContext()
         requestDecomposePreview = ServerClient.DecomposePreview,
         equipItem = actionFns_.EquipItem,
         unequipSlot = actionFns_.UnequipSlot,
-        decomposeByRank = actionFns_.DecomposeByRank,
+        decomposeByFilter = actionFns_.DecomposeByFilter,
+        showDecomposeFilter = function(onSaved)
+            EquipmentRecycleFilter.Show("decompose", { onSaved = onSaved })
+        end,
+        showDisposition = function(mode, items)
+            EquipmentDispositionDialog.Show(BuildDispositionContext(), { mode = mode, items = items })
+        end,
         setEquipmentLock = actionFns_.SetEquipmentLock,
         autoEquipBest = actionFns_.AutoEquipBest,
         strengthenSelected = actionFns_.StrengthenSelected,
@@ -2839,7 +2877,7 @@ local function LootStashItems()
         local item = GetItemById(itemId)
         if item then items[#items + 1] = item end
     end
-    return items
+    return ItemSort.Sort(items)
 end
 
 local function ShowLootStash(forced)
@@ -2954,10 +2992,43 @@ local function ShowLootStash(forced)
     return true
 end
 
-local function MaybeShowLootStashLoginGuide()
+-- 上线后若服务端已冻结离线收益，强引导先领取再进入在线玩法。
+MaybeShowOfflineLoginGuide = function()
+    if offlineLoginGuideShown_ then return false end
+    if (game.pendingOfflineSeconds or 0) <= 0 then return false end
+    offlineLoginGuideShown_ = true
+    local shown = CommonPromptDialog.Show {
+        kind = "confirm",
+        priority = 1200,
+        queueKey = "offline_login_guide",
+        title = "离线收益待领取",
+        message = "本次离线收益已由服务器结算完成，请先领取。",
+        lines = {
+            "离线奖励在上线时已锁定，不会受本次在线挂机影响。",
+            "领取后金币与装备会直接并入当前角色。",
+        },
+        closeOnOverlay = false,
+        showClose = false,
+        confirmText = "领取离线收益",
+        onConfirm = function()
+            if actionFns_.CollectOffline then
+                actionFns_.CollectOffline(CompleteOfflineLoginFlow)
+            end
+        end,
+    }
+    if shown then
+        offlineLoginFlowPending_ = true
+    else
+        offlineLoginGuideShown_ = false
+    end
+    return shown
+end
+
+MaybeShowLootStashLoginGuide = function()
+    if offlineLoginFlowPending_ then return false end
     if lootStashLoginGuideShown_ then return false end
-    lootStashLoginGuideShown_ = true
     if #(game.lootStash or {}) == 0 then return false end
+    lootStashLoginGuideShown_ = true
     local count = #game.lootStash
     local shown = CommonPromptDialog.Show {
         kind = "confirm",
@@ -3168,28 +3239,62 @@ local function CreatePlayPage()
     return PlayPresentation.BuildPage()
 end
 
+BuildDispositionContext = function()
+    return {
+        C = C,
+        ASSETS = ASSETS,
+        compactTxt = CompactTxt,
+        shortenText = ShortenText,
+        rarityColor = RarityColor,
+        itemImage = ItemImage,
+        itemLevelText = ItemLevelText,
+        isEquipped = IsEquipped,
+        formatInt = FormatInt,
+        onRefresh = RequestPageRefresh,
+        toast = function(message, variant)
+            UI.Toast.Show(message, { duration = 1.8, variant = variant or "info", position = "bottom" })
+        end,
+        onError = ActionResult,
+        showReward = function(mode, reward)
+            local cards = {}
+            if not LargeNumber.IsZero(reward.gold) then
+                AddRewardCard(cards, ASSETS.items.gold, "金币", "+" .. FormatInt(reward.gold), "epic")
+            end
+            if not LargeNumber.IsZero(reward.fragments) then
+                AddRewardCard(cards, ASSETS.items.crystal, "碎片", "+" .. FormatInt(reward.fragments), "rare")
+            end
+            ShowRewardDialog {
+                title = mode == "sell" and "出售成功" or "分解成功",
+                message = string.format("已%s %d 件装备", mode == "sell" and "出售" or "分解", reward.count or 0),
+                lines = { "获得资源已存入账户" },
+                cards = cards,
+                confirmText = "确认收取",
+            }
+        end,
+    }
+end
+
 local function CreateMarketPage()
-    return UI.Panel {
-        width = "100%",
-        height = "100%",
-        alignItems = "center",
-        justifyContent = "center",
-        children = {
-            UI.Panel {
-                width = 860,
-                height = 420,
-                backgroundImage = ASSETS.ui.panelLarge,
-                backgroundFit = "sliced",
-                backgroundSlice = { 12, 12, 12, 12 },
-                alignItems = "center",
-                justifyContent = "center",
-                gap = 18,
-                children = {
-                    Txt("市场", 36, C.text, { width = "100%", textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
-                    CompactTxt("市场功能暂未开放", 24, C.textSecondary, { width = "100%", textAlign = "center" }),
-                },
-            },
-        },
+    return MarketView.Build {
+        game = GameStateAdapter.GetViewState(),
+        C = C,
+        ASSETS = ASSETS,
+        txt = Txt,
+        compactTxt = CompactTxt,
+        formatInt = FormatInt,
+        rarityColor = RarityColor,
+        itemImage = ItemImage,
+        itemLevelText = ItemLevelText,
+        isEquipped = IsEquipped,
+        shortenText = ShortenText,
+        showItemTips = ItemTips.Show,
+        registerItemTipsTrigger = ItemTips.RegisterTrigger,
+        setEquipmentLock = actionFns_.SetEquipmentLock,
+        dispositionContext = BuildDispositionContext(),
+        onRefresh = RequestPageRefresh,
+        showPrompt = function(options)
+            return CommonPromptDialog.Show(options)
+        end,
     }
 end
 
@@ -3487,6 +3592,9 @@ local function BuildRoot()
         formatInt = FormatInt,
         isEquipped = IsEquipped,
         requestDecomposePreview = ServerClient.DecomposePreview,
+        showDisposition = function(mode, items)
+            EquipmentDispositionDialog.Show(BuildDispositionContext(), { mode = mode, items = items })
+        end,
     }
     ItemTips.AttachRoot(screenRoot_)
     LoadingController.AttachRoot(uiRoot_)
@@ -3512,6 +3620,7 @@ local function BindServerEvents()
             idleRewardTracking_ = false
             ResetIdleRewardSummary()
         end
+        MaybeShowOfflineLoginGuide()
         MaybeShowLootStashLoginGuide()
         PlayPresentation.HandleSnapshot()
         UpdateTopBar()
@@ -3552,6 +3661,8 @@ local function BindServerEvents()
             offlineClaimState_ = OFFLINE_CLAIM_IDLE
             offlineDialogKey_ = nil
             lootStashLoginGuideShown_ = false
+            offlineLoginGuideShown_ = false
+            offlineLoginFlowPending_ = false
             lootStashClaimPending_ = false
             DialogCoordinator.CancelByKey("loot_stash_login_guide")
             CloseLootStash(true)
@@ -3574,6 +3685,8 @@ local function BindServerEvents()
         offlineClaimState_ = OFFLINE_CLAIM_IDLE
         offlineDialogKey_ = nil
         lootStashLoginGuideShown_ = false
+        offlineLoginGuideShown_ = false
+        offlineLoginFlowPending_ = false
         lootStashClaimPending_ = false
         DialogCoordinator.CancelByKey("loot_stash_login_guide")
         CloseLootStash(true)

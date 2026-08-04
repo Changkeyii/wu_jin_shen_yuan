@@ -4,6 +4,8 @@ local EquipmentIcon = require("client.EquipmentIcon")
 
 local ItemSlotBase = {}
 
+local LOCK_BADGE = "image/ui/inventory/equipment_lock_badge.png"
+
 function ItemSlotBase.Frame(assets, item, selected)
     if selected then return assets.ui.inventorySlotSelected end
     if not item then return assets.ui.inventorySlotEmpty end
@@ -88,6 +90,15 @@ function ItemSlotBase.Build(context, item, options)
                 width = S(24), height = S(24), textAlign = "center",
                 textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
             })
+        end
+        if options.showLock ~= false and item.locked then
+            children[#children + 1] = UI.Panel {
+                position = "absolute", left = S(43), top = S(43),
+                width = S(58), height = S(58),
+                backgroundImage = LOCK_BADGE,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            }
         end
         local rarity = item.rarity
         if rarity == "artifact" or rarity == "legendary" or rarity == "legend"

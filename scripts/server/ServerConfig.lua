@@ -27,6 +27,10 @@ ServerConfig.RATES = {
     CollectOffline = { refillRate = 0.1, burst = 1 },
     AdminQuery = { refillRate = 1, burst = 3 },
     AdminMutation = { refillRate = 0.2, burst = 2 },
+    -- 市场：浏览走分片内缓存所以可以稍宽松；写操作会触发云事务，必须收紧。
+    MarketBrowse = { refillRate = 2, burst = 5 },
+    MarketQuery = { refillRate = 1, burst = 3 },
+    MarketMutation = { refillRate = 0.5, burst = 3 },
 }
 
 ---@param uid number|string|nil

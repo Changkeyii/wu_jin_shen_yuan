@@ -8,6 +8,7 @@ local TowerRules = require("shared.TowerRules")
 local FloorRoute = require("shared.FloorRoute")
 local RewardPolicy = require("shared.RewardPolicy")
 local RarityCatalog = require("shared.RarityCatalog")
+local ItemTradeRules = require("shared.ItemTradeRules")
 local PowerEvaluator = require("shared.PowerEvaluator")
 local StoryCatalog = require("shared.StoryCatalog")
 local GameStateSchema = require("shared.GameStateSchema")
@@ -490,6 +491,14 @@ local function generatedEquipment(state, rarityId, isBoss, rng, now, source, opt
     local coreAffixes = rollCoreAffixes(targetRarity, rng, actual)
     local uniqueEffect = targetRarity == "myth" and "myth.tower_soul_resonance" or nil
     if uniqueEffect then actual.bossDamage = (actual.bossDamage or 0) + 0.08 end
+    local itemSource = source or (isBoss and "boss_drop" or "monster_drop")
+    local tradeable = options.tradeable == true
+    if options.rollTradeable == true then
+        tradeable = ItemTradeRules.RollDropTradeable(
+            itemSource,
+            randomFloat(rng)
+        )
+    end
     local item = {
         id = allocateItemId(state),
         equipmentId = definition.id,
@@ -498,8 +507,9 @@ local function generatedEquipment(state, rarityId, isBoss, rng, now, source, opt
         star = star,
         locked = false,
         acquiredAt = nowInteger(now),
-        source = source or (isBoss and "boss_drop" or "monster_drop"),
-        investedGold = 0,
+        source = itemSource,
+        tradeable = tradeable,
+        investedGold = LargeNumber.Zero(),
         investedFragments = 0,
         name = definition.name,
         slot = definition.slot,
@@ -533,7 +543,7 @@ end
 
 local function disposeEquipment(state, item, mode)
     if mode == "sell" then
-        local gold = Catalog.GetSellValue(item)
+        local gold = Catalog.GetSellValue(item, state.vipLevel)
         addCurrency(state, "gold", gold)
         return { gold = gold, fragments = 0 }
     end
@@ -637,6 +647,7 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
                 rarity = item.rarity,
                 icon = icon,
                 source = source,
+                tradeable = item.tradeable == true,
             })
             events[#events + 1] = event("loot_settled", {
                 itemId = item.id,
@@ -659,6 +670,7 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         slot = item.slot or (definition and definition.slot) or "",
         source = source,
         aidLocked = item.aidLocked == true,
+        tradeable = item.tradeable == true,
     })
     events[#events + 1] = event("loot_dropped", {
         itemId = item.id,
@@ -667,6 +679,7 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         icon = icon,
         level = item.level,
         source = source,
+        tradeable = item.tradeable == true,
     })
     events[#events + 1] = event("loot_settled", {
         itemId = item.id,
@@ -1142,8 +1155,13 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
     local isElite = encounterKind == "elite"
     local rate = rewardScale(context)
     local exp = math.floor((state.floor * 5 + 10) * (isBoss and 10 or (isElite and 2.3 or 1)) * rate)
-    local gold = math.floor((state.floor * 8 + 25) * (isBoss and 8 or (isElite and 2 or 1)) * rate)
-    if gold > 0 then addCurrency(state, "gold", gold) end
+    local gold = LargeNumber.MultiplyScalar(
+        Catalog.GetBattleGold(state.floor, encounterKind),
+        rate
+    )
+    if not LargeNumber.IsZero(gold) then
+        addCurrency(state, "gold", gold)
+    end
     if exp > 0 then addExp(state, exp, events) end
     state.floorKillBonus = math.min(0.50, state.floorKillBonus + 0.01)
     events[#events + 1] = event("battle_reward", {
@@ -1152,11 +1170,15 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         rewardRate = rate,
         offline = context and context.offline == true,
     })
-    if gold > 0 and not (context and context.offline == true) then
+    if not LargeNumber.IsZero(gold)
+        and not (context and context.offline == true)
+    then
         events[#events + 1] = event("currency_drop", {
             currency = "gold",
             amount = gold,
-            dropCount = math.max(1, math.min(12, math.ceil(gold / math.max(1, state.floor * 45)))),
+            dropCount = math.max(1, math.min(12,
+                math.floor(math.log(math.max(10,
+                    state.floor + 10)) / math.log(10) * 3))),
         })
     end
 
@@ -1178,7 +1200,10 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
             for index, slot in ipairs(Catalog.SLOTS) do allSlots[index] = slot.id end
             dropOptions = {
                 slot = RewardPolicy.PickDropSlot(allSlots, weakSlots, randomFloat(rng), randomFloat(rng)),
+                rollTradeable = true,
             }
+        else
+            dropOptions = { rollTradeable = true }
         end
         local added, item, inventoryAdded = addGeneratedDrop(state, rarity, isBoss, rng, now, source, events, dropOptions)
         if not added then return false, inventoryChanged end
@@ -1649,20 +1674,32 @@ local function resolveMonsterOffline(state, eventType, rng, now, events, context
 end
 
 resolveChest = function(state, rng, now, events)
-    local gold = math.floor(state.floor * 20 + randomInt(rng, 80, 260))
+    local gold = Catalog.GetChestGold(
+        state.floor,
+        randomFloat(rng)
+    )
     local fragments = randomInt(rng, 3, 12)
     addCurrency(state, "gold", gold)
     addCurrency(state, "fragments", fragments)
     events[#events + 1] = event("chest_reward", { gold = gold, fragments = fragments })
     if randomInt(rng, 1, 100) <= 35 then
-        local added, _, inventoryAdded = addGeneratedDrop(state, "blue", false, rng, now, "chest_drop", events)
+        local added, _, inventoryAdded = addGeneratedDrop(
+            state,
+            "blue",
+            false,
+            rng,
+            now,
+            "chest_drop",
+            events,
+            { rollTradeable = true }
+        )
         return added, inventoryAdded
     end
     return true, false
 end
 
 resolveMerchant = function(state, events)
-    local price = math.floor(700 + state.floor * 35)
+    local price = Catalog.GetMerchantGoldCost(state.floor)
     if hasCurrency(state, "gold", price) then
         spendCurrency(state, "gold", price)
         addCurrency(state, "fragments", 10)
@@ -1675,7 +1712,7 @@ end
 resolveRandomEvent = function(state, rng, events)
     local roll = randomInt(rng, 1, 4)
     if roll == 1 then
-        local gold = 300 + state.floor * 15
+        local gold = Catalog.GetWishGold(state.floor)
         addCurrency(state, "gold", gold)
         events[#events + 1] = event("wish_pool", { gold = gold })
     elseif roll == 2 then
@@ -2060,6 +2097,40 @@ end
 
 GameEngine.AutoEquipBest = GameEngine.AutoEquip
 
+function GameEngine.GetSellPreview(inputState, itemId)
+    local item = findItem(inputState, itemId)
+    if not item then
+        return {
+            ok = false,
+            code = "ITEM_NOT_FOUND",
+            reason = "equipment item was not found",
+        }
+    end
+    local equipped = equippedIdSet(inputState)
+    if equipped[item.id] or item.locked or item.aidLocked then
+        return {
+            ok = false,
+            code = "ITEM_NOT_TRADABLE",
+            reason = "equipment item is protected",
+        }
+    end
+    local rarity = Catalog.RARITIES[item.rarity]
+    if not rarity or rarity.rank >= #Catalog.RARITY_ORDER then
+        return {
+            ok = false,
+            code = "INVALID_ARGUMENT",
+            reason = "myth equipment cannot be sold",
+        }
+    end
+    return {
+        ok = true,
+        data = {
+            itemId = item.id,
+            gold = Catalog.GetSellValue(item, inputState.vipLevel),
+        },
+    }
+end
+
 function GameEngine.GetDecomposePreview(inputState, itemId)
     local item = findItem(inputState, itemId)
     if not item then
@@ -2100,7 +2171,7 @@ function GameEngine.Decompose(inputState, maximumRank, now, candidateIds)
     local kept = {}
     local removed = 0
     local fragments = 0
-    local gold = 0
+    local gold = LargeNumber.Zero()
     for _, item in ipairs(working.inventory) do
         local rarity = Catalog.RARITIES[item.rarity]
         local explicitlySelected = selected == nil or selected[item.id] == true
@@ -2109,7 +2180,7 @@ function GameEngine.Decompose(inputState, maximumRank, now, candidateIds)
             removed = removed + 1
             local refund = Catalog.GetDecomposeRefund(item, working.vipLevel)
             fragments = fragments + refund.fragments
-            gold = gold + refund.gold
+            gold = LargeNumber.Add(gold, refund.gold)
             addCurrency(working, "gold", refund.gold)
         else
             kept[#kept + 1] = item
@@ -2146,7 +2217,7 @@ function GameEngine.Sell(inputState, maximumRank, now, candidateIds)
     end
     local kept = {}
     local removed = 0
-    local gold = 0
+    local gold = LargeNumber.Zero()
     for _, item in ipairs(working.inventory) do
         local rarity = Catalog.RARITIES[item.rarity]
         local explicitlySelected = selected == nil or selected[item.id] == true
@@ -2154,8 +2225,8 @@ function GameEngine.Sell(inputState, maximumRank, now, candidateIds)
             and not equipped[item.id] and not item.locked and not item.aidLocked
         then
             removed = removed + 1
-            local value = Catalog.GetSellValue(item)
-            gold = gold + value
+            local value = Catalog.GetSellValue(item, working.vipLevel)
+            gold = LargeNumber.Add(gold, value)
         else
             kept[#kept + 1] = item
         end
@@ -2684,12 +2755,8 @@ function GameEngine.AcknowledgeRules(inputState, ruleId, now)
     }, false, false)
 end
 
-local function StrengthenCost(enhance)
-    enhance = math.max(0, math.floor(tonumber(enhance) or 0))
-    return {
-        gold = 1200 + enhance * 900,
-        fragments = 8 + enhance * 5,
-    }
+local function StrengthenCost(item, enhance)
+    return Catalog.GetStrengthenCost(item, enhance)
 end
 
 function GameEngine.GetStrengthenPreview(inputState, slotId)
@@ -2702,7 +2769,7 @@ function GameEngine.GetStrengthenPreview(inputState, slotId)
         return failure(inputState, os.time(), "ITEM_NOT_FOUND", "slot has no equipped item")
     end
     local limit = math.max(1, math.floor(working.maxFloor / 10) + 1)
-    local cost = StrengthenCost(item.enhance)
+    local cost = StrengthenCost(item, item.enhance)
     local atMax = item.enhance >= limit
     local goldEnough = hasCurrency(working, "gold", cost.gold)
     local fragmentsEnough = hasCurrency(working, "fragments", cost.fragments)
@@ -2741,7 +2808,7 @@ function GameEngine.Strengthen(inputState, slotId, now)
     if item.enhance >= limit then
         return failure(inputState, now, "ENHANCE_LIMIT", "equipment reached the current strengthen limit")
     end
-    local cost = StrengthenCost(item.enhance)
+    local cost = StrengthenCost(item, item.enhance)
     local goldCost = cost.gold
     local fragmentCost = cost.fragments
     if not hasCurrency(working, "gold", goldCost) or not hasCurrency(working, "fragments", fragmentCost) then
@@ -2750,8 +2817,14 @@ function GameEngine.Strengthen(inputState, slotId, now)
     spendCurrency(working, "gold", goldCost)
     spendCurrency(working, "fragments", fragmentCost)
     item.enhance = item.enhance + 1
-    item.investedGold = math.min(Catalog.MAX_VALUE, (item.investedGold or 0) + goldCost)
-    item.investedFragments = math.min(Catalog.MAX_VALUE, (item.investedFragments or 0) + fragmentCost)
+    item.investedGold = LargeNumber.Add(
+        item.investedGold,
+        goldCost
+    )
+    item.investedFragments = math.min(
+        Catalog.MAX_VALUE,
+        (item.investedFragments or 0) + fragmentCost
+    )
     refreshDerived(working)
     return finalize(inputState, working, now, "equipment_strengthened", {
         event("equipment_strengthened", {
@@ -2765,13 +2838,8 @@ end
 
 GameEngine.StrengthenSelected = GameEngine.Strengthen
 
-local function StarCost(star)
-    star = math.max(0, math.floor(tonumber(star) or 0))
-    return {
-        gold = 3000 + star * 2000,
-        fragments = 20 + star * 10,
-        duplicateCount = 1,
-    }
+local function StarCost(item, star)
+    return Catalog.GetStarCost(item, star)
 end
 
 local function StarMaterials(state, item)
@@ -2810,7 +2878,7 @@ function GameEngine.GetStarPreview(inputState, slotId)
     if not item then
         return failure(inputState, os.time(), "ITEM_NOT_FOUND", "slot has no equipped item")
     end
-    local cost = StarCost(item.star)
+    local cost = StarCost(item, item.star)
     local materialEntries = StarMaterials(working, item)
     local materials = {}
     for _, entry in ipairs(materialEntries) do
@@ -2879,7 +2947,7 @@ function GameEngine.Star(inputState, slotId, materialItemId, now)
     if not duplicateIndex then
         return failure(inputState, now, "DUPLICATE_REQUIRED", "an unequipped item with the same equipment, star level and rarity is required")
     end
-    local cost = StarCost(item.star)
+    local cost = StarCost(item, item.star)
     if not hasCurrency(working, "gold", cost.gold)
         or not hasCurrency(working, "fragments", cost.fragments)
     then
@@ -2890,8 +2958,14 @@ function GameEngine.Star(inputState, slotId, materialItemId, now)
     local consumed = working.inventory[duplicateIndex]
     local consumedId = consumed.id
     local refund = Catalog.GetEquipmentRecoveryValue(consumed)
-    item.investedGold = math.min(Catalog.MAX_VALUE, (item.investedGold or 0) + refund.gold)
-    item.investedFragments = math.min(Catalog.MAX_VALUE, (item.investedFragments or 0) + refund.fragments)
+    item.investedGold = LargeNumber.Add(
+        item.investedGold,
+        refund.gold
+    )
+    item.investedFragments = math.min(
+        Catalog.MAX_VALUE,
+        (item.investedFragments or 0) + refund.fragments
+    )
     table.remove(working.inventory, duplicateIndex)
     item.star = item.star + 1
     if working.pauseReason == "inventory_full" then
@@ -2978,17 +3052,17 @@ end
 
 local function accumulateOfflineEvent(summary, value)
     if value.kind == "battle_reward" then
-        summary.gold = summary.gold + (value.gold or 0)
+        summary.gold = LargeNumber.Add(summary.gold, value.gold or 0)
         summary.exp = summary.exp + (value.exp or 0)
     elseif value.kind == "chest_reward" then
-        summary.gold = summary.gold + (value.gold or 0)
+        summary.gold = LargeNumber.Add(summary.gold, value.gold or 0)
         summary.fragments = summary.fragments + (value.fragments or 0)
     elseif value.kind == "merchant_trade" or value.kind == "abyss_echo" then
         summary.fragments = summary.fragments + (value.fragments or 0)
     elseif value.kind == "wish_pool" then
-        summary.gold = summary.gold + (value.gold or 0)
+        summary.gold = LargeNumber.Add(summary.gold, value.gold or 0)
     elseif value.kind == "equipment_auto_disposed" then
-        summary.gold = summary.gold + (value.gold or 0)
+        summary.gold = LargeNumber.Add(summary.gold, value.gold or 0)
         summary.fragments = summary.fragments + (value.fragments or 0)
     elseif value.kind == "equipment_drop" then
         registerOfflineEquipment(summary, value)
@@ -3039,10 +3113,11 @@ end
 local function offlineAverageReward(floor, kind)
     local multiplier = kind == "chapterBoss" and 10
         or (kind == "boss" and 10 or (kind == "elite" and 2.3 or 1))
-    local goldMultiplier = kind == "chapterBoss" and 8
-        or (kind == "boss" and 8 or (kind == "elite" and 2 or 1))
     local baseExp = math.floor((floor * 5 + 10) * multiplier * Catalog.OFFLINE_REWARD_RATE)
-    local baseGold = math.floor((floor * 8 + 25) * goldMultiplier * Catalog.OFFLINE_REWARD_RATE)
+    local baseGold = LargeNumber.MultiplyScalar(
+        Catalog.GetBattleGold(floor, kind),
+        Catalog.OFFLINE_REWARD_RATE
+    )
     return baseGold, baseExp
 end
 
@@ -3073,7 +3148,7 @@ local function simulateOfflineCollection(inputState, now, rng)
     local position = math.max(0, TableUtils.ToInteger(working.position, 0))
     local encounterCounts = offlineEncounterCounts(floor, position, cycles)
     local summary = {
-        gold = 0,
+        gold = LargeNumber.Zero(),
         exp = 0,
         fragments = 0,
         equipment = 0,
@@ -3085,12 +3160,17 @@ local function simulateOfflineCollection(inputState, now, rng)
     for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
         local count = encounterCounts[kind] or 0
         local gold, exp = offlineAverageReward(floor, kind)
-        summary.gold = summary.gold + count * gold
+        summary.gold = LargeNumber.Add(
+            summary.gold,
+            LargeNumber.MultiplyScalar(gold, count)
+        )
         summary.exp = summary.exp + count * exp
         expectedDrops = expectedDrops + count * (RewardPolicy.DropChance(kind, true) or 0)
     end
     local events = {}
-    if summary.gold > 0 then addCurrency(working, "gold", summary.gold) end
+    if not LargeNumber.IsZero(summary.gold) then
+        addCurrency(working, "gold", summary.gold)
+    end
     if summary.exp > 0 then addExp(working, summary.exp, events) end
     events[#events + 1] = event("battle_reward", {
         gold = summary.gold,
@@ -3127,6 +3207,7 @@ local function simulateOfflineCollection(inputState, now, rng)
         local options = {
             floor = floor,
             trackInLootStash = false,
+            rollTradeable = true,
             slot = RewardPolicy.PickDropSlot(
                 allSlots,
                 weakSlots,
@@ -3210,63 +3291,102 @@ local function simulateOfflineCollection(inputState, now, rng)
     }
 end
 
-function GameEngine.PreviewOffline(inputState, now, rng)
+-- 登录时冻结离线收益。账本只记录离线通道产出，不保存整体角色快照，
+-- 因此上线后的在线战斗与离线奖励互不影响。
+function GameEngine.FreezeOfflineReward(inputState, now, rng)
     local simulation, code, reason = simulateOfflineCollection(inputState, now, rng)
-    if not simulation then
-        return failure(inputState, now, code, reason)
+    if not simulation then return nil, code, reason end
+
+    local existing = {}
+    for _, item in ipairs(inputState.inventory or {}) do existing[tostring(item.id)] = true end
+    for _, item in ipairs(inputState.overflowLoot or {}) do existing[tostring(item.id)] = true end
+
+    local items = {}
+    for _, item in ipairs(simulation.working.inventory or {}) do
+        if not existing[tostring(item.id)] then items[#items + 1] = TableUtils.DeepCopy(item) end
     end
-    if simulation.storyGate then
-        return failure(inputState, now, "STORY_GATE_PENDING", "story must be completed before collecting offline rewards")
+    for _, item in ipairs(simulation.working.overflowLoot or {}) do
+        if not existing[tostring(item.id)] then items[#items + 1] = TableUtils.DeepCopy(item) end
     end
-    local proposal = noCommit(inputState, now, "offline_previewed")
-    proposal.preview = TableUtils.DeepCopy(simulation.reward)
-    proposal.previewState = TableUtils.DeepCopy(simulation.working)
-    proposal.previewEvents = TableUtils.DeepCopy(simulation.events)
-    proposal.previewInventoryChanged = simulation.inventoryChanged == true
-    return proposal
+
+    local reward = TableUtils.DeepCopy(simulation.reward)
+    return {
+        seconds = reward.processedSeconds or 0,
+        gold = reward.gold or LargeNumber.Zero(),
+        exp = reward.exp or 0,
+        fragments = reward.fragments or 0,
+        items = items,
+        rewardPity = TableUtils.DeepCopy(simulation.working.rewardPity),
+        reward = reward,
+    }
 end
 
-function GameEngine.CollectOfflineQuote(inputState, quote, now)
+-- 将冻结账本增量合并到最新权威状态，不覆盖在线收益。
+function GameEngine.ClaimOfflineReward(inputState, ledger, now)
     now = nowInteger(now)
-    if type(quote) ~= "table"
-        or type(quote.state) ~= "table"
-        or type(quote.reward) ~= "table"
-        or type(quote.events) ~= "table"
-    then
-        return failure(inputState, now, "INVALID_OFFLINE_QUOTE", "offline quote is invalid")
+    if type(ledger) ~= "table" or type(ledger.reward) ~= "table" then
+        return failure(inputState, now, "INVALID_OFFLINE_QUOTE", "offline reward ledger is invalid")
     end
-    if quote.revision ~= inputState.revision
-        or quote.pendingOfflineSeconds ~= inputState.pendingOfflineSeconds
-        or quote.lastActiveAt ~= inputState.lastActiveAt
+    local working = stateCopy(inputState, now)
+    local consumed = math.max(0, TableUtils.ToInteger(ledger.seconds, 0))
+    if consumed <= 0
+        or math.max(0, TableUtils.ToInteger(working.pendingOfflineSeconds, 0)) < consumed
     then
-        return failure(inputState, now, "STALE_OFFLINE_QUOTE", "offline quote no longer matches player state")
+        return failure(inputState, now, "NO_OFFLINE_REWARD", "offline reward was already collected")
     end
-    return finalize(
-        inputState,
-        TableUtils.DeepCopy(quote.state),
-        now,
-        "offline_collected",
-        TableUtils.DeepCopy(quote.events),
-        quote.inventoryChanged == true,
-        false
-    )
-end
+    working.pendingOfflineSeconds = working.pendingOfflineSeconds - consumed
 
-function GameEngine.CollectOffline(inputState, now, rng)
-    local simulation, code, reason = simulateOfflineCollection(inputState, now, rng)
-    if not simulation then
-        return failure(inputState, now, code, reason)
+    local events = {}
+    if not LargeNumber.IsZero(ledger.gold) then
+        addCurrency(working, "gold", ledger.gold)
     end
-    if simulation.storyGate then
-        return finalize(inputState, simulation.working, now, "offline_story_gate", simulation.events, false, false)
+    if (ledger.fragments or 0) > 0 then
+        addCurrency(working, "fragments", ledger.fragments)
     end
+    if (ledger.exp or 0) > 0 then
+        addExp(working, ledger.exp, events)
+    end
+
+    working.overflowLoot = working.overflowLoot or {}
+    local used = {}
+    for _, item in ipairs(working.inventory) do used[tostring(item.id)] = true end
+    for _, item in ipairs(working.overflowLoot) do used[tostring(item.id)] = true end
+
+    local stored, overflowed = 0, 0
+    for _, source in ipairs(ledger.items or {}) do
+        local item = TableUtils.DeepCopy(source)
+        if used[tostring(item.id)] then item.id = allocateItemId(working) end
+        used[tostring(item.id)] = true
+        recordEquipmentCollection(working, item)
+        if #working.inventory < Catalog.INVENTORY_CAP then
+            working.inventory[#working.inventory + 1] = item
+            addToLootStash(working, item.id)
+            stored = stored + 1
+        else
+            working.overflowLoot[#working.overflowLoot + 1] = item
+            overflowed = overflowed + 1
+        end
+    end
+    if ledger.rewardPity then
+        working.rewardPity = TableUtils.DeepCopy(ledger.rewardPity)
+    end
+
+    local reward = TableUtils.DeepCopy(ledger.reward)
+    reward.processedSeconds = consumed
+    reward.remainingSeconds = working.pendingOfflineSeconds
+    reward.interrupted = overflowed > 0
+    reward.generatedEquipment = stored
+    reward.discardedEquipment = overflowed
+    events[#events + 1] = event("offline_collected", reward)
+
+    refreshDerived(working)
     return finalize(
         inputState,
-        simulation.working,
+        working,
         now,
         "offline_collected",
-        simulation.events,
-        simulation.inventoryChanged,
+        events,
+        stored > 0 or overflowed > 0,
         false
     )
 end
@@ -3345,7 +3465,7 @@ function GameEngine.GrantEquipment(inputState, specification, now)
         locked = specification.locked == true,
         acquiredAt = nowInteger(now),
         source = "admin_grant",
-        investedGold = 0,
+        investedGold = LargeNumber.Zero(),
         investedFragments = 0,
     }
     local events = {}
@@ -3425,5 +3545,20 @@ end
 function GameEngine.GetItemPower(item)
     return Catalog.GetItemPower(item)
 end
+
+--- 供 MarketEngine 复用的内部构件。市场是独立领域模块，但必须产出与本文件
+--- 完全一致的 proposal 结构（state/delta/commit），否则 PlayerProfileService 无法消费。
+GameEngine.Internal = {
+    stateCopy = stateCopy,
+    finalize = finalize,
+    noCommit = noCommit,
+    failure = failure,
+    event = event,
+    findItem = findItem,
+    equippedIdSet = equippedIdSet,
+    addCurrency = addCurrency,
+    spendCurrency = spendCurrency,
+    hasCurrency = hasCurrency,
+}
 
 return GameEngine

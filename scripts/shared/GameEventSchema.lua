@@ -1,4 +1,5 @@
 local BigNumber = require("shared.BigNumber")
+local LargeNumber = require("shared.LargeNumber")
 
 local GameEventSchema = {}
 
@@ -58,6 +59,10 @@ local KNOWN = {
     life_steal = true,
     loot_dropped = true,
     loot_settled = true,
+    market_cancelled = true,
+    market_listed = true,
+    market_mail_collected = true,
+    market_purchased = true,
     merchant_skipped = true,
     merchant_trade = true,
     monster_spawned = true,
@@ -176,7 +181,7 @@ local FIELD_RULES = {
     },
     currency_drop = {
         currency = { kind = "enum", values = { gold = true, fragments = true, exp = true } },
-        amount = { kind = "magnitude" },
+        amount = { kind = "currencyAmount" },
         dropCount = { kind = "integer", minimum = 1, maximum = 24 },
     },
     loot_settled = {
@@ -208,6 +213,17 @@ local function finite(value)
     return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
+local function currencyAmountMatches(value)
+    if type(value) == "number" then
+        return finite(value) and value >= 0
+    end
+    if not LargeNumber.IsLargeNumber(value) then return false end
+    local normalized = LargeNumber.Normalize(value)
+    return value.high == normalized.high
+        and value.mid == normalized.mid
+        and value.low == normalized.low
+end
+
 local function magnitudeMatches(value, allowNegative)
     if type(value) == "number" then
         return finite(value) and (allowNegative or value >= 0)
@@ -233,6 +249,8 @@ local function fieldMatches(value, rule)
         return rule.values[value] == true
     elseif rule.kind == "magnitude" then
         return magnitudeMatches(value, rule.allowNegative == true)
+    elseif rule.kind == "currencyAmount" then
+        return currencyAmountMatches(value)
     elseif rule.kind == "bigNumber" then
         return BigNumber.ValidateCanonical(value)
     elseif rule.kind == "object" then
@@ -272,7 +290,7 @@ local MAGNITUDE_FIELDS = {
 
 local SIGNED_MAGNITUDE_FIELDS = { displayedPowerDelta = true }
 
-local function validateMagnitudeFields(value, path, seen)
+local function validateMagnitudeFields(value, path, seen, currencyAmountAtRoot)
     if type(value) ~= "table" then return true end
     seen = seen or {}
     if seen[value] then return true end
@@ -283,11 +301,14 @@ local function validateMagnitudeFields(value, path, seen)
             local valid, reason = BigNumber.ValidateCanonical(child)
             if not valid then return false, childPath .. " is invalid: " .. tostring(reason) end
         elseif type(key) == "string" and MAGNITUDE_FIELDS[key] then
-            if not magnitudeMatches(child, SIGNED_MAGNITUDE_FIELDS[key] == true) then
+            local matches = currencyAmountAtRoot and key == "amount"
+                and currencyAmountMatches(child)
+                or magnitudeMatches(child, SIGNED_MAGNITUDE_FIELDS[key] == true)
+            if not matches then
                 return false, childPath .. " is invalid"
             end
         elseif type(child) == "table" then
-            local valid, reason = validateMagnitudeFields(child, childPath, seen)
+            local valid, reason = validateMagnitudeFields(child, childPath, seen, false)
             if not valid then return false, reason end
         end
     end
@@ -328,7 +349,12 @@ function GameEventSchema.Validate(event, path)
             end
         end
     end
-    local magnitudesOk, magnitudeReason = validateMagnitudeFields(event, path)
+    local magnitudesOk, magnitudeReason = validateMagnitudeFields(
+        event,
+        path,
+        nil,
+        event.type == "currency_drop"
+    )
     if not magnitudesOk then return false, magnitudeReason end
     return true
 end

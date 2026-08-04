@@ -155,136 +155,157 @@ local function EnemyImageForStep(step, eventType)
     return assets.enemies.skeleton
 end
 
+local CHAPTER_PROGRESS = {
+    -- Single-layer code-drawn bar, BrawlForge HUD: sharp corners, black border, hard shadow.
+    width = 760,
+    height = 34,
+    borderWidth = 4,
+    contentLeft = 0,
+    contentTop = 0,
+    contentWidth = 752,
+    contentHeight = 26,
+    rootLeft = 160,
+    rootTop = 294,
+    trackTop = 16,
+}
+
 local function BuildChapterProgressBar()
     local UI = context_.UI
-    local barWidth = 768
-    local barHeight = 48
-    local innerLeft = 18
-    local innerWidth = 732
-    local segmentGap = 4
-    local segmentWidth = math.floor((innerWidth - segmentGap * 9) / 10)
-    local trackChildren = {
-        UI.Panel {
-            position = "absolute", left = 0, top = 0,
-            width = barWidth, height = barHeight,
-            backgroundColor = { 3, 10, 24, 242 },
-            borderWidth = 2,
-            borderColor = { 25, 238, 255, 235 },
-            borderRadius = 8,
-            boxShadow = {
-                { x = 0, y = 0, blur = 16, color = { 15, 224, 255, 105 } },
-                { x = 0, y = 0, blur = 28, color = { 206, 54, 255, 64 } },
-            },
-            pointerEvents = "none",
-        },
-        UI.Panel {
-            position = "absolute", left = 6, top = 6,
-            width = barWidth - 12, height = barHeight - 12,
-            backgroundColor = { 7, 24, 48, 228 },
-            borderWidth = 1,
-            borderColor = { 199, 55, 255, 170 },
-            borderRadius = 5,
-            pointerEvents = "none",
-        },
-    }
+    local trackChildren = {}
     local fillClip = UI.Panel {
-        position = "absolute", left = innerLeft, top = 13,
-        width = 0, height = 22,
-        overflow = "hidden", pointerEvents = "none",
-        backgroundGradient = {
-            type = "linear", direction = "to-right",
-            from = { 5, 193, 255, 255 },
-            to = { 225, 47, 255, 255 },
-        },
-        boxShadow = {
-            { x = 0, y = 0, blur = 12, color = { 16, 224, 255, 180 } },
-        },
+        position = "absolute",
+        left = CHAPTER_PROGRESS.contentLeft,
+        top = CHAPTER_PROGRESS.contentTop,
+        width = 0,
+        height = CHAPTER_PROGRESS.contentHeight,
+        overflow = "hidden",
+        pointerEvents = "none",
     }
     fillClip:AddChild(UI.Panel {
-        position = "absolute", left = 0, top = 2,
-        width = innerWidth, height = 4,
-        backgroundColor = { 222, 252, 255, 205 },
+        position = "absolute", left = 0, top = 0,
+        width = CHAPTER_PROGRESS.contentWidth,
+        height = CHAPTER_PROGRESS.contentHeight,
+        backgroundColor = C().primary,
+        borderRadius = 0,
+        pointerEvents = "none",
+    })
+    fillClip:AddChild(UI.Panel {
+        position = "absolute", left = 0, top = 0,
+        width = CHAPTER_PROGRESS.contentWidth,
+        height = 8,
+        backgroundColor = { 120, 205, 255, 150 },
+        borderRadius = 0,
+        pointerEvents = "none",
+    })
+    fillClip:AddChild(UI.Panel {
+        position = "absolute", left = 0,
+        top = CHAPTER_PROGRESS.contentHeight - 6,
+        width = CHAPTER_PROGRESS.contentWidth,
+        height = 6,
+        backgroundColor = { 13, 126, 230, 255 },
+        borderRadius = 0,
         pointerEvents = "none",
     })
     trackChildren[#trackChildren + 1] = fillClip
 
     local chapterNodes = {}
     for index = 1, 10 do
-        local left = innerLeft + (index - 1) * (segmentWidth + segmentGap)
         local danger = index == 10
-        trackChildren[#trackChildren + 1] = UI.Panel {
-            position = "absolute", left = left, top = 12,
-            width = segmentWidth, height = 24,
-            backgroundColor = { 4, 12, 27, 132 },
-            borderWidth = 1,
-            borderColor = danger and { 255, 54, 194, 220 } or { 56, 188, 232, 130 },
-            borderRadius = 2,
-            pointerEvents = "none",
-        }
+        local nodeWidth = danger and 5 or 3
+        local nodeCenter = CHAPTER_PROGRESS.contentLeft
+            + math.floor(CHAPTER_PROGRESS.contentWidth * index / 10)
         local node = UI.Panel {
             position = "absolute",
-            left = left + segmentWidth - 8,
-            top = danger and 6 or 9,
-            width = danger and 16 or 12,
-            height = danger and 36 or 30,
-            backgroundColor = danger and { 255, 54, 194, 255 } or { 35, 225, 255, 255 },
-            borderWidth = 1,
-            borderColor = { 235, 252, 255, 255 },
-            borderRadius = 2,
-            boxShadow = {
-                { x = 0, y = 0, blur = danger and 14 or 9,
-                    color = danger and { 255, 40, 190, 180 } or { 15, 224, 255, 145 } },
-            },
+            left = nodeCenter - math.floor(nodeWidth / 2),
+            top = CHAPTER_PROGRESS.contentTop,
+            width = nodeWidth,
+            height = CHAPTER_PROGRESS.contentHeight,
+            backgroundColor = danger and C().gold or { 10, 16, 32, 190 },
+            borderRadius = 0,
             pointerEvents = "none",
         }
         chapterNodes[#chapterNodes + 1] = node
         trackChildren[#trackChildren + 1] = node
     end
 
-    local chapterLabel = context_.compactTxt("SECTOR 01", 17, C().focus, {
-        position = "absolute", left = 14, top = -32,
-        width = 220, height = 28,
-        textStroke = { width = 1, color = "#000000" },
+    local chapterLabel = context_.compactTxt("第1章", 20, C().gold, {
+        position = "absolute", left = 2, top = -34,
+        width = 240, height = 30,
+        textStroke = { width = 2, color = "#000000" },
     })
-    local progressLabel = context_.compactTxt("FLOOR 001 // NODE 01", 17, C().text, {
-        position = "absolute", right = 14, top = -32,
-        width = 360, height = 28, textAlign = "right",
-        textStroke = { width = 1, color = "#000000" },
-    })
-    local telemetryLabel = context_.compactTxt("COMBAT ROUTE // ONLINE", 13, { 199, 55, 255, 255 }, {
-        position = "absolute", left = 240, top = -29,
-        width = 290, height = 24, textAlign = "center",
-        textStroke = { width = 1, color = "#000000" },
-        pointerEvents = "none",
+    local progressLabel = context_.compactTxt("第1层 · 第1关", 20, C().text, {
+        position = "absolute", right = 2, top = -34,
+        width = 400, height = 30, textAlign = "right",
+        textStroke = { width = 2, color = "#000000" },
     })
     local root = UI.Panel {
-        position = "absolute", left = 156, top = 294,
-        width = barWidth, height = 82,
+        position = "absolute",
+        left = CHAPTER_PROGRESS.rootLeft,
+        top = CHAPTER_PROGRESS.rootTop,
+        width = CHAPTER_PROGRESS.width,
+        height = CHAPTER_PROGRESS.trackTop + CHAPTER_PROGRESS.height,
         pointerEvents = "box-none",
         children = {
             chapterLabel,
-            telemetryLabel,
             progressLabel,
             UI.Panel {
-                position = "absolute", left = 0, top = 18,
-                width = barWidth, height = barHeight,
+                position = "absolute", left = 0, top = CHAPTER_PROGRESS.trackTop,
+                width = CHAPTER_PROGRESS.width,
+                height = CHAPTER_PROGRESS.height,
+                backgroundColor = { 8, 24, 56, 255 },
+                borderWidth = CHAPTER_PROGRESS.borderWidth,
+                borderColor = C().border,
+                borderRadius = 0,
+                boxShadow = { { x = 6, y = 6, blur = 0, color = { 0, 0, 0, 64 } } },
+                overflow = "hidden",
+                pointerEvents = "none",
                 children = trackChildren,
-            },
-            UI.Panel {
-                position = "absolute", left = 12, top = 14,
-                width = 94, height = 2,
-                backgroundColor = { 35, 225, 255, 220 },
-                pointerEvents = "none",
-            },
-            UI.Panel {
-                position = "absolute", right = 12, top = 68,
-                width = 94, height = 2,
-                backgroundColor = { 225, 47, 255, 220 },
-                pointerEvents = "none",
             },
         },
     }
     return root, fillClip, chapterLabel, progressLabel, chapterNodes
+end
+
+local function EncounterStopDistance(route, room)
+    local encounter = route
+        and route.encounters
+        and route.encounters[room]
+    local distance = encounter and tonumber(encounter.distance)
+    if not distance then return nil end
+
+    local triggerDistance = tonumber(route.triggerDistance)
+        or context_.eventTriggerDistance
+        or 0
+    return math.max(0, distance - triggerDistance)
+end
+
+local function CurrentFloorRouteStep(game)
+    local position = Clamp(
+        math.floor(tonumber(game.position) or 0),
+        0,
+        10
+    )
+    if position >= 10 then return 10 end
+
+    local route = game.floorRoute
+    local fromDistance = position == 0
+        and 0
+        or EncounterStopDistance(route, position)
+    local toDistance = EncounterStopDistance(route, position + 1)
+    if not fromDistance
+        or not toDistance
+        or toDistance <= fromDistance
+    then
+        return position
+    end
+
+    local movementProgress = Clamp(
+        (presentationX_ - fromDistance)
+            / (toDistance - fromDistance),
+        0,
+        1
+    )
+    return position + movementProgress
 end
 
 local function UpdateChapterProgressBar(fillClip, chapterLabel, progressLabel, chapterNodes, game)
@@ -293,16 +314,18 @@ local function UpdateChapterProgressBar(fillClip, chapterLabel, progressLabel, c
     local room = Clamp(math.floor(tonumber(game.room) or 1), 1, 10)
     local chapter = math.floor((floor - 1) / 10) + 1
     local chapterFloor = ((chapter - 1) * 10) + 1
-    local chapterStep = (floor - chapterFloor) * 10 + room
+    local chapterStep = (floor - chapterFloor) * 10
+        + CurrentFloorRouteStep(game)
     local progress = Clamp(chapterStep / 100, 0, 1)
-    fillClip:SetStyle({ width = math.max(1, math.floor(732 * progress)) })
-    chapterLabel:SetText(string.format("SECTOR %02d", chapter))
-    progressLabel:SetText(string.format("FLOOR %03d // NODE %02d", floor, room))
+    fillClip:SetStyle({
+        width = CHAPTER_PROGRESS.contentWidth * progress,
+    })
+    chapterLabel:SetText(string.format("第%d章", chapter))
+    progressLabel:SetText(string.format("第%d层 · 第%d关", floor, room))
     for index, node in ipairs(chapterNodes or {}) do
-        local reached = room >= index
+        local reached = progress + 0.000001 >= index / 10
         node:SetStyle({
-            opacity = reached and 1.0 or 0.22,
-            scale = reached and 1.0 or 0.78,
+            opacity = reached and 1.0 or 0.35,
         })
     end
 end
@@ -929,7 +952,16 @@ local function Update(dt)
         and current.kind == "enemy"
         and (currentEventLocked_ or reachedEnemy)
     local speed = (visualAutoRun and not shouldStopForEvent) and moveSpeed or 0
-    presentationX_ = presentationX_ + speed * dt
+    local nextPresentationX = presentationX_ + speed * dt
+    local stopDistance = current and tonumber(current.distance)
+    if speed > 0 and current and current.kind == "enemy" and stopDistance then
+        presentationX_ = math.min(
+            nextPresentationX,
+            math.max(0, stopDistance - triggerDistance)
+        )
+    else
+        presentationX_ = nextPresentationX
+    end
     currentDistance = current and (current.x - presentationX_ - context_.playerScreenX) or 9999
     local inTriggerRange = current and currentDistance <= triggerDistance
     local waitingForBattle = visualAutoRun

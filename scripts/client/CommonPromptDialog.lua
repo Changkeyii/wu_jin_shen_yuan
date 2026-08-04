@@ -176,6 +176,18 @@ function CommonPromptDialog.Present(options, finish)
                 },
             },
         }
+        if options.foregroundContent then
+            dialogChildren[#dialogChildren + 1] = UI.Panel {
+                position = "absolute",
+                left = options.foregroundLeft or contentSideInset,
+                top = options.foregroundTop or (options.bodyTop or 104),
+                width = options.foregroundWidth or contentWidth,
+                height = options.foregroundHeight or 1,
+                pointerEvents = "box-none",
+                overflow = "visible",
+                children = { options.foregroundContent },
+            }
+        end
         if hasMultiplePages then
             dialogChildren[#dialogChildren + 1] = UI.Panel {
                 position = "absolute", left = 32, top = 316,

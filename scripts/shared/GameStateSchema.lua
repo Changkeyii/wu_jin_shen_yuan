@@ -85,6 +85,7 @@ local PERSISTED_FIELDS = {
     "previousLoadout",
     "currentMonster",
     "equipmentCollection",
+    "marketListings",
     "appliedGmCommandIds",
 }
 
@@ -125,6 +126,7 @@ local SNAPSHOT_FIELDS = {
     "previousLoadout",
     "currentMonster",
     "equipmentCollection",
+    "marketListings",
     "floorRoute",
     "setProgress",
     "logs",
@@ -193,6 +195,7 @@ local function networkItem(item)
         locked = item.locked == true,
         acquiredAt = item.acquiredAt or 0,
         source = item.source or "legacy",
+        tradeable = item.tradeable == true,
         statVersion = item.statVersion or 5,
         budget = item.budget,
         budgetBig = deepCopy(item.budgetBig),
@@ -216,7 +219,9 @@ local function networkItem(item)
         uniqueEffect = item.uniqueEffect,
         aidLocked = item.aidLocked == true,
         aidFloor = item.aidFloor,
-        investedGold = item.investedGold or 0,
+        investedGold = LargeNumber.IsLargeNumber(item.investedGold)
+            and LargeNumber.Normalize(item.investedGold)
+            or LargeNumber.FromNumber(item.investedGold),
         investedFragments = item.investedFragments or 0,
         power = item.power,
     }
@@ -433,7 +438,8 @@ local ITEM_SCHEMA = {
         locked = { type = "boolean" },
         acquiredAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         source = { type = "string", minLength = 1, maxLength = 64, pattern = "^[%w%._:%-]+$" },
-        investedGold = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        tradeable = { type = "boolean" },
+        investedGold = CURRENCY_SCHEMA,
         investedFragments = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         power = MAGNITUDE_SCHEMA,
     },
@@ -807,6 +813,48 @@ local STATS_SCHEMA = {
     },
 }
 
+local function normalizeCurrencyValue(value)
+    if LargeNumber.IsLargeNumber(value) then
+        return LargeNumber.Normalize(value)
+    end
+    if type(value) == "string" then
+        return LargeNumber.FromString(value) or LargeNumber.Zero()
+    end
+    return LargeNumber.FromNumber(value)
+end
+
+--- 挂单镜像归一化。丢弃结构不完整的条目，保证 schema 校验不会因历史脏数据失败。
+local function normalizeMarketListings(value)
+    if type(value) ~= "table" then return {} end
+    local listings = {}
+    for _, entry in ipairs(value) do
+        if type(entry) == "table" then
+            local price = normalizeCurrencyValue(entry.price)
+            local itemId = entry.itemId
+            if not LargeNumber.IsZero(price)
+                and type(itemId) == "string" and #itemId > 0
+            then
+                listings[#listings + 1] = {
+                    itemId = itemId,
+                    price = price,
+                    standardValue = normalizeCurrencyValue(entry.standardValue),
+                    feeRate = math.max(0, math.min(1, tonumber(entry.feeRate) or 0)),
+                    feeUnits = math.max(0, math.min(1000,
+                        math.floor(tonumber(entry.feeUnits)
+                            or ((tonumber(entry.feeRate) or 0) * 1000 + 0.5)))),
+                    rarity = type(entry.rarity) == "string" and entry.rarity or "epic",
+                    slot = type(entry.slot) == "string" and entry.slot or "weapon",
+                    level = math.max(1, math.floor(tonumber(entry.level) or 1)),
+                    name = type(entry.name) == "string" and entry.name or nil,
+                    listedAt = math.max(0, math.floor(tonumber(entry.listedAt) or 0)),
+                    expiresAt = math.max(0, math.floor(tonumber(entry.expiresAt) or 0)),
+                }
+            end
+        end
+    end
+    return listings
+end
+
 local function normalizeAppliedGmCommandIds(value)
     local reversed = {}
     local seen = {}
@@ -840,6 +888,32 @@ local function validateAppliedGmCommandIds(value)
     end
     return true
 end
+
+--- 卖家自己的挂单镜像。云端账本是挂单存在性的权威来源，
+--- 这份镜像用于挂单数上限校验与"我的挂单"展示，成交/退回的邮件被领取时同步移除。
+--- 挂单标识直接复用装备自身的 itemId（uuid），避免依赖云端分配的 list_id。
+local MARKET_LISTINGS_SCHEMA = {
+    type = "array",
+    maxLength = 64,
+    items = {
+        type = "object",
+        allowUnknown = false,
+        required = { "itemId", "price", "rarity", "slot", "level", "listedAt", "expiresAt" },
+        fields = {
+            itemId = { type = "string", minLength = 1, maxLength = 64 },
+            price = CURRENCY_SCHEMA,
+            standardValue = CURRENCY_SCHEMA,
+            feeRate = { type = "number", min = 0, max = 1 },
+            feeUnits = { type = "integer", min = 0, max = 1000 },
+            rarity = { type = "string", minLength = 1, maxLength = 32 },
+            slot = { type = "string", minLength = 1, maxLength = 32 },
+            level = { type = "integer", min = 1, max = 1000000000 },
+            name = { type = "string", maxLength = 64 },
+            listedAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+            expiresAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        },
+    },
+}
 
 GameStateSchema.PERSISTED_SCHEMA = {
     type = "object",
@@ -881,6 +955,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         "storyProgress",
         "ruleAcknowledgements",
         "equipmentCollection",
+        "marketListings",
         "appliedGmCommandIds",
     },
     fields = {
@@ -942,7 +1017,7 @@ GameStateSchema.PERSISTED_SCHEMA = {
         equipmentCollection = { type = "object", validate = validateEquipmentCollection },
         pendingEquipDecision = PENDING_EQUIP_SCHEMA,
         previousLoadout = LOADOUT_BACKUP_SCHEMA,
-        currentMonster = CURRENT_MONSTER_SCHEMA,
+        currentMonster = CURRENT_MONSTER_SCHEMA, marketListings = MARKET_LISTINGS_SCHEMA,
         appliedGmCommandIds = {
             type = "array",
             maxLength = GameStateSchema.MAX_APPLIED_GM_COMMANDS,
@@ -994,7 +1069,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     equipmentCollection = PERSISTED_VALUE_SCHEMAS.equipmentCollection,
     pendingEquipDecision = PERSISTED_VALUE_SCHEMAS.pendingEquipDecision,
     previousLoadout = PERSISTED_VALUE_SCHEMAS.previousLoadout,
-    currentMonster = PERSISTED_VALUE_SCHEMAS.currentMonster,
+    currentMonster = PERSISTED_VALUE_SCHEMAS.currentMonster, marketListings = MARKET_LISTINGS_SCHEMA,
     floorRoute = FLOOR_ROUTE_SCHEMA,
     setProgress = SET_PROGRESS_SCHEMA,
     logs = {
@@ -1117,7 +1192,7 @@ function GameStateSchema.NewInitialState(now)
         storyProgress = { introCompleted = false, highestCompletedChapter = 0, contentVersion = 1 },
         pendingStoryGate = nil,
         ruleAcknowledgements = {},
-        equipmentCollection = {},
+        equipmentCollection = {}, marketListings = {},
         pendingEquipDecision = nil,
         previousLoadout = nil,
         appliedGmCommandIds = {},
@@ -1147,6 +1222,7 @@ function GameStateSchema.ToPersistedState(state)
                     locked = item.locked == true,
                     acquiredAt = item.acquiredAt or 0,
                     source = item.source or "legacy",
+                    tradeable = item.tradeable == true,
                     statVersion = item.statVersion or 5,
                     budget = item.budget,
                     budgetBig = deepCopy(item.budgetBig),
@@ -1170,7 +1246,9 @@ function GameStateSchema.ToPersistedState(state)
                     uniqueEffect = item.uniqueEffect,
                     aidLocked = item.aidLocked == true,
                     aidFloor = item.aidFloor,
-                    investedGold = item.investedGold or 0,
+                    investedGold = LargeNumber.IsLargeNumber(item.investedGold)
+                        and LargeNumber.Normalize(item.investedGold)
+                        or LargeNumber.FromNumber(item.investedGold),
                     investedFragments = item.investedFragments or 0,
                 }
             end
@@ -1259,6 +1337,7 @@ function GameStateSchema.NormalizeState(rawState, now)
     if BigNumber.IsBigNumber(normalized.hpBig) then
         normalized.hp = BigNumber.ToNumber(normalized.hpBig)
     end
+    normalized.marketListings = normalizeMarketListings(normalized.marketListings)
     normalized.appliedGmCommandIds = normalizeAppliedGmCommandIds(normalized.appliedGmCommandIds)
     if rawState.nextItemId == nil and rawState.itemSequence ~= nil then
         local legacySequence = tonumber(rawState.itemSequence)
@@ -1720,6 +1799,7 @@ end
 
 GameStateSchema.DeepCopy = deepCopy
 GameStateSchema.NextExp = nextExp
+GameStateSchema.NormalizeMarketListings = normalizeMarketListings
 GameStateSchema.NormalizeAppliedGmCommandIds = normalizeAppliedGmCommandIds
 
 return GameStateSchema

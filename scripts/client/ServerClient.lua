@@ -590,6 +590,15 @@ function ServerClient.AcknowledgeRules(ruleId, callback)
 end
 function ServerClient.ClaimAid(callback) return ServerClient.Send("Game.ClaimAid", {}, callback) end
 function ServerClient.ClaimLootStash(callback) return ServerClient.Send("Game.ClaimLootStash", {}, callback) end
+function ServerClient.DispositionPreview(mode, candidateIds, callback)
+    return ServerClient.Send("Game.DispositionPreview", {
+        mode = mode,
+        candidateIds = candidateIds,
+    }, callback)
+end
+function ServerClient.SellPreview(itemId, callback)
+    return ServerClient.Send("Game.SellPreview", { itemId = itemId }, callback)
+end
 function ServerClient.Sell(maxRank, candidateIds, callback)
     return ServerClient.Send("Game.Sell", { maxRank = maxRank, candidateIds = candidateIds }, callback)
 end
@@ -641,5 +650,32 @@ end
 function ServerClient.AdminBan(uid, reason, callback) return ServerClient.Send("Admin.Ban", { targetUid = tostring(uid), reason = reason }, callback) end
 function ServerClient.AdminUnban(uid, reason, callback) return ServerClient.Send("Admin.Unban", { targetUid = tostring(uid), reason = reason }, callback) end
 function ServerClient.AdminAudit(callback) return ServerClient.Send("Admin.GetAudit", {}, callback) end
+
+-- 市场 -----------------------------------------------------------------------
+function ServerClient.MarketBrowse(query, callback)
+    local payload = {}
+    if query then
+        if query.rarity ~= nil then payload.rarity = query.rarity end
+        if query.slot ~= nil then payload.slot = query.slot end
+        if query.limit ~= nil then payload.limit = query.limit end
+    end
+    return ServerClient.Send("Market.Browse", payload, callback)
+end
+function ServerClient.MarketList(itemId, price, callback)
+    return ServerClient.Send("Market.List", { itemId = itemId, price = price }, callback)
+end
+function ServerClient.MarketCancel(itemId, callback)
+    return ServerClient.Send("Market.Cancel", { itemId = itemId }, callback)
+end
+function ServerClient.MarketBuy(listing, callback)
+    return ServerClient.Send("Market.Buy", {
+        itemId = listing.itemId,
+        rarity = listing.rarity,
+        slot = listing.slot,
+        expectedPrice = listing.price,
+    }, callback)
+end
+function ServerClient.MarketMailbox(callback) return ServerClient.Send("Market.Mailbox", {}, callback) end
+function ServerClient.MarketCollect(callback) return ServerClient.Send("Market.Collect", {}, callback) end
 
 return ServerClient

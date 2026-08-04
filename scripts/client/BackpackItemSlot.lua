@@ -24,6 +24,7 @@ function BackpackItemSlot.Build(context, item, options)
                     showEnhance = options.showEnhance,
                     showStars = options.showStars,
                     showEquipped = options.showEquipped,
+                    showLock = not options.showLockButton,
                     opacity = options.opacity,
                 }),
             },
@@ -34,6 +35,22 @@ function BackpackItemSlot.Build(context, item, options)
             textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
         }),
     }
+    if options.showLockButton and context.setEquipmentLock and item.locked then
+        children[#children + 1] = UI.Panel {
+            position = "absolute",
+            left = slotX + math.floor((slotSize - 58) * 0.5),
+            top = 5 + math.floor((slotSize - 58) * 0.5),
+            width = 58,
+            height = 58,
+            clickable = true,
+            backgroundImage = "image/ui/inventory/equipment_lock_badge.png",
+            backgroundFit = "contain",
+            onClick = function(_, event)
+                if event and event.StopPropagation then event:StopPropagation() end
+                context.setEquipmentLock(item)
+            end,
+        }
+    end
     if options.amountText then
         children[#children + 1] = context.compactTxt(options.amountText, 16, context.C.text, {
             position = "absolute",

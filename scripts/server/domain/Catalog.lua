@@ -20,8 +20,47 @@ Catalog.MAX_LOG_EVENTS = 40
 Catalog.MAX_STAR = 5
 Catalog.MAX_ENHANCE = 1000
 Catalog.MAX_VIP_LEVEL = 40
-Catalog.DECOMPOSE_BASE_REFUND_RATE = 0.60
-Catalog.DECOMPOSE_VIP_REFUND_RATE_PER_LEVEL = 0.01
+Catalog.DECOMPOSE_BASE_REFUND_RATE = 0.25
+Catalog.DECOMPOSE_INVESTED_GOLD_BASE_REFUND_RATE = 0.45
+Catalog.DECOMPOSE_INVESTED_GOLD_VIP_RATE_PER_LEVEL = 0.0075
+Catalog.DECOMPOSE_INVESTED_GOLD_MAX_REFUND_RATE = 0.75
+Catalog.DECOMPOSE_INVESTED_FRAGMENT_BASE_REFUND_RATE = 0.50
+Catalog.DECOMPOSE_INVESTED_FRAGMENT_VIP_RATE_PER_LEVEL = 0.0075
+Catalog.DECOMPOSE_INVESTED_FRAGMENT_MAX_REFUND_RATE = 0.80
+-- 金币经济以同层装备价值为统一锚点：50级史诗基础售价约300万，
+-- 完成同层10场战斗约获得一件同层史诗的NPC回收价。
+Catalog.ECONOMY_LEVEL_SOFT_START = 100
+Catalog.ECONOMY_LEVEL_EXPONENT = 5.1
+Catalog.BATTLE_GOLD_BASE = 22000
+Catalog.CHEST_GOLD_MULTIPLIER_MIN = 3.0
+Catalog.CHEST_GOLD_MULTIPLIER_MAX = 5.0
+Catalog.MERCHANT_GOLD_MULTIPLIER = 1.25
+Catalog.WISH_GOLD_MULTIPLIER = 3.0
+Catalog.STRENGTHEN_GOLD_RATE = 0.20
+Catalog.STRENGTHEN_GOLD_GROWTH = 1.22
+Catalog.STAR_GOLD_RATE = 0.75
+Catalog.STAR_GOLD_GROWTH = 1.65
+Catalog.SELL_VALUE_BASE = 5000
+Catalog.SELL_LEVEL_SOFT_START = Catalog.ECONOMY_LEVEL_SOFT_START
+Catalog.SELL_LEVEL_EXPONENT = Catalog.ECONOMY_LEVEL_EXPONENT
+Catalog.SELL_RARITY_MULTIPLIERS = {
+    common = 1,
+    advanced = 2,
+    rare = 5,
+    artifact = 12,
+    legendary = 30,
+    epic = 80,
+    myth = 180,
+}
+Catalog.SELL_SLOT_MULTIPLIERS = {
+    weapon = 1.25,
+    armor = 0.90,
+    jewelry = 1.00,
+    special = 1.10,
+}
+Catalog.SELL_INVESTED_GOLD_BASE_REFUND_RATE = 0.35
+Catalog.SELL_INVESTED_GOLD_VIP_RATE_PER_LEVEL = 0.005
+Catalog.SELL_INVESTED_GOLD_MAX_REFUND_RATE = 0.55
 Catalog.MAX_VALUE = 9007199254740991
 Catalog.ENEMY_ATTACK_SECONDS = 1.5
 Catalog.BOSS_ENRAGE_SECONDS = 30
@@ -138,6 +177,124 @@ function Catalog.Clamp(value, minimum, maximum)
         return maximum
     end
     return value
+end
+
+local function EconomyValue(level, scalar)
+    level = Catalog.Clamp(
+        math.floor(tonumber(level) or 1),
+        1,
+        1000000
+    )
+    scalar = math.max(0, tonumber(scalar) or 0)
+    if scalar == 0 then return LargeNumber.Zero() end
+    local levelLog10 = math.log(
+        1 + level / Catalog.ECONOMY_LEVEL_SOFT_START
+    ) / math.log(10) * Catalog.ECONOMY_LEVEL_EXPONENT
+    return LargeNumber.FromBigNumber(BigNumber.Floor(
+        BigNumber.FromLog10(
+            levelLog10 + math.log(scalar) / math.log(10)
+        )
+    ))
+end
+
+function Catalog.GetEconomyLevelFactor(level)
+    level = Catalog.Clamp(
+        math.floor(tonumber(level) or 1),
+        1,
+        1000000
+    )
+    return (1 + level / Catalog.ECONOMY_LEVEL_SOFT_START)
+        ^ Catalog.ECONOMY_LEVEL_EXPONENT
+end
+
+function Catalog.GetBattleGold(level, encounterKind)
+    local multiplier = encounterKind == "chapterBoss" and 8
+        or (encounterKind == "boss" and 8
+            or (encounterKind == "elite" and 2 or 1))
+    return EconomyValue(
+        level,
+        Catalog.BATTLE_GOLD_BASE * multiplier
+    )
+end
+
+function Catalog.GetChestGold(level, roll)
+    roll = Catalog.Clamp(tonumber(roll) or 0, 0, 1)
+    local multiplier = Catalog.CHEST_GOLD_MULTIPLIER_MIN
+        + (Catalog.CHEST_GOLD_MULTIPLIER_MAX
+            - Catalog.CHEST_GOLD_MULTIPLIER_MIN) * roll
+    return EconomyValue(
+        level,
+        Catalog.BATTLE_GOLD_BASE * multiplier
+    )
+end
+
+function Catalog.GetChestGoldRange(level)
+    return Catalog.GetChestGold(level, 0),
+        Catalog.GetChestGold(level, 1)
+end
+
+function Catalog.GetMerchantGoldCost(level)
+    return EconomyValue(
+        level,
+        Catalog.BATTLE_GOLD_BASE
+            * Catalog.MERCHANT_GOLD_MULTIPLIER
+    )
+end
+
+function Catalog.GetWishGold(level)
+    return EconomyValue(
+        level,
+        Catalog.BATTLE_GOLD_BASE
+            * Catalog.WISH_GOLD_MULTIPLIER
+    )
+end
+
+local function GetEquipmentEconomyBase(item)
+    local rarityId = RarityCatalog.NormalizeId(item and item.rarity)
+    local category = item and item.category
+    if category == nil then
+        local slot = item and Catalog.SLOT_BY_ID[item.slot]
+        category = slot and slot.category or "special"
+    end
+    return EconomyValue(
+        item and item.level or 1,
+        Catalog.SELL_VALUE_BASE
+            * (Catalog.SELL_RARITY_MULTIPLIERS[rarityId] or 1)
+            * (Catalog.SELL_SLOT_MULTIPLIERS[category] or 1)
+    )
+end
+
+function Catalog.GetStrengthenCost(item, enhance)
+    enhance = Catalog.Clamp(
+        math.floor(tonumber(enhance) or 0),
+        0,
+        Catalog.MAX_ENHANCE
+    )
+    return {
+        gold = LargeNumber.MultiplyScalar(
+            GetEquipmentEconomyBase(item),
+            Catalog.STRENGTHEN_GOLD_RATE
+                * Catalog.STRENGTHEN_GOLD_GROWTH ^ enhance
+        ),
+        fragments = 8 + enhance * 5,
+    }
+end
+
+function Catalog.GetStarCost(item, star)
+    star = Catalog.Clamp(
+        math.floor(tonumber(star) or 0),
+        0,
+        Catalog.MAX_STAR
+    )
+    return {
+        gold = LargeNumber.MultiplyScalar(
+            GetEquipmentEconomyBase(item),
+            Catalog.STAR_GOLD_RATE
+                * Catalog.STAR_GOLD_GROWTH ^ star
+        ),
+        fragments = 20 + star * 10,
+        duplicateCount = 1,
+    }
 end
 
 function Catalog.NextExp(level)
@@ -265,48 +422,175 @@ function Catalog.CreateItemStats(definition, floor, rarityId, roll, enhance, sta
     return stats
 end
 
-function Catalog.GetDecomposeRefundRate(vipLevel)
+local function SafeInvestedValue(value)
+    value = tonumber(value) or 0
+    if value ~= value or value == math.huge or value == -math.huge then return 0 end
+    return math.max(0, math.floor(value))
+end
+
+local function InvestedGold(value)
+    if LargeNumber.IsLargeNumber(value) then
+        return LargeNumber.Normalize(value)
+    end
+    return LargeNumber.FromNumber(SafeInvestedValue(value))
+end
+
+local function VipRate(baseRate, perLevelRate, maximumRate, vipLevel)
     vipLevel = Catalog.Clamp(
         math.floor(tonumber(vipLevel) or 0),
         0,
         Catalog.MAX_VIP_LEVEL
     )
-    return math.min(
-        1,
-        Catalog.DECOMPOSE_BASE_REFUND_RATE
-            + vipLevel * Catalog.DECOMPOSE_VIP_REFUND_RATE_PER_LEVEL
+    return math.min(maximumRate, baseRate + vipLevel * perLevelRate)
+end
+
+function Catalog.GetEquipmentBaseRecoveryValue(item)
+    if not item then
+        return { gold = LargeNumber.Zero(), fragments = 0 }
+    end
+    local rarityId = RarityCatalog.NormalizeId(item.rarity)
+    local rarity = Catalog.RARITIES[rarityId] or Catalog.RARITIES.common
+    local level = math.max(1, math.floor(tonumber(item.level) or 1))
+    local baseGold = EconomyValue(
+        level,
+        Catalog.SELL_VALUE_BASE
+            * (Catalog.SELL_RARITY_MULTIPLIERS[rarityId] or 1)
     )
+    local levelFragmentScale = 1 + math.floor(math.sqrt(level) / 10)
+    return {
+        gold = baseGold,
+        fragments = math.min(Catalog.MAX_VALUE,
+            rarity.fragments * levelFragmentScale),
+    }
 end
 
 function Catalog.GetEquipmentRecoveryValue(item)
-    if not item then return { gold = 0, fragments = 0 } end
-    local rarity = Catalog.RARITIES[item.rarity] or Catalog.RARITIES.common
-    local level = math.max(1, math.floor(tonumber(item.level) or 1))
-    local sameLevelBattleGold = level * 8 + 25
-    local levelFragmentScale = 1 + math.floor(math.sqrt(level) / 10)
+    local base = Catalog.GetEquipmentBaseRecoveryValue(item)
+    if not item then return base end
     return {
-        gold = math.min(Catalog.MAX_VALUE,
-            math.floor(sameLevelBattleGold * rarity.recoveryBattles)
-                + math.max(0, math.floor(item.investedGold or 0))),
+        gold = LargeNumber.Add(base.gold, InvestedGold(item.investedGold)),
         fragments = math.min(Catalog.MAX_VALUE,
-            rarity.fragments * levelFragmentScale
-                + math.max(0, math.floor(item.investedFragments or 0))),
+            base.fragments + SafeInvestedValue(item.investedFragments)),
     }
+end
+
+local function EquipmentSellBaseBig(item)
+    local level = Catalog.Clamp(
+        math.floor(tonumber(item and item.level) or 1),
+        1,
+        1000000
+    )
+    local rarityId = RarityCatalog.NormalizeId(item and item.rarity)
+    local category = item and item.category
+    if category == nil then
+        local slot = item and Catalog.SLOT_BY_ID[item.slot]
+        category = slot and slot.category or "special"
+    end
+    local rarityMultiplier =
+        Catalog.SELL_RARITY_MULTIPLIERS[rarityId] or 1
+    local slotMultiplier =
+        Catalog.SELL_SLOT_MULTIPLIERS[category] or 1
+    local roll = Catalog.Clamp(
+        tonumber(item and item.roll) or 1,
+        0.95,
+        1.05
+    )
+    local affixCount = type(item and item.coreAffixes) == "table"
+        and #item.coreAffixes or 0
+    local affixMultiplier = 1 + math.min(3, affixCount) * 0.06
+    local levelFactor = 1
+        + level / Catalog.SELL_LEVEL_SOFT_START
+    local levelPower = BigNumber.FromLog10(
+        math.log(levelFactor) / math.log(10)
+            * Catalog.SELL_LEVEL_EXPONENT
+    )
+    return BigNumber.Floor(BigNumber.MultiplyScalar(
+        levelPower,
+        Catalog.SELL_VALUE_BASE
+            * rarityMultiplier
+            * slotMultiplier
+            * roll
+            * affixMultiplier
+            * RewardPolicy.EnhanceMultiplier(
+                item and item.enhance or 0
+            )
+            * RewardPolicy.StarMultiplier(
+                item and item.star or 0
+            )
+    ))
+end
+
+function Catalog.GetSellInvestedGoldRefundRate(vipLevel)
+    return VipRate(
+        Catalog.SELL_INVESTED_GOLD_BASE_REFUND_RATE,
+        Catalog.SELL_INVESTED_GOLD_VIP_RATE_PER_LEVEL,
+        Catalog.SELL_INVESTED_GOLD_MAX_REFUND_RATE,
+        vipLevel
+    )
+end
+
+function Catalog.GetMarketStandardValue(item)
+    return Catalog.GetSellValue(item, 0)
+end
+
+function Catalog.GetSellValue(item, vipLevel)
+    if not item then return LargeNumber.Zero() end
+    local base = LargeNumber.FromBigNumber(EquipmentSellBaseBig(item))
+    local invested = LargeNumber.MultiplyScalar(
+        InvestedGold(item.investedGold),
+        Catalog.GetSellInvestedGoldRefundRate(vipLevel)
+    )
+    return LargeNumber.Add(base, invested)
+end
+
+function Catalog.GetDecomposeRefundRate(vipLevel)
+    return VipRate(
+        Catalog.DECOMPOSE_INVESTED_GOLD_BASE_REFUND_RATE,
+        Catalog.DECOMPOSE_INVESTED_GOLD_VIP_RATE_PER_LEVEL,
+        Catalog.DECOMPOSE_INVESTED_GOLD_MAX_REFUND_RATE,
+        vipLevel
+    )
+end
+
+function Catalog.GetDecomposeFragmentRefundRate(vipLevel)
+    return VipRate(
+        Catalog.DECOMPOSE_INVESTED_FRAGMENT_BASE_REFUND_RATE,
+        Catalog.DECOMPOSE_INVESTED_FRAGMENT_VIP_RATE_PER_LEVEL,
+        Catalog.DECOMPOSE_INVESTED_FRAGMENT_MAX_REFUND_RATE,
+        vipLevel
+    )
 end
 
 function Catalog.GetDecomposeRefund(item, vipLevel)
-    local rate = Catalog.GetDecomposeRefundRate(vipLevel)
-    local total = Catalog.GetEquipmentRecoveryValue(item)
+    if not item then
+        return {
+            gold = LargeNumber.Zero(),
+            fragments = 0,
+            rate = 0,
+            fragmentRate = 0,
+        }
+    end
+    local base = Catalog.GetEquipmentBaseRecoveryValue(item)
+    local goldRate = Catalog.GetDecomposeRefundRate(vipLevel)
+    local fragmentRate = Catalog.GetDecomposeFragmentRefundRate(vipLevel)
     return {
-        gold = math.floor(total.gold * rate),
-        fragments = math.floor(total.fragments * rate),
-        rate = rate,
+        gold = LargeNumber.Add(
+            LargeNumber.MultiplyScalar(
+                base.gold,
+                Catalog.DECOMPOSE_BASE_REFUND_RATE
+            ),
+            LargeNumber.MultiplyScalar(
+                InvestedGold(item.investedGold),
+                goldRate
+            )
+        ),
+        fragments = math.min(Catalog.MAX_VALUE,
+            base.fragments
+                + math.floor(SafeInvestedValue(item.investedFragments) * fragmentRate)),
+        rate = Catalog.DECOMPOSE_BASE_REFUND_RATE,
+        investedGoldRate = goldRate,
+        fragmentRate = fragmentRate,
     }
-end
-
-function Catalog.GetSellValue(item)
-    if not item then return 0 end
-    return Catalog.GetEquipmentRecoveryValue(item).gold
 end
 
 function Catalog.GetItemPower(item)

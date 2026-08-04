@@ -248,10 +248,14 @@ local function sanitizeEquipment(rawItem, itemId, sourceVersion)
         locked = rawItem.locked == true,
         acquiredAt = math.max(0, TableUtils.ToInteger(rawItem.acquiredAt, 0)),
         source = type(rawItem.source) == "string" and rawItem.source:match("^[%w%._:%-]+$") and rawItem.source or "legacy",
+        tradeable = rawItem.tradeable == true,
         statVersion = 5,
         budget = projectMagnitude(budgetBig),
         budgetBig = budgetBig,
-        investedGold = clampInteger(rawItem.investedGold, 0, Catalog.MAX_VALUE, 0),
+        investedGold = LargeNumber.IsLargeNumber(
+            rawItem.investedGold
+        ) and LargeNumber.Normalize(rawItem.investedGold)
+            or LargeNumber.FromNumber(rawItem.investedGold),
         investedFragments = clampInteger(rawItem.investedFragments, 0, Catalog.MAX_VALUE, 0),
     }
 end
@@ -422,7 +426,7 @@ function StateNormalizer.Normalize(rawState, now)
         storyProgress = sanitizeStoryProgress(rawState.storyProgress, sourceVersion, normalizedMaxFloor),
         pendingStoryGate = sourceVersion < 4 and nil or sanitizeStoryGate(rawState.pendingStoryGate),
         ruleAcknowledgements = sanitizeRuleAcknowledgements(rawState.ruleAcknowledgements),
-        equipmentCollection = sanitizeEquipmentCollection(rawState.equipmentCollection),
+        equipmentCollection = sanitizeEquipmentCollection(rawState.equipmentCollection), marketListings = GameStateSchema.NormalizeMarketListings(rawState.marketListings),
         pendingEquipDecision = nil,
         previousLoadout = nil,
         appliedGmCommandIds = GameStateSchema.NormalizeAppliedGmCommandIds(rawState.appliedGmCommandIds),

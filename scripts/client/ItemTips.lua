@@ -11,12 +11,18 @@ local layer_ = nil
 local panel_ = nil
 local comparePanel_ = nil
 local compareButton_ = nil
+local actionPanel_ = nil
 local currentItem_ = nil
 local currentAnchor_ = nil
 local currentOptions_ = nil
 local compareExpanded_ = false
 local pointerDownListener_ = nil
 local triggers_ = setmetatable({}, { __mode = "k" })
+
+local QUICK_ACTION_ASSETS = {
+    sell = "image/ui/itemtips/sell_side_tab.png",
+    decompose = "image/ui/itemtips/decompose_side_tab.png",
+}
 
 local AFFIX_NAMES = {
     ["core.fury"] = "狂怒：提升攻击",
@@ -53,6 +59,7 @@ local function RemoveLayer()
     panel_ = nil
     comparePanel_ = nil
     compareButton_ = nil
+    actionPanel_ = nil
     currentItem_ = nil
     currentAnchor_ = nil
     currentOptions_ = nil
@@ -106,6 +113,7 @@ local function HandleGlobalPointerDown(event)
     if hit and IsSelfOrDescendant(hit, panel_) then return end
     if hit and comparePanel_ and IsSelfOrDescendant(hit, comparePanel_) then return end
     if hit and compareButton_ and IsSelfOrDescendant(hit, compareButton_) then return end
+    if hit and actionPanel_ and IsSelfOrDescendant(hit, actionPanel_) then return end
     if FindTrigger(hit) then return end
     if IsInteractive(hit) then return end
 
@@ -177,6 +185,12 @@ local function BuildRows(item, compactForCompare)
             or "援助占用"
     end
     AddRow(rows, "状态", #state > 0 and table.concat(state, " · ") or "可用", #state > 0 and C.gold or C.success)
+    AddRow(
+        rows,
+        "交易",
+        item.tradeable == true and "可交易" or "不可交易",
+        item.tradeable == true and C.success or C.textDim
+    )
     AddRow(rows, "来源", SOURCE_NAMES[item.source] or "其他途径", C.textSecondary)
     local decomposeRefund = type(item.decomposeRefund) == "table"
         and item.decomposeRefund
@@ -435,6 +449,148 @@ local function PositionPanel(anchor, width, height, hintHeight)
     left = math.max(margin, math.min(maxLeft, left))
     top = math.max(margin, math.min(maxTop, top))
     return math.floor(left), math.floor(top), alignment
+end
+
+local function BuildQuickActionButton(action)
+    return UI.Panel {
+        width = 170,
+        height = 96,
+        flexShrink = 0,
+        clickable = true,
+        backgroundImage = action.image,
+        backgroundFit = "contain",
+        onClick = action.onClick,
+        children = {
+            context_.compactTxt(action.label, 21, action.color, {
+                    position = "absolute",
+                    left = 0,
+                    top = action.textTop or 0,
+                    width = "100%",
+                    height = 96,
+                    textAlign = "center",
+                    textStroke = { width = 2, color = "#000000" },
+                    pointerEvents = "none",
+                }),
+        },
+    }
+end
+
+local function BuildQuickActions(
+    item,
+    panelLeft,
+    panelTop,
+    panelWidth,
+    panelHeight,
+    viewportWidth,
+    viewportHeight,
+    rightSideBlocked
+)
+    if not context_.showDisposition then return nil end
+
+    local C = context_.C
+    local dockWidth = 184
+    local dockPadding = 7
+    local buttonHeight = 96
+    local buttonGap = 6
+    local edgeOverlap = 4
+    local margin = 28
+    local protected = item.locked or item.aidLocked or context_.isEquipped(item)
+    local myth = context_.rarityName(item.rarity) == "神话"
+    if protected or myth then return nil end
+
+    local function ShowPreview(mode)
+        ItemTips.Hide("quick-" .. mode)
+        context_.showDisposition(mode, { item })
+    end
+
+    local actions = {
+        {
+            label = "出售",
+            image = QUICK_ACTION_ASSETS.sell,
+            color = C.gold,
+            onClick = function() ShowPreview("sell") end,
+        },
+        {
+            label = "分解",
+            image = QUICK_ACTION_ASSETS.decompose,
+            color = C.text,
+            textTop = -3,
+            onClick = function() ShowPreview("decompose") end,
+        },
+    }
+    local buttonCount = #actions
+    local dockHeight = dockPadding * 2
+        + buttonCount * buttonHeight
+        + math.max(0, buttonCount - 1) * buttonGap
+    local panelRight = panelLeft + panelWidth
+    local rightSpace = viewportWidth - panelRight - margin + edgeOverlap
+    local leftSpace = panelLeft - margin + edgeOverlap
+    local side
+    local left
+    if not rightSideBlocked and rightSpace >= dockWidth then
+        side = "right"
+        left = panelRight - edgeOverlap
+    elseif leftSpace >= dockWidth then
+        side = "left"
+        left = panelLeft - dockWidth + edgeOverlap
+    else
+        return nil
+    end
+
+    local preferredTop = panelTop + math.floor((panelHeight - dockHeight) * 0.26)
+    local top = math.max(margin, math.min(viewportHeight - dockHeight - margin, preferredTop))
+    local buttons = {}
+    for _, action in ipairs(actions) do
+        buttons[#buttons + 1] = BuildQuickActionButton(action)
+    end
+
+    local attachmentSpine = UI.Panel {
+        position = "absolute",
+        left = side == "right" and 0 or dockWidth - 7,
+        top = 12,
+        width = 7,
+        height = dockHeight - 24,
+        backgroundColor = { 56, 171, 221, 245 },
+        borderRadius = 3,
+        pointerEvents = "none",
+    }
+
+    return UI.Panel {
+        id = "itemTipsQuickActions",
+        position = "absolute",
+        left = left,
+        top = top,
+        width = dockWidth,
+        height = dockHeight,
+        paddingTop = dockPadding,
+        paddingBottom = dockPadding,
+        paddingLeft = 7,
+        paddingRight = 7,
+        gap = buttonGap,
+        alignItems = "center",
+        overflow = "hidden",
+        backgroundColor = { 6, 13, 27, 252 },
+        borderWidth = 2,
+        borderColor = { 69, 137, 181, 255 },
+        borderRadius = 12,
+        boxShadow = {
+            color = { 0, 0, 0, 220 },
+            offsetX = side == "right" and 8 or -8,
+            offsetY = 8,
+            blurRadius = 18,
+        },
+        children = {
+            attachmentSpine,
+            UI.Panel {
+                width = "100%",
+                height = buttonCount * buttonHeight
+                    + math.max(0, buttonCount - 1) * buttonGap,
+                gap = buttonGap,
+                alignItems = "center",
+                children = buttons,
+            },
+        },
+    }, side
 end
 
 function ItemTips.Configure(context)
@@ -812,6 +968,17 @@ function ItemTips.Show(item, anchor, options, expanded)
         )
     end
 
+    actionPanel_ = BuildQuickActions(
+        item,
+        left,
+        top,
+        panelWidth,
+        panelHeight,
+        viewportWidth,
+        viewportHeight,
+        requestedExpanded
+    )
+
     local outsideHint = context_.compactTxt(
         "再次点击其他道具可直接切换 · 点击空白区域关闭",
         16,
@@ -831,6 +998,7 @@ function ItemTips.Show(item, anchor, options, expanded)
     if cornerConnector then layerChildren[#layerChildren + 1] = cornerConnector end
     if compareButton_ then layerChildren[#layerChildren + 1] = compareButton_ end
     if comparePanel_ then layerChildren[#layerChildren + 1] = comparePanel_ end
+    if actionPanel_ then layerChildren[#layerChildren + 1] = actionPanel_ end
     layer_ = UI.Panel {
         id = "itemTipsLayer",
         position = "absolute",

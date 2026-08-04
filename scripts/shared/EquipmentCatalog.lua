@@ -1,4 +1,5 @@
 local RarityCatalog = require("shared.RarityCatalog")
+local LargeNumber = require("shared.LargeNumber")
 
 local EquipmentCatalog = {}
 
@@ -150,7 +151,9 @@ function EquipmentCatalog.BuildViewItem(instance)
     item.statVersion = instance.statVersion or 5
     item.budget = instance.budget
     item.budgetBig = instance.budgetBig
-    item.investedGold = instance.investedGold or 0
+    item.investedGold = LargeNumber.IsLargeNumber(instance.investedGold)
+        and LargeNumber.Normalize(instance.investedGold)
+        or LargeNumber.FromNumber(instance.investedGold)
     item.investedFragments = instance.investedFragments or 0
     item.roll = instance.roll or 1
     item.atk = instance.atk or definition.atk or 0
