@@ -57,7 +57,7 @@ function CommonPromptDialog.Present(options, finish)
     local dialogWidth = options.dialogWidth or 900
     local dialogHeight = options.dialogHeight or 760
     local buttonWidth = 300
-    local buttonGap = 80
+    local buttonGap = options.buttonGap or 80
     local buttonTop = options.buttonTop or (dialogHeight - 96)
 
     local function Cancel()

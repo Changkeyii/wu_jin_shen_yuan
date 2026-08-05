@@ -3,6 +3,7 @@ local Input = require("urhox-libs/UI/Core/Input")
 local PointerEvent = require("urhox-libs/UI/Core/PointerEvent")
 local ItemSlotBase = require("client.ItemSlotBase")
 local ItemPresentation = require("shared.ItemPresentation")
+local ItemTipData = require("client.ItemTipData")
 
 local ItemTips = {}
 
@@ -23,33 +24,6 @@ local triggers_ = setmetatable({}, { __mode = "k" })
 local QUICK_ACTION_ASSETS = {
     sell = "image/ui/itemtips/sell_side_tab.png",
     decompose = "image/ui/itemtips/decompose_side_tab.png",
-}
-
-local AFFIX_NAMES = {
-    ["core.fury"] = "狂怒：提升攻击",
-    ["core.guard"] = "坚守：提升防御",
-    ["core.vitality"] = "活力：提升生命",
-    ["core.swiftness"] = "迅捷：提升攻击速度",
-    ["core.vampirism"] = "汲取：提升生命偷取",
-    ["core.boss_hunter"] = "猎王：提升首领伤害",
-}
-
-local UNIQUE_EFFECT_NAMES = {
-    ["myth.tower_soul_resonance"] = "塔魂共鸣：额外提升首领伤害",
-}
-
-local SOURCE_NAMES = {
-    starter = "初始装备",
-    monster_drop = "怪物掉落",
-    elite_drop = "精英掉落",
-    boss_drop = "首领掉落",
-    chapter_boss_drop = "章节首领掉落",
-    chest_drop = "宝箱掉落",
-    tower_aid = "登塔援助",
-    aid = "登塔援助",
-    admin_grant = "管理发放",
-    legacy = "历史装备",
-    ["serverCloud.item"] = "云端发放",
 }
 
 local function RemoveLayer()
@@ -131,85 +105,6 @@ local function EnsureInputListener()
     )
 end
 
-local function AddRow(rows, label, value, color, options)
-    if value == nil or value == "" then return end
-    options = options or {}
-    rows[#rows + 1] = {
-        label = label,
-        value = tostring(value),
-        color = color,
-        full = options.full == true,
-        height = options.height or 38,
-    }
-end
-
-local function Percent(value)
-    return string.format("%.1f%%", (tonumber(value) or 0) * 100)
-end
-
-local function BuildRows(item, compactForCompare)
-    local C = context_.C
-    local rows = {}
-    AddRow(rows, "等级", context_.formatInt(item.level or 1), C.textSecondary)
-    AddRow(rows, "强化", "+" .. tostring(item.enhance or 0), C.gold)
-    AddRow(rows, "星级", tostring(item.star or 0) .. " 星", C.gold)
-    local setText = item.setEnabled == false
-        and "未激活"
-        or (item.setName or (item.setId and tostring(item.setId)) or "散件")
-    AddRow(rows, "套装", setText, item.setEnabled == false and C.textDim or C.textSecondary)
-    AddRow(rows, "数量", context_.formatInt(item.quantity or 1), C.textSecondary)
-
-    if not compactForCompare then
-        if item.atkBig or (item.atk or 0) > 0 then
-            AddRow(rows, "攻击", context_.formatInt(item.atkBig or item.atk), C.primary)
-        end
-        if item.defBig or (item.def or 0) > 0 then
-            AddRow(rows, "防御", context_.formatInt(item.defBig or item.def), C.textSecondary)
-        end
-        if item.hpBig or (item.hp or 0) > 0 then
-            AddRow(rows, "生命", context_.formatInt(item.hpBig or item.hp), C.hp)
-        end
-        if (item.crit or 0) > 0 then AddRow(rows, "暴击率", Percent(item.crit), C.gold) end
-        if (item.critDmg or 0) > 0 then AddRow(rows, "暴击伤害", Percent(item.critDmg), C.gold) end
-        if (item.atkSpeed or 0) > 0 then AddRow(rows, "攻击速度", Percent(item.atkSpeed), C.mp) end
-        if (item.lifeSteal or 0) > 0 then AddRow(rows, "生命偷取", Percent(item.lifeSteal), C.success) end
-        if (item.damageReduction or 0) > 0 then AddRow(rows, "伤害减免", Percent(item.damageReduction), C.success) end
-        if (item.bossDamage or 0) > 0 then AddRow(rows, "首领伤害", Percent(item.bossDamage), C.error) end
-    end
-
-    local state = {}
-    if context_.isEquipped(item) then state[#state + 1] = "已穿戴" end
-    if item.locked then state[#state + 1] = "已锁定" end
-    if item.aidLocked then
-        state[#state + 1] = item.aidFloor
-            and ("援助占用 · 第 " .. context_.formatInt(item.aidFloor) .. " 层")
-            or "援助占用"
-    end
-    AddRow(rows, "状态", #state > 0 and table.concat(state, " · ") or "可用", #state > 0 and C.gold or C.success)
-    AddRow(
-        rows,
-        "交易",
-        item.tradeable == true and "可交易" or "不可交易",
-        item.tradeable == true and C.success or C.textDim
-    )
-    AddRow(rows, "来源", SOURCE_NAMES[item.source] or "其他途径", C.textSecondary)
-    local decomposeRefund = type(item.decomposeRefund) == "table"
-        and item.decomposeRefund
-        or nil
-    AddRow(
-        rows,
-        "分解返还",
-        decomposeRefund
-            and ("金币 " .. context_.formatInt(decomposeRefund.gold or 0)
-                .. " / 碎片 " .. context_.formatInt(decomposeRefund.fragments or 0)
-                .. "（" .. tostring(math.floor((decomposeRefund.rate or 0) * 100)) .. "%）")
-            or "正在获取真实返还…",
-        C.textSecondary,
-        { full = true }
-    )
-    return rows
-end
-
 local function BuildRow(row, width)
     local C = context_.C
     return UI.Panel {
@@ -248,39 +143,13 @@ local function BuildRow(row, width)
     }
 end
 
-local function CompareValues(left, right)
-    if context_.compareMagnitude then
-        return context_.compareMagnitude(left or 0, right or 0)
-    end
-    left = tonumber(left) or 0
-    right = tonumber(right) or 0
-    if left == right then return 0 end
-    return left > right and 1 or -1
-end
-
-local function BuildCompareRows(candidate, equipped)
-    local rows = {
-        { "战力", context_.itemPower(candidate), context_.itemPower(equipped), false },
-        { "攻击", candidate.atkBig or candidate.atk or 0, equipped.atkBig or equipped.atk or 0, false },
-        { "防御", candidate.defBig or candidate.def or 0, equipped.defBig or equipped.def or 0, false },
-        { "生命", candidate.hpBig or candidate.hp or 0, equipped.hpBig or equipped.hp or 0, false },
-        { "暴击", candidate.crit or 0, equipped.crit or 0, true },
-        { "暴伤", candidate.critDmg or 0, equipped.critDmg or 0, true },
-        { "攻速", candidate.atkSpeed or 0, equipped.atkSpeed or 0, true },
-        { "吸血", candidate.lifeSteal or 0, equipped.lifeSteal or 0, true },
-        { "减伤", candidate.damageReduction or 0, equipped.damageReduction or 0, true },
-        { "首领伤害", candidate.bossDamage or 0, equipped.bossDamage or 0, true },
-    }
-    return rows
-end
-
 local function BuildComparePanel(candidate, equipped, width, height, left, top)
     local C = context_.C
     local compareRows = {}
-    for _, row in ipairs(BuildCompareRows(candidate, equipped)) do
-        local order = CompareValues(row[2], row[3])
-        local candidateText = row[4] and Percent(row[2]) or context_.formatInt(row[2])
-        local equippedText = row[4] and Percent(row[3]) or context_.formatInt(row[3])
+    for _, row in ipairs(ItemTipData.BuildCompareRows(candidate, equipped, context_.itemPower)) do
+        local order = ItemTipData.CompareValues(row[2], row[3], context_.compareMagnitude)
+        local candidateText = row[4] and ItemTipData.Percent(row[2]) or context_.formatInt(row[2])
+        local equippedText = row[4] and ItemTipData.Percent(row[3]) or context_.formatInt(row[3])
         local candidateColor = order > 0 and C.success or (order < 0 and C.error or C.textSecondary)
         compareRows[#compareRows + 1] = UI.Panel {
             width = width - 28,
@@ -682,15 +551,19 @@ function ItemTips.Show(item, anchor, options, expanded)
             }),
         },
     }
-    for _, row in ipairs(BuildRows(item, requestedExpanded)) do
+    for _, row in ipairs(ItemTipData.BuildRows(item, requestedExpanded, {
+        colors = C,
+        formatInt = context_.formatInt,
+        isEquipped = context_.isEquipped,
+    })) do
         rows[#rows + 1] = BuildRow(row, rowWidth)
     end
     local affixNames = {}
     for _, affix in ipairs(type(item.coreAffixes) == "table" and item.coreAffixes or {}) do
-        affixNames[#affixNames + 1] = AFFIX_NAMES[affix] or tostring(affix)
+        affixNames[#affixNames + 1] = ItemTipData.AffixName(affix)
     end
     local uniqueEffectText = item.uniqueEffect
-        and (UNIQUE_EFFECT_NAMES[item.uniqueEffect] or item.uniqueEffect)
+        and ItemTipData.UniqueEffectName(item.uniqueEffect)
         or nil
     local affixHeight = 174
     local descriptionHeight = 96
