@@ -29,7 +29,7 @@ local ENTRIES = {
     },
     legendary = {
         id = "legendary", name = "传说", rank = 5, unlockFloor = 30,
-        multiplier = 1.15, beam = "crimson", color = "#EF4444",
+        multiplier = 1.15, beam = "crimson", color = "#FF8C00",
         fragments = 80, recoveryBattles = 150,
         coreAffixCount = 2,
     },
@@ -41,7 +41,7 @@ local ENTRIES = {
     },
     myth = {
         id = "myth", name = "神话", rank = 7, unlockFloor = 100,
-        multiplier = 1.40, beam = "rainbow", color = "#F8FAFC",
+        multiplier = 1.40, beam = "rainbow", color = "#FF3B30",
         fragments = 320, recoveryBattles = 450,
         enablesSets = true, uniqueEffect = true, dynamicBeam = true,
     },

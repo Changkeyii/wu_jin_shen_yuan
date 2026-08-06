@@ -133,11 +133,11 @@ function RewardDialogView.NextKey(prefix)
     return tostring(prefix or "reward") .. ":" .. tostring(sequence_)
 end
 
-function RewardDialogView.Show(options)
+function RewardDialogView.BuildOptions(options)
     options = options or {}
     local cards = options.cards or {}
-    if #cards == 0 then return false end
-    return CommonPromptDialog.Show {
+    if #cards == 0 then return nil end
+    return {
         kind = "equipment",
         priority = options.priority or 320,
         queueKey = options.queueKey or RewardDialogView.NextKey("reward"),
@@ -162,6 +162,12 @@ function RewardDialogView.Show(options)
             )
         end,
     }
+end
+
+function RewardDialogView.Show(options)
+    local dialogOptions = RewardDialogView.BuildOptions(options)
+    if not dialogOptions then return false end
+    return CommonPromptDialog.Show(dialogOptions)
 end
 
 return RewardDialogView

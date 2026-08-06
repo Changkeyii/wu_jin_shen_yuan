@@ -2,6 +2,7 @@ local UI = require("urhox-libs/UI")
 local ItemSort = require("shared.ItemSort")
 local ItemSlotBase = require("client.ItemSlotBase")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
+local EquipmentQuickFilter = require("client.EquipmentQuickFilter")
 
 local EquipmentLoadoutView = {}
 
@@ -81,14 +82,18 @@ function EquipmentLoadoutView.Build(context)
 
     local filtered = {}
     for _, item in ipairs(game.inventory or {}) do
-        if item.slot == selectedSlot and item.category ~= "consumable" and item.category ~= "material" then
+        if item.slot == selectedSlot and item.category ~= "consumable" and item.category ~= "material"
+            and EquipmentQuickFilter.Matches("equip", item)
+        then
             filtered[#filtered + 1] = item
         end
     end
     ItemSort.Sort(filtered)
 
     local selectedCandidate = selectedInventoryId and GetItemById(selectedInventoryId) or nil
-    if not selectedCandidate or selectedCandidate.slot ~= selectedSlot then
+    if not selectedCandidate or selectedCandidate.slot ~= selectedSlot
+        or not EquipmentQuickFilter.Matches("equip", selectedCandidate)
+    then
         selectedCandidate = filtered[1]
         SetSelectedInventoryId(selectedCandidate and selectedCandidate.id or nil)
     end
@@ -781,6 +786,28 @@ function EquipmentLoadoutView.Build(context)
                         backgroundSlice = { 12, 12, 12, 12 },
                         children = {
                             Txt("可穿戴装备", 25, C.text, { position = "absolute", left = 22, top = 16, width = 260, height = 34, textStroke = { width = 2, color = "#000000" } }),
+                            UI.Panel {
+                                position = "absolute",
+                                right = 22,
+                                top = 10,
+                                width = 150,
+                                height = 48,
+                                clickable = true,
+                                backgroundImage = ASSETS.ui.inventoryActionGold,
+                                backgroundFit = "contain",
+                                onClick = function()
+                                    EquipmentQuickFilter.Show("equip", { onApplied = RequestPageRefresh })
+                                end,
+                                children = {
+                                    CompactTxt("快速筛选", 18, C.text, {
+                                        width = "100%",
+                                        height = 48,
+                                        textAlign = "center",
+                                        textStroke = { width = 1, color = "#000000" },
+                                        pointerEvents = "none",
+                                    }),
+                                },
+                            },
                             equipmentListScrollView,
                         },
                     },

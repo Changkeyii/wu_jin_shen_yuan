@@ -5,17 +5,19 @@
     "id": "162525390"
   },
   "entry": "main.lua",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "taptap_publish": {
-    "title": "<game title, required>",
+    "title": "无尽深渊",
     "description": "<game description>",
-    "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
+    "category": "rpg",
     "screen_orientation": "portrait",
     "collection_type": "sce",
     "trial_note": "<developer's note>",
     "transparent": false,
     "app_platforms": "1,2",
-    "developer_id": 384520
+    "developer_id": 384520,
+    "app_id": 900564,
+    "miniapp_id": "tapmc3enfyg4fzqnef"
   },
   "assets": {
     "icon": "",
@@ -25,6 +27,10 @@
   "entry@client": "main.lua",
   "entry@server": "server/ServerMain.lua",
   "metadata": {
-    "updated_at": "2026-08-05T02:05:24.857Z"
+    "updated_at": "2026-08-05T07:42:07.932Z"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_ew53_1785915727789.png",
+    "generated_at": "2026-08-05T07:42:07.932Z"
   }
 }

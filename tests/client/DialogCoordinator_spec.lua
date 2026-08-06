@@ -262,6 +262,43 @@ local function TestCancelByKey()
     assert(Coordinator.CancelByKey("missing") == false)
 end
 
+local function TestReservedNextEnqueue()
+    local Coordinator = FreshCoordinator()
+    local presented = {}
+    local completions = {}
+
+    Coordinator.Configure({
+        present = function(options, complete)
+            presented[#presented + 1] = options.id
+            completions[#completions + 1] = complete
+        end,
+        dismiss = function() end,
+    })
+
+    assert(Coordinator.Enqueue({ id = "active", priority = 100, queueKey = "active" }))
+    assert(Coordinator.Enqueue({ id = "face-slap", priority = 1200, queueKey = "face-slap" }))
+
+    local rewardReservation = Coordinator.ReserveNext()
+    completions[1]("confirm")
+    assert(Coordinator.GetState().active == nil and Coordinator.GetState().queued == 1,
+        "ordinary face-slap dialogs must wait while the reward result is pending")
+
+    assert(Coordinator.EnqueueReserved(rewardReservation, {
+        id = "reward", priority = 10, queueKey = "reward",
+    }))
+    assert(Coordinator.GetState().active.id == "reward",
+        "the reserved reward must be shown as soon as its result arrives")
+    assert(Coordinator.Enqueue({ id = "ordinary", priority = 9999, queueKey = "ordinary" }))
+    completions[2]("confirm")
+    assert(Coordinator.GetState().active.id == "ordinary")
+
+    completions[3]("confirm")
+    assert(Coordinator.GetState().active.id == "face-slap")
+    completions[4]("confirm")
+    AssertOrder(presented, { "active", "reward", "ordinary", "face-slap" },
+        "reserved next enqueue order")
+end
+
 function Spec.Run()
     local oldModule = package.loaded[MODULE_NAME]
     local ok, reason = pcall(function()
@@ -270,6 +307,7 @@ function Spec.Run()
         TestClearAndRemountLifecycle()
         TestExplicitPriorityAndPresenterFailure()
         TestCancelByKey()
+        TestReservedNextEnqueue()
     end)
     package.loaded[MODULE_NAME] = oldModule
     assert(ok, reason)

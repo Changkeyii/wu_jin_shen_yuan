@@ -1,6 +1,7 @@
 local Protocol = require("shared.NetworkProtocol")
 local ErrorCodes = require("shared.ErrorCodes")
 local GameStateSchema = require("shared.GameStateSchema")
+local ServerClock = require("client.ServerClock")
 local GameEventSchema = require("shared.GameEventSchema")
 local GameStateAdapter = require("client.GameStateAdapter")
 
@@ -175,6 +176,7 @@ local function ApplyCompleteSnapshot(snapshot, events)
         return false
     end
     local currentRevision = GameStateAdapter.GetRevision()
+    ServerClock.Sync(snapshot.serverTime)
     if snapshot.revision and snapshot.revision <= currentRevision and GameStateAdapter.GetViewState().connectionState == "ready" then
         print("[ServerClient] ignored stale snapshot revision=" .. tostring(snapshot.revision)
             .. " current=" .. tostring(currentRevision))
@@ -304,6 +306,7 @@ local function HandleDelta(eventType, eventData)
         return
     end
     if delta.revision <= GameStateAdapter.GetRevision() then return end
+    ServerClock.Sync(delta.serverTime)
     local preparedEvents, eventReason = PrepareEventsForClient(delta.events or {})
     if not preparedEvents then
         Emit("error", { code = ErrorCodes.INVALID_STATE, reason = eventReason })
@@ -560,6 +563,7 @@ end
 
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
 function ServerClient.ClaimDailyVip(callback) return ServerClient.Send("Game.ClaimDailyVip", {}, callback) end
+function ServerClient.ClaimDailyAdVip(callback) return ServerClient.Send("Game.ClaimDailyAdVip", {}, callback) end
 function ServerClient.ResolveEvent(eventId, action, callback)
     return ServerClient.Send("Game.ResolveEvent", { eventId = eventId, action = action }, callback)
 end

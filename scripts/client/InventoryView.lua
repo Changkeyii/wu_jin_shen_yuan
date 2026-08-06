@@ -1,6 +1,7 @@
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local ItemPresentation = require("shared.ItemPresentation")
 local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
+local EquipmentQuickFilter = require("client.EquipmentQuickFilter")
 local EquipmentIcon = require("client.EquipmentIcon")
 local BackpackItemSlot = require("client.BackpackItemSlot")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
@@ -108,7 +109,12 @@ end
 local function FilteredInventory()
     local list = {}
     for _, item in ipairs(game.inventory or {}) do
-        if item.category == selectedCategory then list[#list + 1] = item end
+        -- 快速筛选只作用于装备（消耗品/材料等道具始终完整展示）
+        if item.category == selectedCategory
+            and (not item.equipmentId or EquipmentQuickFilter.Matches("bag", item))
+        then
+            list[#list + 1] = item
+        end
     end
     InventoryView.SortByRarityAndPower(list)
     return list
@@ -577,7 +583,9 @@ local function CreateInventoryPage()
     local selectedItem = selectedInventoryId and GetItemById(selectedInventoryId) or nil
 
     if firstItem then
-        if not selectedItem or selectedItem.category ~= selectedCategory then
+        if not selectedItem or selectedItem.category ~= selectedCategory
+            or (selectedItem.equipmentId and not EquipmentQuickFilter.Matches("bag", selectedItem))
+        then
             selectedInventoryId = firstItem.id
             SetSelectedInventoryId(firstItem.id)
         end
@@ -626,6 +634,9 @@ local function CreateInventoryPage()
                 end),
                 CreateInventoryActionButton("分解筛选", ASSETS.ui.inventoryActionBlue, function()
                     ShowDecomposeFilter(RequestPageRefresh)
+                end),
+                CreateInventoryActionButton("快速筛选", ASSETS.ui.inventoryActionGold, function()
+                    EquipmentQuickFilter.Show("bag", { onApplied = RequestPageRefresh })
                 end),
             },
         },

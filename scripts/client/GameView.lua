@@ -20,6 +20,8 @@ local MarketView = require("client.MarketView")
 local RewardDialogView = require("client.RewardDialogView")
 local RewardFeedbackController = require("client.RewardFeedbackController")
 local OfflineClaimController = require("client.OfflineClaimController")
+local DailyVipController = require("client.DailyVipController")
+local FaceSlapController = require("client.FaceSlapController")
 local TopBarView = require("client.TopBarView")
 local HomeView = require("client.HomeView")
 local IdleSettingsView = require("client.IdleSettingsView")
@@ -480,6 +482,7 @@ local function CreatePageContent()
         onEnterPlay = function() NavigationController.SwitchPage("play") end,
         onToggleAutoRun = PlayPresentation.SetAutoRun,
         onCollectOffline = actionFns_.CollectOffline,
+        onOpenDailyVip = DailyVipController.Open,
     }
 end
 
@@ -640,8 +643,6 @@ local function BindServerEvents()
     ServerClient.On("snapshot", function()
         game = GameStateAdapter.GetViewState()
         RewardFeedbackController.SyncSnapshot()
-        OfflineClaimController.MaybeShowLoginGuide()
-        LootStashController.MaybeShowLoginGuide()
         PlayPresentation.HandleSnapshot()
         UpdateTopBar()
         if pageContainer_ then
@@ -650,6 +651,7 @@ local function BindServerEvents()
             BuildRoot()
         end
         LoadingController.MarkSnapshotReceived()
+        FaceSlapController.Evaluate("snapshot")
     end)
     ServerClient.On("snapshotProgress", function(payload)
         LoadingController.MarkSnapshotProgress(payload and payload.received, payload and payload.total)
@@ -675,6 +677,8 @@ local function BindServerEvents()
     ServerClient.On("status", function(payload)
         local state = payload and payload.state or "syncing"
         if state ~= "ready" then
+            FaceSlapController.ResetConnection()
+            DailyVipController.ResetConnection()
             OfflineClaimController.Reset()
             LootStashController.ResetConnection()
             PlayPresentation.CancelPendingAutoRun()
@@ -691,6 +695,8 @@ local function BindServerEvents()
     end)
     ServerClient.On("adminResult", function(result) AdminPanel.HandleResult(result, RequestPageRefresh) end)
     ServerClient.On("disconnected", function()
+        FaceSlapController.ResetConnection()
+        DailyVipController.ResetConnection()
         OfflineClaimController.Reset()
         LootStashController.ResetConnection()
         PlayPresentation.CancelPendingAutoRun()
@@ -717,6 +723,7 @@ function GameView.Start()
         refreshPage = function() RefreshCurrentPage() end,
         isIdleRewardTracking = RewardFeedbackController.IsTracking,
         showIdleRewardSummary = RewardFeedbackController.ShowIdleSummary,
+        onPageChanged = FaceSlapController.RetryPending,
     }
     GameplayDialogsController.Configure {
         actionResult = ActionResult,
@@ -732,12 +739,72 @@ function GameView.Start()
         actionResult = ActionResult,
         isOfflineLoginFlowPending = OfflineClaimController.IsLoginFlowPending,
     }
+    DailyVipController.Configure {
+        showActionResult = ActionResult,
+        requestPageRefresh = RequestPageRefresh,
+        hideItemTips = ItemTips.Hide,
+    }
+    FaceSlapController.Configure {
+        getGame = GameStateAdapter.GetViewState,
+        getCacheScope = function()
+            local currentGame = GameStateAdapter.GetViewState()
+            return currentGame.playerNickname or "anonymous"
+        end,
+        isBlocked = function(config)
+            if LoadingController.IsActive() then return true end
+            if config.kind ~= "offline_claim" and OfflineClaimController.IsLoginFlowPending() then
+                return true
+            end
+            if config.kind == "daily_vip"
+                and (LootStashController.IsOpen()
+                    or DialogCoordinator.HasKey("loot_stash_login_guide"))
+            then
+                return true
+            end
+            return false
+        end,
+        isEligible = function(key, currentGame)
+            if key == "offline_claim_available" then
+                return (currentGame.pendingOfflineSeconds or 0) > 0
+            end
+            if key == "loot_stash_available" then
+                return #(currentGame.lootStash or {}) > 0
+            end
+            if key == "daily_vip_available" then
+                return DailyVipController.IsRewardAvailable(currentGame)
+            end
+            return false
+        end,
+        showCampaign = function(config, runtime)
+            if config.kind == "offline_claim" then
+                return OfflineClaimController.ShowLoginGuide {
+                    queueKey = config.queueKey,
+                    priority = config.priority,
+                    onPresented = runtime.onPresented,
+                    onClosed = runtime.onClosed,
+                }
+            end
+            if config.kind == "loot_stash" then
+                return LootStashController.ShowLoginGuide {
+                    queueKey = config.queueKey,
+                    priority = config.priority,
+                    onPresented = runtime.onPresented,
+                    onClosed = runtime.onClosed,
+                }
+            end
+            if config.kind == "daily_vip" then
+                return DailyVipController.ShowCampaign(config, runtime)
+            end
+            return false
+        end,
+    }
     OfflineClaimController.Configure {
         showActionResult = ActionResult,
         onLoginFlowCompleted = function()
             game = GameStateAdapter.GetViewState()
-            LootStashController.MaybeShowLoginGuide()
+            FaceSlapController.RetryPending()
         end,
+        onLoginGuideClosed = FaceSlapController.RetryPending,
     }
     graphics.windowTitle = CONFIG.Title
     LoadingController.Configure({
@@ -777,6 +844,8 @@ function GameView.Stop()
     DialogCoordinator.Clear(false)
     ItemTips.Stop()
     RewardFeedbackController.Reset()
+    DailyVipController.Reset()
+    FaceSlapController.Reset()
     NavigationController.Reset()
     EquipmentUpgradePromptController.Reset()
     LootStashController.Reset()
@@ -792,6 +861,8 @@ function GameView.HandleUpdate(eventType, eventData)
     local dt = eventData:GetFloat("TimeStep")
     ServerClient.Update(dt)
     LoadingController.Update(dt)
+    DailyVipController.Update(dt)
+    FaceSlapController.Update(dt)
     local state = GameStateAdapter.GetViewState()
     game = state
     if game.page == "play" then PlayPresentation.Update(dt) end

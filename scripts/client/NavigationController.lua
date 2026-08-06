@@ -32,6 +32,7 @@ local function PerformSwitch(pageId)
         local current = CurrentGame()
         AudioController.SetPage(current.page)
         context_.refreshPage()
+        if context_.onPageChanged then context_.onPageChanged(current.page) end
     end
     if pageId == "play" then
         LoadingController.EnsurePlayAssetsReady(CompleteSwitch)

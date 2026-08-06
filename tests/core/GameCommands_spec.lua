@@ -49,6 +49,27 @@ function Spec.Run()
                     })
                     return
                 end
+                if operationName == "claim daily VIP ad" then
+                    local proposal = mutator({
+                        schemaVersion = 6,
+                        revision = 1,
+                        updatedAt = 0,
+                        vipLevel = 0,
+                        dailyVip = { signInDay = 0, adDay = 0 },
+                    }, 1720000000)
+                    assert(proposal.ok == true)
+                    assert(proposal.state.vipLevel == 1)
+                    assert(proposal.delta.events[1].source == "ad")
+                    callback({
+                        ok = true,
+                        data = {
+                            committed = true,
+                            state = proposal.state,
+                            delta = proposal.delta,
+                        },
+                    })
+                    return
+                end
                 assert(operationName == "set auto run")
                 callback({
                     ok = true,
@@ -82,6 +103,18 @@ function Spec.Run()
     assert(response.data.committed == true)
     assert(response.data.state == nil, "mutation responses must never include the full profile state")
     assert(response.data.delta == nil, "mutation responses must never duplicate the delta payload")
+
+    local dailyAdDefinition = assert(definitions["Game.ClaimDailyAdVip"])
+    assert(dailyAdDefinition.async == true)
+    local dailyAdResponse = nil
+    local dailyAdResult = dailyAdDefinition.handler({ uid = 7 }, {}, function(okValue, value)
+        assert(okValue == true)
+        dailyAdResponse = value
+    end)
+    assert(dailyAdResult == CommandRouter.PENDING)
+    assert(dailyAdResponse.data.revision == 2)
+    assert(dailyAdResponse.data.state == nil)
+    assert(dailyAdResponse.data.delta == nil)
 
     local decomposeDefinition = assert(definitions["Game.Decompose"])
     local decomposeResponse = nil

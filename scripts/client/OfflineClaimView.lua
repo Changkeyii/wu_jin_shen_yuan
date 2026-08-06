@@ -153,7 +153,7 @@ function OfflineClaimView.ShowPreview(quoteToken, value, currentFloor, onClaim, 
     }, dialogKey
 end
 
-function OfflineClaimView.ShowReward(value, currentFloor, onCompleted)
+function OfflineClaimView.BuildRewardOptions(value, currentFloor, onCompleted)
     value = value or {}
     local lines = {
         "本次实际结算：" .. Kit.FormatDuration(value.processedSeconds or 0),
@@ -165,7 +165,7 @@ function OfflineClaimView.ShowReward(value, currentFloor, onCompleted)
     elseif (value.remainingSeconds or 0) > 0 then
         lines[#lines + 1] = "剩余离线时间：" .. Kit.FormatDuration(value.remainingSeconds)
     end
-    local shown = RewardDialogView.Show {
+    return RewardDialogView.BuildOptions {
         priority = 450,
         queueKey = "offline_reward:" .. tostring(value.processedSeconds or 0) .. ":" .. tostring(value.floor or 1),
         title = "获得离线奖励",
@@ -176,6 +176,11 @@ function OfflineClaimView.ShowReward(value, currentFloor, onCompleted)
         onConfirm = onCompleted,
         onCancel = onCompleted,
     }
+end
+
+function OfflineClaimView.ShowReward(value, currentFloor, onCompleted)
+    local options = OfflineClaimView.BuildRewardOptions(value, currentFloor, onCompleted)
+    local shown = options and CommonPromptDialog.Show(options) or false
     if not shown and onCompleted then onCompleted() end
     return shown
 end

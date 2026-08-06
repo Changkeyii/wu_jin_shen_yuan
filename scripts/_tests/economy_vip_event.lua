@@ -144,6 +144,13 @@ local function testDailyVip()
     equal(first.ok, true, "first sign-in succeeds")
     equal(first.state.vipLevel, 1, "sign-in grants one vip level")
 
+    local ad = GameEngine.ClaimDailyAdVip(first.state, now + 30)
+    equal(ad.ok, true, "same-day ad reward is independent from sign-in")
+    equal(ad.state.vipLevel, 2, "ad reward grants one vip level")
+    equal(ad.delta.events[1].source, "ad", "ad reward event keeps its source")
+    local adAgain = GameEngine.ClaimDailyAdVip(ad.state, now + 60)
+    equal(adAgain.ok, false, "same-day second ad reward rejected")
+
     local second = GameEngine.ClaimDailySignInVip(first.state, now + 60)
     equal(second.ok, false, "same-day second sign-in rejected")
     equal(second.state.vipLevel, 1, "vip unchanged on duplicate claim")

@@ -3,6 +3,7 @@ local GameTheme = require("client.Theme")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local CommonPromptDialog = require("client.CommonPromptDialog")
+local DailyVipView = require("client.DailyVipView")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
@@ -60,6 +61,35 @@ local function ShowRules(game)
     }
 end
 
+local function ShowFeaturePreview(name)
+    UI.Toast.Show(name .. "功能正在筹备中", {
+        duration = 1.8,
+        variant = "info",
+        position = "bottom",
+    })
+end
+
+local function HomeActionButton(text, left, top, onClick)
+    return UI.Panel {
+        position = "absolute",
+        left = left,
+        top = top,
+        width = 300,
+        height = 44,
+        clickable = true,
+        alignItems = "center",
+        justifyContent = "center",
+        onClick = onClick,
+        children = {
+            Kit.Txt(text, 23, C.text, {
+                position = "absolute", left = -2, top = 15, width = "100%",
+                textAlign = "center", textStroke = { width = 3, color = "#000000" },
+                pointerEvents = "none",
+            }),
+        },
+    }
+end
+
 function HomeView.Build(context)
     context = context or {}
     local game = assert(context.game)
@@ -72,16 +102,15 @@ function HomeView.Build(context)
     local statGridH = statCardH * 3 + statRowGapY * 2
     local statGridX = math.floor((CONFIG.DesignW - statGridW) * 0.5)
 
-    return UI.Panel {
-        width = "100%", height = "100%", position = "relative",
+    -- 背景板容器：玩家信息、标题、VIP 徽标、三个按钮全部作为其子项，
+    -- 保证这些内容绘制在背景板图片之上，不会被遮挡。
+    local heroPanel = UI.Panel {
+        position = "absolute", left = 16, top = 0,
+        width = 1048, height = 620,
+        backgroundImage = ASSETS.ui.heroPanel, backgroundFit = "contain",
         children = {
             UI.Panel {
-                position = "absolute", left = 16, top = 0,
-                width = 1048, height = 620,
-                backgroundImage = ASSETS.ui.heroPanel, backgroundFit = "contain",
-            },
-            UI.Panel {
-                position = "absolute", left = 74, top = 148,
+                position = "absolute", left = 58, top = 148,
                 width = 360, height = 310,
                 alignItems = "center", justifyContent = "center",
                 children = {
@@ -96,76 +125,44 @@ function HomeView.Build(context)
                     },
                 },
             },
+            DailyVipView.HomeEntry {
+                game = game,
+                left = 696,
+                top = 16,
+                onOpen = context.onOpenDailyVip,
+            },
             Kit.Txt("挂机刷宝", 34, C.text, {
-                position = "absolute", left = 612, top = 196,
+                position = "absolute", left = 596, top = 196,
                 width = 270, textAlign = "center",
                 textStroke = { width = 4, color = "#000000" },
             }),
             UI.Panel {
-                position = "absolute", left = 890, top = 184,
+                position = "absolute", left = 874, top = 184,
                 width = 64, height = 64, clickable = true,
                 backgroundImage = "image/ui/dialog/help_button.png", backgroundFit = "contain",
                 onClick = function() ShowRules(game) end,
             },
             Kit.MultiTxt("解放双手", 22, C.textSecondary, {
-                position = "absolute", left = 612, top = 254,
+                position = "absolute", left = 596, top = 254,
                 width = 270, height = 52, maxLines = 2, textAlign = "center",
                 textStroke = { width = 2, color = "#000000" },
             }),
-            UI.Panel {
-                position = "absolute", left = 612, top = 316,
-                width = 300, height = 168, pointerEvents = "box-none",
-                children = {
-                    UI.Panel {
-                        position = "absolute", left = 0, top = 0, width = 300, height = 44,
-                        clickable = true, alignItems = "center", justifyContent = "center",
-                        onClick = context.onEnterPlay,
-                        children = {
-                            Kit.Txt("进入刷宝", 23, C.text, {
-                                position = "absolute", left = -2, top = 15, width = "100%",
-                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
-                                pointerEvents = "none",
-                            }),
-                        },
-                    },
-                    UI.Panel {
-                        position = "absolute", left = 0, top = 62, width = 300, height = 44,
-                        clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0,
-                        alignItems = "center", justifyContent = "center",
-                        onClick = function()
-                            if game.readOnly then return end
-                            local accepted = context.onToggleAutoRun and context.onToggleAutoRun(not game.autoRun)
-                            if not accepted then
-                                UI.Toast.Show("挂机状态正在同步，请稍候", {
-                                    duration = 1.5, variant = "info", position = "bottom",
-                                })
-                            end
-                        end,
-                        children = {
-                            Kit.Txt(game.autoRun and "暂停挂机" or "开始挂机", 23, C.text, {
-                                position = "absolute", left = -2, top = 11, width = "100%",
-                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
-                                pointerEvents = "none",
-                            }),
-                        },
-                    },
-                    UI.Panel {
-                        position = "absolute", left = 0, top = 124, width = 300, height = 44,
-                        clickable = not game.readOnly, opacity = game.readOnly and 0.45 or 1.0,
-                        alignItems = "center", justifyContent = "center",
-                        onClick = function()
-                            if not game.readOnly and context.onCollectOffline then context.onCollectOffline() end
-                        end,
-                        children = {
-                            Kit.Txt("领取离线", 23, C.text, {
-                                position = "absolute", left = -4, top = 9, width = "100%",
-                                textAlign = "center", textStroke = { width = 3, color = "#000000" },
-                                pointerEvents = "none",
-                            }),
-                        },
-                    },
-                },
-            },
+            HomeActionButton("任务", 596, 316, function()
+                ShowFeaturePreview("任务")
+            end),
+            HomeActionButton("活动", 596, 378, function()
+                ShowFeaturePreview("活动")
+            end),
+            HomeActionButton("排行榜", 596, 440, function()
+                ShowFeaturePreview("排行榜")
+            end),
+        },
+    }
+
+    return UI.Panel {
+        width = "100%", height = "100%", position = "relative",
+        children = {
+            heroPanel,
             UI.Panel {
                 position = "absolute", left = statGridX, top = 604,
                 width = statGridW, height = statGridH,

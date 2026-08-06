@@ -4,6 +4,10 @@ local TableUtils = require("server.domain.TableUtils")
 local Catalog = require("server.domain.Catalog")
 local GameStateSchema = require("shared.GameStateSchema")
 
+-- pcall 的返回值类型推断会产生 assign-type-mismatch 误报（成功值 table 与失败
+-- 错误 string 的联合类型无法赋给运行时实际类型），此处按需关闭该诊断类型。
+---@diagnostic disable: assign-type-mismatch
+
 local PlayerProfileService = {}
 PlayerProfileService.__index = PlayerProfileService
 

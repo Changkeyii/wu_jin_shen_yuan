@@ -23,6 +23,7 @@ local visible_ = false
 local forced_ = false
 local claimPending_ = false
 local loginGuideShown_ = false
+local onClosed_ = nil
 
 local function RemoveOverlay()
     if overlay_ and root_ then root_:RemoveChild(overlay_) end
@@ -67,15 +68,19 @@ function LootStashController.Close(force)
     RemoveOverlay()
     visible_ = false
     forced_ = false
+    local onClosed = onClosed_
+    onClosed_ = nil
+    if onClosed then onClosed() end
     return true
 end
 
-function LootStashController.Show(forced)
+function LootStashController.Show(forced, onClosed)
     if not root_ or not context_ then return false end
 
     RemoveOverlay()
     visible_ = true
     forced_ = forced == true
+    if onClosed ~= nil then onClosed_ = onClosed end
 
     local items = CurrentItems()
     local claimedItemIds = {}
@@ -152,18 +157,26 @@ function LootStashController.Show(forced)
                 Kit.ImageButton("全部收取", 300, 72, ASSETS.ui.buttonGreen, function()
                     if claimPending_ then return end
                     claimPending_ = true
+                    local rewardReservation = DialogCoordinator.ReserveNext()
                     ServerClient.ClaimLootStash(function(response)
                         claimPending_ = false
-                        if not context_.actionResult(response, "暂存装备已全部收取") then return end
+                        if not context_.actionResult(response, "暂存装备已全部收取") then
+                            DialogCoordinator.ReleaseReservation(rewardReservation)
+                            return
+                        end
                         LootStashController.Close(true)
                         local rewardCards = BuildRewardCards(claimedItemIds)
-                        RewardDialogView.Show {
+                        local rewardOptions = RewardDialogView.BuildOptions {
                             title = "暂存箱收取成功",
                             message = "已收取 " .. tostring(#rewardCards) .. " 件在线挂机装备",
                             lines = { "装备已存入背包，可前往背包查看或穿戴。" },
                             confirmText = "确认收取",
                             cards = rewardCards,
                         }
+                        local shown = rewardOptions
+                            and DialogCoordinator.EnqueueReserved(rewardReservation, rewardOptions)
+                            or false
+                        if not shown then DialogCoordinator.ReleaseReservation(rewardReservation) end
                         ServerClient.RequestSnapshot()
                     end)
                 end, false),
@@ -227,20 +240,23 @@ end
 function LootStashController.AttachRoot(root)
     local reopen = visible_
     local forced = forced_
+    local onClosed = onClosed_
     root_ = root
     overlay_ = nil
-    if reopen then LootStashController.Show(forced) end
+    if reopen then LootStashController.Show(forced, onClosed) end
+end
+
+function LootStashController.IsOpen()
+    return visible_
 end
 
 function LootStashController.RefreshIfOpen()
     if not visible_ then return false end
-    return LootStashController.Show(forced_)
+    return LootStashController.Show(forced_, onClosed_)
 end
 
-function LootStashController.MaybeShowLoginGuide()
-    if not context_ or context_.isOfflineLoginFlowPending() then return false end
-    if loginGuideShown_ then return false end
-
+function LootStashController.ShowLoginGuide(options)
+    options = options or {}
     local game = GameStateAdapter.GetViewState()
     local count = #(game.lootStash or {})
     if count == 0 then return false end
@@ -248,8 +264,8 @@ function LootStashController.MaybeShowLoginGuide()
     loginGuideShown_ = true
     local shown = CommonPromptDialog.Show {
         kind = "confirm",
-        priority = 1000,
-        queueKey = "loot_stash_login_guide",
+        priority = options.priority or 1000,
+        queueKey = options.queueKey or "loot_stash_login_guide",
         title = "在线挂机暂存箱待收取",
         message = "上次在线挂机还有 " .. tostring(count) .. " 件装备留在暂存箱中。",
         lines = {
@@ -259,15 +275,25 @@ function LootStashController.MaybeShowLoginGuide()
         closeOnOverlay = false,
         showClose = false,
         confirmText = "前往收取",
-        onConfirm = function() LootStashController.Show(true) end,
+        onPresented = options.onPresented,
+        onConfirm = function()
+            LootStashController.Show(true, options.onClosed)
+        end,
     }
     if not shown then loginGuideShown_ = false end
     return shown
 end
 
+function LootStashController.MaybeShowLoginGuide()
+    if not context_ or context_.isOfflineLoginFlowPending() then return false end
+    if loginGuideShown_ then return false end
+    return LootStashController.ShowLoginGuide()
+end
+
 function LootStashController.ResetConnection()
     loginGuideShown_ = false
     claimPending_ = false
+    onClosed_ = nil
     DialogCoordinator.CancelByKey("loot_stash_login_guide")
     LootStashController.Close(true)
 end

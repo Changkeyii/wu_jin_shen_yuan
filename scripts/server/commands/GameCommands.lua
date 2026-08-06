@@ -97,6 +97,16 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
+        name = "Game.ClaimDailyAdVip",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.DailyClaim,
+        async = true,
+        handler = AsyncMutation(services, "claim daily VIP ad", function(state, payload, now)
+            return GameEngine.ClaimDailyAdVip(state, now)
+        end),
+    })
+
+    router:Register({
         name = "Game.ResolveEvent",
         schema = {
             type = "object",

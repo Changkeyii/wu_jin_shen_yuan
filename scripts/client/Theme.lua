@@ -177,9 +177,9 @@ local RARITIES = {
     advanced = { id = "advanced", name = "高级", short = "蓝", rank = 2, color = {38, 182, 255, 255}, beam = {25, 170, 255, 245}, mult = 0.95, fragment = 2 },
     rare = { id = "rare", name = "稀有", short = "紫", rank = 3, color = {193, 60, 255, 255}, beam = {179, 54, 255, 245}, mult = 1.00, fragment = 5 },
     artifact = { id = "artifact", name = "神器", short = "粉", rank = 4, color = {255, 91, 193, 255}, beam = {255, 74, 188, 245}, mult = 1.07, fragment = 10 },
-    legendary = { id = "legendary", name = "传说", short = "赤", rank = 5, color = {255, 72, 65, 255}, beam = {255, 58, 48, 245}, mult = 1.15, fragment = 18 },
+    legendary = { id = "legendary", name = "传说", short = "赤", rank = 5, color = {255, 140, 0, 255}, beam = {255, 130, 0, 245}, mult = 1.15, fragment = 18 },
     epic = { id = "epic", name = "史诗", short = "橙金", rank = 6, color = {255, 177, 34, 255}, beam = {255, 156, 24, 250}, mult = 1.25, fragment = 36 },
-    myth = { id = "myth", name = "神话", short = "七彩", rank = 7, color = {111, 231, 255, 255}, beam = {111, 231, 255, 250}, mult = 1.40, fragment = 80, dynamic = true },
+    myth = { id = "myth", name = "神话", short = "七彩", rank = 7, color = {255, 45, 45, 255}, beam = {255, 40, 40, 250}, mult = 1.40, fragment = 80, dynamic = true },
 }
 
 -- Legacy IDs are presentation aliases only. Authoritative V5 snapshots use

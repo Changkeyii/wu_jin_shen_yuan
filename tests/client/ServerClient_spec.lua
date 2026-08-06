@@ -358,6 +358,7 @@ function Spec.Run()
         assert(ServerClient.Equip(itemId))
         assert(ServerClient.ClaimAid())
         assert(ServerClient.AcknowledgeRules("tower_rules_v2"))
+        assert(ServerClient.ClaimDailyAdVip())
 
         local function AssertCommand(offset, command, expectedPayload)
             local sent = secondConnection.sent[commandStart + offset]
@@ -383,6 +384,8 @@ function Spec.Run()
         local aidPayload = AssertCommand(4, "Game.ClaimAid", {})
         assert(next(aidPayload) == nil)
         AssertCommand(5, "Game.AcknowledgeRules", { ruleId = "tower_rules_v2" })
+        local dailyAdPayload = AssertCommand(6, "Game.ClaimDailyAdVip", {})
+        assert(next(dailyAdPayload) == nil)
 
         local receivedDelta = nil
         local receivedDeltaCount = 0
