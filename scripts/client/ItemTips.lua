@@ -353,9 +353,12 @@ local function BuildQuickActions(
     panelHeight,
     viewportWidth,
     viewportHeight,
-    rightSideBlocked
+    rightSideBlocked,
+    allowActions
 )
     if not context_.showDisposition then return nil end
+    -- 只读场景（如排行榜详情）隐藏出售/分解入口
+    if allowActions == false then return nil end
 
     local C = context_.C
     local dockWidth = 184
@@ -481,7 +484,9 @@ end
 function ItemTips.Show(item, anchor, options, expanded)
     if not item or not root_ or not context_ then return false end
     options = options or {}
-    if item.id
+    local allowActions = options.allowActions ~= false
+    if allowActions
+        and item.id
         and type(item.decomposeRefund) ~= "table"
         and options.refundRequestPending ~= true
         and context_.requestDecomposePreview
@@ -851,7 +856,8 @@ function ItemTips.Show(item, anchor, options, expanded)
         panelHeight,
         viewportWidth,
         viewportHeight,
-        requestedExpanded
+        requestedExpanded,
+        allowActions
     )
 
     local outsideHint = context_.compactTxt(

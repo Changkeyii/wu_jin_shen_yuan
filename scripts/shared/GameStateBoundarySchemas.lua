@@ -1,6 +1,7 @@
 local GameEventSchema = require("shared.GameEventSchema")
 local LargeNumber = require("shared.LargeNumber")
 local Contracts = require("shared.GameStateContracts")
+local TrashTalk = require("shared.TrashTalk")
 local Policy = require("shared.GameStatePolicy")
 local Definitions = require("shared.GameStateDefinitions")
 
@@ -97,6 +98,7 @@ PERSISTED_SCHEMA = {
         level = { type = "integer", min = 1, max = 1000000 },
         vipLevel = { type = "integer", min = 0, max = 10 },
         dailyVip = DAILY_VIP_SCHEMA,
+        trashTalkIndex = { type = "integer", min = 0, max = TrashTalk.MAX - 1 },
         exp = { type = "integer", min = 0, max = 1000000000 },
         floor = { type = "integer", min = 1, max = 1000000000 },
         maxFloor = { type = "integer", min = 1, max = 1000000000 },

@@ -564,6 +564,13 @@ end
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
 function ServerClient.ClaimDailyVip(callback) return ServerClient.Send("Game.ClaimDailyVip", {}, callback) end
 function ServerClient.ClaimDailyAdVip(callback) return ServerClient.Send("Game.ClaimDailyAdVip", {}, callback) end
+function ServerClient.GetLeaderboard(callback) return ServerClient.Send("Leaderboard.GetTop", {}, callback) end
+function ServerClient.GetLeaderboardDetail(userId, callback)
+    return ServerClient.Send("Leaderboard.GetDetail", { userId = tostring(userId) }, callback)
+end
+function ServerClient.SetTrashTalk(index, callback)
+    return ServerClient.Send("Leaderboard.SetTrashTalk", { index = math.floor(tonumber(index) or 0) }, callback)
+end
 function ServerClient.ResolveEvent(eventId, action, callback)
     return ServerClient.Send("Game.ResolveEvent", { eventId = eventId, action = action }, callback)
 end

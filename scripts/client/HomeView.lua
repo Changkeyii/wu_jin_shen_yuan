@@ -4,6 +4,7 @@ local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DailyVipView = require("client.DailyVipView")
+local LeaderboardController = require("client.LeaderboardController")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
@@ -154,7 +155,7 @@ function HomeView.Build(context)
                 ShowFeaturePreview("活动")
             end),
             HomeActionButton("排行榜", 596, 440, function()
-                ShowFeaturePreview("排行榜")
+                LeaderboardController.Open()
             end),
         },
     }

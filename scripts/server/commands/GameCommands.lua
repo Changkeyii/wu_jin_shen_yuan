@@ -2,6 +2,8 @@ local CommandRouter = require("server.core.CommandRouter")
 local GameEngine = require("server.domain.GameEngine")
 local EquipmentDisposition = require("server.domain.EquipmentDisposition")
 local ServerConfig = require("server.ServerConfig")
+local TrashTalk = require("shared.TrashTalk")
+local PlayerTransition = require("server.domain.PlayerTransition")
 
 local GameCommands = {}
 
@@ -641,6 +643,99 @@ function GameCommands.Register(router, services)
             return CommandRouter.PENDING
         end,
     })
+
+    router:Register({
+        name = "Leaderboard.GetTop",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Leaderboard,
+        serialized = false,
+        handler = function(context)
+            local service = services.leaderboardService
+            if not service then
+                return false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" }
+            end
+            local list, selfRank = service:GetTop(context.uid)
+            return { list = list, selfRank = selfRank, total = service:Count() }
+        end,
+    })
+
+    router:Register({
+        name = "Leaderboard.GetDetail",
+        schema = {
+            type = "object",
+            required = { "userId" },
+            allowUnknown = false,
+            fields = {
+                userId = { type = "string", minLength = 1, maxLength = 32, pattern = "^%d+$" },
+            },
+        },
+        rate = ServerConfig.RATES.Leaderboard,
+        serialized = false,
+        handler = function(context, payload)
+            local service = services.leaderboardService
+            if not service then
+                return false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" }
+            end
+            local targetUserId = tonumber(payload.userId)
+            if not targetUserId then
+                return false, { code = "INVALID_USER_ID", reason = "无效玩家" }
+            end
+            local detail = service:GetDetail(targetUserId)
+            if not detail then
+                return false, { code = "NOT_ON_LEADERBOARD", reason = "该玩家不在榜单" }
+            end
+            return {
+                userId = detail.userId,
+                nickname = detail.nickname,
+                power = detail.power,
+                equipment = detail.equipment,
+                trashTalkIndex = detail.trashTalkIndex or 0,
+                isSelf = context.uid == detail.userId,
+            }
+        end,
+    })
+
+    router:Register({
+        name = "Leaderboard.SetTrashTalk",
+        schema = {
+            type = "object",
+            required = { "index" },
+            allowUnknown = false,
+            fields = {
+                index = { type = "integer", minimum = 0, maximum = TrashTalk.MAX - 1 },
+            },
+        },
+        rate = ServerConfig.RATES.Leaderboard,
+        serialized = false,
+        async = true,
+        handler = function(context, payload, done)
+            local index = math.floor(tonumber(payload.index) or 0)
+            if index < 0 or index >= TrashTalk.MAX then
+                done(false, { code = "INVALID_TRASH_TALK", reason = "无效的个性签名" })
+                return CommandRouter.PENDING
+            end
+            services.profileService:Apply(context.uid, "set trash talk", function(state, now)
+                local working = PlayerTransition.Copy(state, now)
+                if working.trashTalkIndex == index then
+                    return PlayerTransition.NoCommit(state, now, "trash_talk_unchanged")
+                end
+                working.trashTalkIndex = index
+                return PlayerTransition.Finalize(state, working, now, "trash_talk_changed", {}, false, false)
+            end, function(result)
+                if result.ok and result.data.delta then
+                    services.sendDelta(context.uid, result.data.delta)
+                end
+                if result.ok and services.refreshLeaderboard then
+                    services.refreshLeaderboard(context.uid)
+                end
+                local response = MutationResponse(result)
+                done(response.ok, response)
+            end)
+            return CommandRouter.PENDING
+        end,
+    })
+
 end
+
 
 return GameCommands

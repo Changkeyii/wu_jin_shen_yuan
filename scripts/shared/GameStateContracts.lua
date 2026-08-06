@@ -22,6 +22,7 @@ GameStateContracts.PERSISTED_FIELDS = {
     "level",
     "vipLevel",
     "dailyVip",
+    "trashTalkIndex",
     "exp",
     "floor",
     "maxFloor",

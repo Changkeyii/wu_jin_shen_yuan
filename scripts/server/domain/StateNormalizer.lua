@@ -1,4 +1,5 @@
 local Catalog = require("server.domain.Catalog")
+local TrashTalk = require("shared.TrashTalk")
 local TableUtils = require("server.domain.TableUtils")
 local GameStateSchema = require("shared.GameStateSchema")
 local CombatSequence = require("shared.CombatSequence")
@@ -459,6 +460,7 @@ function StateNormalizer.Normalize(rawState, now)
         level = clampInteger(rawState.level, 1, 1000000, 1),
         vipLevel = clampInteger(rawState.vipLevel, 0, Catalog.MAX_VIP_LEVEL, 0),
         dailyVip = sanitizeDailyVip(rawState.dailyVip),
+        trashTalkIndex = clampInteger(rawState.trashTalkIndex, 0, TrashTalk.MAX - 1, 0),
         exp = clampInteger(rawState.exp, 0, 1000000000, 0),
         floor = normalizedFloor,
         maxFloor = normalizedMaxFloor,

@@ -7,6 +7,7 @@ local specs = {
     (require("tests.shared.TowerRules_spec")),
     (require("tests.shared.PowerEvaluator_spec")),
     (require("tests.shared.RewardPolicy_spec")),
+    (require("tests.shared.LeaderboardCodec_spec")),
 }
 
 for _, spec in ipairs(specs) do

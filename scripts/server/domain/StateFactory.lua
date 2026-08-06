@@ -66,6 +66,7 @@ function StateFactory.Create(now)
         level = 1,
         vipLevel = 0,
         dailyVip = { signInDay = 0, adDay = 0 },
+        trashTalkIndex = 0,
         exp = 0,
         floor = 1,
         maxFloor = 1,

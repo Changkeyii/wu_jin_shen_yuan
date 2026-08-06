@@ -32,6 +32,8 @@ ServerConfig.RATES = {
     MarketBrowse = { refillRate = 2, burst = 5 },
     MarketQuery = { refillRate = 1, burst = 3 },
     MarketMutation = { refillRate = 0.5, burst = 3 },
+    -- 排行榜为只读浏览，放宽限流避免正常点选详情被误限
+    Leaderboard = { refillRate = 2, burst = 8 },
 }
 
 ---@param uid number|string|nil

@@ -18,6 +18,7 @@ local GameCommands = require("server.commands.GameCommands")
 local AdminCommands = require("server.commands.AdminCommands")
 local MarketCommands = require("server.commands.MarketCommands")
 local MarketService = require("server.services.MarketService")
+local LeaderboardService = require("server.services.LeaderboardService")
 local GameEngine = require("server.domain.GameEngine")
 local Catalog = require("server.domain.Catalog")
 local MarketCatalog = require("shared.MarketCatalog")
@@ -33,6 +34,7 @@ local profileService_ = nil
 local idleService_ = nil
 local adminService_ = nil
 local marketService_ = nil
+local leaderboardService_ = nil
 local adminPolicy_ = nil
 local snapshotTransferId_ = 0
 
@@ -342,6 +344,15 @@ local function SendSnapshot(userId, snapshotEvents)
     print("[Server] snapshot sent uid=" .. tostring(userId)
         .. " inventory=" .. tostring(#inventory)
         .. " chunks=" .. tostring(chunkCount))
+    if leaderboardService_ then
+        leaderboardService_:Upsert(
+            userId,
+            entry.nickname,
+            (state.stats and state.stats.power) or 0,
+            leaderboardService_:CollectEquippedItems(state),
+            state.trashTalkIndex or 0
+        )
+    end
     return snapshot
 end
 
@@ -616,10 +627,33 @@ local function InitializeServices()
         log = function(message) print(message) end,
     })
 
+    leaderboardService_ = LeaderboardService.New({
+        gateway = gateway_,
+        clock = os.time,
+        log = function(message) print(message) end,
+    })
+
+    -- 个性签名变化后仅重建排行榜 blob（不重发完整快照）
+    local function RefreshLeaderboardEntry(userId)
+        if not leaderboardService_ then return end
+        local state = profileService_:GetState(userId)
+        if not state then return end
+        local entry = CurrentEntry(userId)
+        leaderboardService_:Upsert(
+            userId,
+            entry and entry.nickname or "",
+            (state.stats and state.stats.power) or 0,
+            leaderboardService_:CollectEquippedItems(state),
+            state.trashTalkIndex or 0
+        )
+    end
+
     local commandServices = {
         profileService = profileService_,
         idleService = idleService_,
         marketService = marketService_,
+        leaderboardService = leaderboardService_,
+        refreshLeaderboard = RefreshLeaderboardEntry,
         sendSnapshot = SendSnapshot,
         sendDelta = SendDelta,
     }
@@ -635,6 +669,7 @@ function Start()
     SeedAuthoritativeRandom()
     Protocol.RegisterServerEvents()
     InitializeServices()
+    if leaderboardService_ then leaderboardService_:Load() end
 
     SubscribeToEvent("ClientConnected", HandleClientConnected)
     SubscribeToEvent("ClientIdentity", HandleClientIdentity)
