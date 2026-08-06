@@ -1,6 +1,7 @@
 local CommandRouter = require("server.core.CommandRouter")
 local GameStateSchema = require("shared.GameStateSchema")
 local ServerConfig = require("server.ServerConfig")
+local MailRules = require("shared.MailRules")
 
 local AdminCommands = {}
 
@@ -28,13 +29,59 @@ local function Definition(name, schema, rate, handler)
     }
 end
 
-function AdminCommands.Register(router, adminService)
+local function MailService(services)
+    return services and services.mailService or nil
+end
+
+-- GM 邮件操作（auth = "admin"，服务端校验管理员）
+local function AdminMailMutation(services, operation)
+    return function(context, payload, done)
+        local service = MailService(services)
+        if not service then
+            done(false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" })
+            return CommandRouter.PENDING
+        end
+        local targetUserId = tonumber(payload.targetUid)
+        if not targetUserId then
+            done(false, { code = "INVALID_UID", reason = "目标玩家编号无效" })
+            return CommandRouter.PENDING
+        end
+        if not services.profileService:GetSession(targetUserId) then
+            done(false, { code = "TARGET_OFFLINE", reason = "目标玩家未在线，暂不支持离线投递" })
+            return CommandRouter.PENDING
+        end
+        local sink = {}
+        operation(context, targetUserId, payload, service, sink, function(result)
+            if result.ok and result.data and result.data.delta then
+                services.sendDelta(targetUserId, result.data.delta)
+            end
+            local response = {
+                ok = result.ok,
+                code = result.ok and 0 or result.code,
+                reason = result.reason,
+                data = sink,
+            }
+            done(result.ok, response)
+        end)
+        return CommandRouter.PENDING
+    end
+end
+
+function AdminCommands.Register(router, adminService, services)
+    services = services or {}
     router:Register(Definition("Admin.QueryPlayer", {
         type = "object",
         required = { "targetUid" },
         allowUnknown = false,
         fields = { targetUid = UID },
     }, ServerConfig.RATES.AdminQuery, AsyncAdmin(adminService, "query")))
+
+    router:Register(Definition("Admin.QueryByName", {
+        type = "object",
+        required = { "name" },
+        allowUnknown = false,
+        fields = { name = { type = "string", minLength = 1, maxLength = 32 } },
+    }, ServerConfig.RATES.AdminQuery, AsyncAdmin(adminService, "query_by_name")))
 
     router:Register(Definition("Admin.GrantCurrency", {
         type = "object",
@@ -91,6 +138,101 @@ function AdminCommands.Register(router, adminService)
         fields = {},
         allowUnknown = false,
     }, ServerConfig.RATES.AdminQuery, AsyncAdmin(adminService, "audit")))
+
+    -- ============================================================
+    -- GM 邮件操作（auth = "admin" 服务端校验，操作仅限在线目标）
+    -- ============================================================
+
+    local ATTACH_SCHEMA = {
+        type = "array",
+        maxLength = MailRules.MAX_ATTACHMENTS,
+        items = {
+            type = "object",
+            allowUnknown = false,
+            fields = {
+                kind = { type = "string", enum = { "currency", "equipment" } },
+                currency = { type = "string", enum = { "gold", "fragments" } },
+                equipmentId = { type = "string", maxLength = 64 },
+                count = { type = "integer", min = 1, max = 1000000000 },
+                level = { type = "integer", min = 1, max = 1000000 },
+                rarity = { type = "string", enum = GameStateSchema.RARITIES },
+            },
+        },
+    }
+
+    router:Register(Definition("Admin.SendMail", {
+        type = "object",
+        required = { "targetUid", "title", "body", "mailType" },
+        allowUnknown = false,
+        fields = {
+            targetUid = UID,
+            title = { type = "string", minLength = 1, maxLength = MailRules.MAX_TITLE },
+            body = { type = "string", minLength = 1, maxLength = MailRules.MAX_BODY },
+            mailType = { type = "string", enum = { "notice", "reward", "task", "ops", "special" } },
+            sender = { type = "string", minLength = 1, maxLength = 32 },
+            favorite = { type = "boolean" },
+            expireDays = { type = "integer", min = 1, max = 3650 },
+            batchId = { type = "string", minLength = 1, maxLength = 128 },
+            attachments = ATTACH_SCHEMA,
+        },
+    }, ServerConfig.RATES.AdminMutation, AdminMailMutation(services, function(context, targetUserId, payload, service, sink, done)
+        local spec = {
+            type = payload.mailType,
+            title = payload.title,
+            body = payload.body,
+            sender = payload.sender,
+            favorite = payload.favorite == true,
+            batchId = payload.batchId or "gm_test",
+            reason = "GM测试",
+            attachments = payload.attachments,
+        }
+        if payload.expireDays then
+            spec.expireAt = os.time() + payload.expireDays * 24 * 3600
+        end
+        service:SendMail(targetUserId, spec, done, sink)
+    end)))
+
+    router:Register(Definition("Admin.MailList", {
+        type = "object",
+        required = { "targetUid" },
+        allowUnknown = false,
+        fields = { targetUid = UID },
+    }, ServerConfig.RATES.AdminQuery, function(context, payload, done)
+        local service = MailService(services)
+        if not service then
+            done(false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" })
+            return CommandRouter.PENDING
+        end
+        local targetUserId = tonumber(payload.targetUid)
+        if not targetUserId then
+            done(false, { code = "INVALID_UID", reason = "目标玩家编号无效" })
+            return CommandRouter.PENDING
+        end
+        local result = service:List(targetUserId, "all")
+        done(result.ok, result)
+        return CommandRouter.PENDING
+    end))
+
+    router:Register(Definition("Admin.MailForceExpire", {
+        type = "object",
+        required = { "targetUid", "mailId" },
+        allowUnknown = false,
+        fields = {
+            targetUid = UID,
+            mailId = { type = "string", minLength = 1, maxLength = MailRules.MAX_MAIL_ID_LEN },
+        },
+    }, ServerConfig.RATES.AdminMutation, AdminMailMutation(services, function(context, targetUserId, payload, service, sink, done)
+        service:ForceExpire(targetUserId, payload.mailId, done)
+    end)))
+
+    router:Register(Definition("Admin.MailCleanTest", {
+        type = "object",
+        required = { "targetUid" },
+        allowUnknown = false,
+        fields = { targetUid = UID },
+    }, ServerConfig.RATES.AdminMutation, AdminMailMutation(services, function(context, targetUserId, payload, service, sink, done)
+        service:CleanTest(targetUserId, done, sink)
+    end)))
 end
 
 return AdminCommands

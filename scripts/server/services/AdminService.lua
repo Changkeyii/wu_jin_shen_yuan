@@ -184,6 +184,47 @@ function AdminService:Query(actorUserId, targetUserId, onComplete)
     end)
 end
 
+--- Query online players by nickname (fuzzy), returns [{uid, nickname, online}]
+function AdminService:QueryByName(actorUserId, name, onComplete)
+    if not self.adminPolicy:IsAdmin(actorUserId) then
+        onComplete(Result(false, {}, "FORBIDDEN", "administrator permission required"))
+        return
+    end
+    name = tostring(name or ""):match("^%s*(.-)%s*$")
+    if name == "" or #name > 32 then
+        onComplete(Result(false, {}, "INVALID_NAME", "nickname is invalid"))
+        return
+    end
+    local onlineIds = self.profileService:OnlineUserIds() or {}
+    if #onlineIds == 0 then
+        onComplete(Result(true, { matches = {}, status = "applied" }))
+        return
+    end
+    local lowerName = string.lower(name)
+    local query = _G.GetUserNickname
+    if type(query) ~= "function" then
+        onComplete(Result(false, {}, "NICKNAME_QUERY_FAILED", "nickname query unavailable"))
+        return
+    end
+    query {
+        userIds = onlineIds,
+        onSuccess = function(nicknames)
+            local matches = {}
+            for _, row in ipairs(type(nicknames) == "table" and nicknames or {}) do
+                local nickname = tostring(row.nickname or "")
+                if nickname ~= "" and string.find(string.lower(nickname), lowerName, 1, true) then
+                    matches[#matches + 1] = { uid = row.userId, nickname = nickname, online = true }
+                    if #matches >= 20 then break end
+                end
+            end
+            onComplete(Result(true, { matches = matches, status = "applied" }))
+        end,
+        onError = function()
+            onComplete(Result(false, {}, "NICKNAME_QUERY_FAILED", "nickname query failed"))
+        end,
+    }
+end
+
 function AdminService:_equipmentSpec(state, payload)
     if type(payload) ~= "table" then return nil end
     local definitions = Catalog.EQUIPMENT_DEFINITIONS
@@ -315,7 +356,8 @@ function AdminService:Execute(actorUserId, action, payload, onComplete)
     end
     payload = type(payload) == "table" and payload or {}
     if action == "query" then self:Query(actorUserId, payload.targetUid, onComplete); return end
-    if action == "audit" then self:GetAudit(actorUserId, onComplete); return end
+    if action == "query_by_name" then self:QueryByName(actorUserId, payload.name, onComplete); return end
+if action == "audit" then self:GetAudit(actorUserId, onComplete); return end
 
     local targetUserId = UserId(payload.targetUid)
     local reason = SafeReason(payload.reason)

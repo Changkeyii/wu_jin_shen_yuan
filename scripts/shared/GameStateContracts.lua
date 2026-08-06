@@ -60,6 +60,9 @@ GameStateContracts.PERSISTED_FIELDS = {
     "equipmentCollection",
     "marketListings",
     "appliedGmCommandIds",
+    "mails",
+    "mailCache",
+    "mailSeq",
 }
 
 GameStateContracts.SNAPSHOT_FIELDS = {
@@ -117,6 +120,7 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "bossScore",
     "eliteScore",
     "estimatedEasyFloor",
+    "mailSummary",
 }
 
 GameStateContracts.DELTA_FIELD_SET = {}
@@ -132,6 +136,7 @@ GameStateContracts.SNAPSHOT_FIELD_SET = {
     serverTime = true,
     status = true,
     isAdmin = true,
+    playerUid = true,
     playerNickname = true,
     inventoryCapacity = true,
 }

@@ -155,6 +155,9 @@ function Persistence.NewInitialState(now)
         logs = {},
         currentEvent = "monster",
         recentDamage = "",
+        mails = {},
+        mailCache = {},
+        mailSeq = 1,
     }
 end
 

@@ -89,6 +89,7 @@ local ASSETS = {
         itemTipsCompareFrame = "image/ui/itemtips/compare_frame.png",
         itemTipsCompareButton = "image/ui/itemtips/compare_button.png",
         itemTipsCloseButton = "image/ui/itemtips/close_button.png",
+        mailIcon = "image/mail_icon_envelope_transparent.png",
         dialogFrame = "image/ui/dialog/dialog_frame.png",
         dialogClose = "image/ui/dialog/close_button.png",
         dialogConfirm = "image/ui/dialog/confirm_button.png",

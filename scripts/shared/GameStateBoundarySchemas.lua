@@ -2,6 +2,7 @@ local GameEventSchema = require("shared.GameEventSchema")
 local LargeNumber = require("shared.LargeNumber")
 local Contracts = require("shared.GameStateContracts")
 local TrashTalk = require("shared.TrashTalk")
+local MailRules = require("shared.MailRules")
 local Policy = require("shared.GameStatePolicy")
 local Definitions = require("shared.GameStateDefinitions")
 
@@ -45,6 +46,50 @@ local validateConsumables = Definitions.ValidateConsumables
 local validateAcknowledgements = Definitions.ValidateAcknowledgements
 local validateEquipmentCollection = Definitions.ValidateEquipmentCollection
 local validateAppliedGmCommandIds = Definitions.ValidateAppliedGmCommandIds
+
+local MAIL_ATTACHMENT_SCHEMA = {
+    type = "object",
+    allowUnknown = true,
+    fields = {
+        id = { type = "string", maxLength = 64 },
+        kind = { type = "string", enum = { "currency", "equipment" } },
+        currency = { type = "string", maxLength = 16 },
+        equipmentId = { type = "string", maxLength = 64 },
+        name = { type = "string", maxLength = 64 },
+        count = { type = "integer", min = 1, max = 1000000000 },
+        claimedCount = { type = "integer", min = 0, max = 1000000000 },
+        failReason = { type = "string", maxLength = 32 },
+    },
+}
+
+local MAIL_SCHEMA = {
+    type = "object",
+    allowUnknown = true,
+    fields = {
+        id = { type = "string", maxLength = MailRules.MAX_MAIL_ID_LEN },
+        type = { type = "string", maxLength = 16 },
+        title = { type = "string", maxLength = MailRules.MAX_TITLE },
+        sender = { type = "string", maxLength = 32 },
+        body = { type = "string", maxLength = MailRules.MAX_BODY },
+        sentAt = { type = "integer", min = 0 },
+        effectiveAt = { type = "integer", min = 0 },
+        expireAt = { type = "integer", min = 0 },
+        read = { type = "boolean" },
+        favorite = { type = "boolean" },
+        capacity = { type = "boolean" },
+        allowUnfavorite = { type = "boolean" },
+        bizOrderId = { type = "string", maxLength = 128 },
+        batchId = { type = "string", maxLength = 128 },
+        reason = { type = "string", maxLength = 128 },
+        overduePolicy = { type = "string", maxLength = 16 },
+        deleted = { type = "boolean" },
+        attachments = {
+            type = "array",
+            maxLength = MailRules.MAX_ATTACHMENTS,
+            items = MAIL_ATTACHMENT_SCHEMA,
+        },
+    },
+}
 
 PERSISTED_SCHEMA = {
     type = "object",
@@ -162,6 +207,17 @@ PERSISTED_SCHEMA = {
             },
             validate = validateAppliedGmCommandIds,
         },
+        mails = {
+            type = "array",
+            maxLength = MailRules.CAPACITY + 50,
+            items = MAIL_SCHEMA,
+        },
+        mailCache = {
+            type = "array",
+            maxLength = MailRules.CACHE_CAPACITY + 50,
+            items = MAIL_SCHEMA,
+        },
+        mailSeq = { type = "integer", min = 1, max = LargeNumber.MAX_SAFE_INTEGER },
     },
 }
 
@@ -225,6 +281,14 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     bossScore = NONNEGATIVE_NUMBER_SCHEMA,
     eliteScore = NONNEGATIVE_NUMBER_SCHEMA,
     estimatedEasyFloor = NONNEGATIVE_NUMBER_SCHEMA,
+    mailSummary = {
+        type = "object",
+        allowUnknown = true,
+        fields = {
+            unread = { type = "integer", min = 0, max = 1000000 },
+            unclaimed = { type = "integer", min = 0, max = 1000000 },
+        },
+    },
 }
 
 local SNAPSHOT_ENVELOPE_SCHEMAS = {
@@ -235,6 +299,7 @@ local SNAPSHOT_ENVELOPE_SCHEMAS = {
     serverTime = SAFE_INTEGER_SCHEMA,
     status = { type = "string", enum = { "ready" } },
     isAdmin = { type = "boolean" },
+    playerUid = SAFE_INTEGER_SCHEMA,
     playerNickname = { type = "string", minLength = 1, maxLength = 128 },
     inventoryCapacity = {
         type = "integer",

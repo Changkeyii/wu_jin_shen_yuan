@@ -10,11 +10,16 @@ local CONFIG = {
     OfflineMaxSeconds = 12 * 60 * 60,
 }
 
--- 1080-wide design contract. Height deliberately stays dynamic so top/middle/
--- bottom anchors fill every portrait aspect ratio without letterboxing.
+-- 设计基准 1080×1920。取「宽/高两个方向缩放比例中更紧的」作为全局 UI 缩放：
+-- 标准竖屏手机（高宽比 ≥ 1.78）以宽度为基准、高度动态扩展，与之前一致；
+-- 矮屏（如 iPad，高宽比 < 1.78）时按高度缩放整个根界面，保证内容完整一屏、不超屏。
+-- 全局 scale 参与命中测试（事件坐标同步换算），不会出现局部缩放导致的点击错位。
 function CONFIG.ViewportScale()
     local physicalWidth = graphics and graphics.GetWidth and graphics:GetWidth() or CONFIG.DesignW
-    return math.max(0.01, physicalWidth / CONFIG.DesignW)
+    local physicalHeight = graphics and graphics.GetHeight and graphics:GetHeight() or CONFIG.DesignH
+    local widthScale = physicalWidth / CONFIG.DesignW
+    local heightScale = physicalHeight / CONFIG.DesignH
+    return math.max(0.01, math.min(widthScale, heightScale))
 end
 
 function CONFIG.DynamicDesignHeight()

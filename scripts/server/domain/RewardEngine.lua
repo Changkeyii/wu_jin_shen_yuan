@@ -298,11 +298,13 @@ function RewardEngine.AccrueOffline(inputState, now)
         return PlayerTransition.NoCommit(inputState, now, "offline_unchanged")
     end
     local before = working.pendingOfflineSeconds
-    working.pendingOfflineSeconds = math.min(Catalog.OFFLINE_MAX_SECONDS, before + elapsed)
+    -- 单次离线不足 1 分钟不计入可领离线时长（但仍刷新 lastActiveAt，避免重复累计）
+    local credited = elapsed >= Catalog.OFFLINE_MIN_SECONDS and elapsed or 0
+    working.pendingOfflineSeconds = math.min(Catalog.OFFLINE_MAX_SECONDS, before + credited)
     return PlayerTransition.Finalize(inputState, working, now, "offline_accrued", {
         PlayerTransition.Event("offline_accrued", {
             elapsedSeconds = elapsed,
-            creditedSeconds = working.pendingOfflineSeconds - before,
+            creditedSeconds = credited,
             capped = working.pendingOfflineSeconds >= Catalog.OFFLINE_MAX_SECONDS,
         }),
     }, false, false, true)
@@ -435,6 +437,11 @@ local function simulateOfflineCollection(inputState, now, rng)
     local working = PlayerTransition.Copy(inputState, now)
     local floor = math.max(1, TableUtils.ToInteger(working.floor, 1))
     local seconds = math.min(working.pendingOfflineSeconds, Catalog.OFFLINE_MAX_SECONDS)
+    -- 离线时长不足 1 分钟不结算离线奖励
+    if seconds < Catalog.OFFLINE_MIN_SECONDS then
+        return nil, "NO_OFFLINE_REWARD", "offline reward requires at least "
+            .. tostring(Catalog.OFFLINE_MIN_SECONDS) .. " seconds"
+    end
     local cycles = math.floor(seconds / Catalog.OFFLINE_STEP_SECONDS)
     if cycles <= 0 then
         return nil, "NO_OFFLINE_REWARD", "offline reward requires at least "

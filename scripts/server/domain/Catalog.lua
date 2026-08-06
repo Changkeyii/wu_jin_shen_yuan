@@ -14,6 +14,7 @@ Catalog.OFFLINE_REWARD_RATE = 0.20
 -- The reward is scaled at settlement. Scaling the step count too would apply
 -- the offline penalty twice.
 Catalog.OFFLINE_STEP_SECONDS = Catalog.STEP_SECONDS
+Catalog.OFFLINE_MIN_SECONDS = 15 * 60  -- 离线不足 15 分钟不产生离线奖励
 Catalog.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 Catalog.INVENTORY_CAP = 300
 Catalog.MAX_LOG_EVENTS = 40

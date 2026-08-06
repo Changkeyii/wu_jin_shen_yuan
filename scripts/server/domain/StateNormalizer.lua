@@ -444,6 +444,67 @@ local function safePauseReason(value)
     return value
 end
 
+local MAIL_MAX_ATTACHMENTS = 6
+local MAIL_MAX_BODY = 600
+
+local function sanitizeMailAttachment(value, index)
+    if type(value) ~= "table" then return nil end
+    local kind = value.kind
+    if kind ~= "currency" and kind ~= "equipment" then return nil end
+    local attachment = {
+        id = type(value.id) == "string" and value.id:sub(1, 64) or string.format("att-%d", index),
+        kind = kind,
+        count = math.max(1, TableUtils.ToInteger(value.count, 1)),
+        claimedCount = math.max(0, math.min(math.max(1, TableUtils.ToInteger(value.count, 1)), TableUtils.ToInteger(value.claimedCount, 0))),
+        failReason = type(value.failReason) == "string" and value.failReason:sub(1, 32) or nil,
+    }
+    if kind == "currency" then
+        attachment.currency = value.currency == "fragments" and "fragments" or "gold"
+    else
+        attachment.equipmentId = type(value.equipmentId) == "string" and value.equipmentId:sub(1, 64) or ""
+        attachment.name = type(value.name) == "string" and value.name:sub(1, 64) or nil
+        attachment.level = clampInteger(value.level, 1, 1000000, 1)
+        attachment.rarity = RarityCatalog.NormalizeId(value.rarity or "common")
+    end
+    return attachment
+end
+
+local function sanitizeMails(value)
+    local result = {}
+    for index, mail in ipairs(type(value) == "table" and value or {}) do
+        if type(mail) == "table" and type(mail.id) == "string" and mail.id ~= "" then
+            local attachments = {}
+            for aIndex, attachment in ipairs(mail.attachments or {}) do
+                local sanitized = sanitizeMailAttachment(attachment, aIndex)
+                if sanitized and #attachments < MAIL_MAX_ATTACHMENTS then
+                    attachments[#attachments + 1] = sanitized
+                end
+            end
+            result[#result + 1] = {
+                id = mail.id:sub(1, 64),
+                type = type(mail.type) == "string" and mail.type:sub(1, 16) or "notice",
+                title = type(mail.title) == "string" and mail.title:sub(1, 40) or "",
+                sender = type(mail.sender) == "string" and mail.sender:sub(1, 32) or "无尽深渊",
+                body = type(mail.body) == "string" and mail.body:sub(1, MAIL_MAX_BODY) or "",
+                sentAt = clampInteger(mail.sentAt, 0, 4102444800, 0),
+                effectiveAt = clampInteger(mail.effectiveAt, 0, 4102444800, 0),
+                expireAt = clampInteger(mail.expireAt, 0, 4102444800, 0),
+                read = mail.read == true,
+                favorite = mail.favorite == true,
+                capacity = mail.capacity ~= false,
+                allowUnfavorite = mail.allowUnfavorite ~= false,
+                bizOrderId = type(mail.bizOrderId) == "string" and mail.bizOrderId:sub(1, 128) or nil,
+                batchId = type(mail.batchId) == "string" and mail.batchId:sub(1, 128) or nil,
+                reason = type(mail.reason) == "string" and mail.reason:sub(1, 128) or nil,
+                overduePolicy = type(mail.overduePolicy) == "string" and mail.overduePolicy:sub(1, 16) or "Discard",
+                deleted = mail.deleted == true,
+                attachments = attachments,
+            }
+        end
+    end
+    return result
+end
+
 function StateNormalizer.Normalize(rawState, now)
     rawState = type(rawState) == "table" and rawState or {}
     now = math.max(0, TableUtils.ToInteger(now, os.time()))
@@ -502,6 +563,9 @@ function StateNormalizer.Normalize(rawState, now)
         pendingEquipDecision = nil,
         previousLoadout = nil,
         appliedGmCommandIds = GameStateSchema.NormalizeAppliedGmCommandIds(rawState.appliedGmCommandIds),
+        mails = sanitizeMails(rawState.mails),
+        mailCache = sanitizeMails(rawState.mailCache),
+        mailSeq = clampInteger(rawState.mailSeq, 1, 100000000000, 1),
     }
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}

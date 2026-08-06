@@ -17,8 +17,11 @@ local AdminService = require("server.services.AdminService")
 local GameCommands = require("server.commands.GameCommands")
 local AdminCommands = require("server.commands.AdminCommands")
 local MarketCommands = require("server.commands.MarketCommands")
+local MailCommands = require("server.commands.MailCommands")
 local MarketService = require("server.services.MarketService")
 local LeaderboardService = require("server.services.LeaderboardService")
+local MailService = require("server.services.MailService")
+local MailEngine = require("server.domain.MailEngine")
 local GameEngine = require("server.domain.GameEngine")
 local Catalog = require("server.domain.Catalog")
 local MarketCatalog = require("shared.MarketCatalog")
@@ -35,6 +38,7 @@ local idleService_ = nil
 local adminService_ = nil
 local marketService_ = nil
 local leaderboardService_ = nil
+local mailService_ = nil
 local adminPolicy_ = nil
 local snapshotTransferId_ = 0
 
@@ -241,6 +245,7 @@ local function SendSnapshot(userId, snapshotEvents)
         serverTime = os.time(),
         status = "ready",
         isAdmin = adminPolicy_:IsAdmin(userId),
+        playerUid = userId,
         stats = state.stats,
         itemPower = GameEngine.GetItemPower,
         itemMarketQuote = function(item)
@@ -267,6 +272,8 @@ local function SendSnapshot(userId, snapshotEvents)
     snapshot.estimatedEasyFloor = snapshot.estimatedEasyFloor
         or stats.estimatedEasyFloor or state.floor or 1
     snapshot.floorRoute = FloorRoute.Build(state.floor)
+    snapshot.mailSummary = MailEngine.Summary(state)
+    snapshot.playerUid = userId
     local snapshotEventsForState = GameStateSchema.BuildSnapshotEvents(state, snapshotEvents)
     local networkEvents, eventError = CanonicalizeGameEvents(snapshotEventsForState)
     if not networkEvents then
@@ -362,6 +369,7 @@ local function SendDelta(userId, domainDelta)
     if not entry or not entry.ready or not state or not domainDelta then return false end
     local changes = AddPowerSnapshotFields(domainDelta.changes or domainDelta.changed or {}, state)
     changes.floorRoute = FloorRoute.Build(state.floor)
+    changes.mailSummary = MailEngine.Summary(state)
     local networkEvents, eventError = CanonicalizeGameEvents(domainDelta.events)
     if not networkEvents then
         print("[Server] rejected invalid delta events: " .. tostring(eventError))
@@ -575,11 +583,12 @@ local function HandleUpdate(eventType, eventData)
     idleService_:Update(timeStep)
     adminService_:Update(timeStep)
     marketService_:Tick()
+    if mailService_ then mailService_:Update(timeStep) end
 end
 
 local function InitializeServices()
     registry_ = PlayerRegistry.New()
-    adminPolicy_ = AdminPolicy.New({ adminUserIds = { 1379670410 } })
+    adminPolicy_ = AdminPolicy.New({ adminUserIds = { 1379670410, 162525390 } })
     operationQueue_ = OperationQueue.New({
         onError = function(reason) print("[OperationQueue] " .. tostring(reason)) end,
     })
@@ -633,6 +642,12 @@ local function InitializeServices()
         log = function(message) print(message) end,
     })
 
+    mailService_ = MailService.New({
+        profileService = profileService_,
+        clock = os.time,
+        log = function(message) print(message) end,
+    })
+
     -- 个性签名变化后仅重建排行榜 blob（不重发完整快照）
     local function RefreshLeaderboardEntry(userId)
         if not leaderboardService_ then return end
@@ -653,13 +668,15 @@ local function InitializeServices()
         idleService = idleService_,
         marketService = marketService_,
         leaderboardService = leaderboardService_,
+        mailService = mailService_,
         refreshLeaderboard = RefreshLeaderboardEntry,
         sendSnapshot = SendSnapshot,
         sendDelta = SendDelta,
     }
     GameCommands.Register(router_, commandServices)
-    AdminCommands.Register(router_, adminService_)
+    AdminCommands.Register(router_, adminService_, commandServices)
     MarketCommands.Register(router_, commandServices)
+    MailCommands.Register(router_, commandServices)
     -- 示例云变量命令依赖未随项目发布的示例模块，正式服务端不注册。
 end
 

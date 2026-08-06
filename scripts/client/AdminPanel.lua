@@ -19,11 +19,19 @@ local form_ = {
     rarity = "epic",
     floor = "1",
     position = "1",
+    mailTitle = "",
+    mailBody = "",
+    mailType = "reward",
+    mailGold = "0",
+    mailId = "",
+    queryName = "",
 }
 local status_ = "管理员通道已就绪"
 local statusKind_ = "info"
 local audit_ = {}
 local queriedPlayer_ = nil
+local mailList_ = {}
+local byNameMatches_ = {}
 
 local function ToInteger(value)
     local number = tonumber(value)
@@ -154,6 +162,32 @@ local function PlayerSummary()
     )
 end
 
+local function MailListSummary()
+    if #mailList_ == 0 then return "暂无邮件查询结果" end
+    local lines = {}
+    for _, item in ipairs(mailList_) do
+        if #lines < 8 then
+            lines[#lines + 1] = string.format("%s | %s | %s | %s",
+                tostring(item.mailId or "-"),
+                tostring(item.title or "-"),
+                item.read and "已读" or "未读",
+                item.hasUnclaimed and "有未领附件" or (item.attachState == "none" and "无附件" or "已处理"))
+        end
+    end
+    if #mailList_ > 8 then lines[#lines + 1] = "... 共 " .. tostring(#mailList_) .. " 封" end
+    return table.concat(lines, "\n")
+end
+
+local function QueryByNameSummary()
+    if #byNameMatches_ == 0 then return "无匹配玩家（仅查在线玩家）" end
+    local lines = {}
+    for _, match in ipairs(byNameMatches_) do
+        lines[#lines + 1] = string.format("uid=%s | %s | 在线",
+            tostring(match.uid or "-"), tostring(match.nickname or "-"))
+    end
+    return table.concat(lines, "\n")
+end
+
 function AdminPanel.Build(UI, options)
     options = options or {}
     local onChanged = options.onChanged
@@ -189,6 +223,28 @@ function AdminPanel.Build(UI, options)
             },
         }),
         Label(UI, PlayerSummary(), 10, {213, 226, 255, 255}),
+        Field(UI, "按昵称查询（在线玩家）", "queryName", "输入昵称"),
+        ButtonRow(UI, {
+            UI.Button {
+                text = "昵称查uid",
+                variant = "primary",
+                width = 210,
+                disabled = readOnly,
+                onClick = function()
+                    if form_.queryName == "" then
+                        SetStatus({ ok = false, reason = "昵称不能为空" }, onChanged)
+                        return
+                    end
+                    ServerClient.AdminQueryByName(form_.queryName, function(response)
+                        if response and response.ok and response.data then
+                            byNameMatches_ = response.data.matches or {}
+                        end
+                        SetStatus(response, onChanged)
+                    end)
+                end,
+            },
+        }),
+        Label(UI, QueryByNameSummary(), 10, {213, 226, 255, 255}),
     })
 
     local currencySection = Section(UI, "资源发放", {
@@ -327,6 +383,118 @@ function AdminPanel.Build(UI, options)
         }),
     })
 
+    local mailSection = Section(UI, "GM 邮件", {
+        Field(UI, "标题", "mailTitle", "邮件标题"),
+        Field(UI, "正文", "mailBody", "邮件正文"),
+        UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            gap = 10,
+            children = {
+                UI.Panel {
+                    flexGrow = 1,
+                    flexBasis = 0,
+                    gap = 5,
+                    children = {
+                        Label(UI, "邮件类型", 10, {154, 177, 226, 255}),
+                        UI.Dropdown {
+                            width = "100%",
+                            value = form_.mailType,
+                            options = {
+                                { value = "reward", label = "奖励邮件" },
+                                { value = "notice", label = "系统通知" },
+                                { value = "task", label = "任务结果" },
+                                { value = "ops", label = "运营定向" },
+                                { value = "special", label = "系统特殊" },
+                            },
+                            onChange = function(self, value) form_.mailType = value end,
+                        },
+                    },
+                },
+                UI.Panel { flexGrow = 1, flexBasis = 0, children = { Field(UI, "金币附件", "mailGold", "0 = 无") } },
+            },
+        },
+        Field(UI, "邮件ID（强制过期用）", "mailId", "查询后复制"),
+        ButtonRow(UI, {
+            UI.Button {
+                text = "发送测试邮件",
+                variant = "success",
+                width = 210,
+                disabled = readOnly,
+                onClick = function()
+                    local title = form_.mailTitle
+                    local body = form_.mailBody
+                    if title == "" or body == "" then
+                        SetStatus({ ok = false, reason = "标题和正文不能为空" }, onChanged)
+                        return
+                    end
+                    local gold = ToInteger(form_.mailGold) or 0
+                    local attachments = {}
+                    if gold > 0 then
+                        attachments[#attachments + 1] = { kind = "currency", currency = "gold", count = gold }
+                    end
+                    ServerClient.AdminSendMail({
+                        targetUid = form_.targetUid,
+                        title = title,
+                        body = body,
+                        mailType = form_.mailType,
+                        batchId = "gm_test",
+                        attachments = attachments,
+                    }, function(response) SetStatus(response, onChanged) end)
+                end,
+            },
+            UI.Button {
+                text = "查询邮件",
+                variant = "primary",
+                width = 210,
+                disabled = readOnly,
+                onClick = function()
+                    if form_.targetUid == "" then
+                        SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged)
+                        return
+                    end
+                    ServerClient.AdminMailList(form_.targetUid, function(response)
+                        if response and response.ok and response.data then
+                            mailList_ = response.data.items or {}
+                        end
+                        SetStatus(response, onChanged)
+                    end)
+                end,
+            },
+            UI.Button {
+                text = "强制过期",
+                variant = "warning",
+                width = 210,
+                disabled = readOnly,
+                onClick = function()
+                    if form_.targetUid == "" or form_.mailId == "" then
+                        SetStatus({ ok = false, reason = "需要目标编号和邮件ID" }, onChanged)
+                        return
+                    end
+                    ServerClient.AdminMailForceExpire(form_.targetUid, form_.mailId, function(response)
+                        SetStatus(response, onChanged)
+                    end)
+                end,
+            },
+            UI.Button {
+                text = "清理测试邮件",
+                variant = "danger",
+                width = 210,
+                disabled = readOnly,
+                onClick = function()
+                    if form_.targetUid == "" then
+                        SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged)
+                        return
+                    end
+                    ServerClient.AdminMailCleanTest(form_.targetUid, function(response)
+                        SetStatus(response, onChanged)
+                    end)
+                end,
+            },
+        }),
+        Label(UI, MailListSummary(), 10, {213, 226, 255, 255}),
+    })
+
     local auditRows = {}
     for index = math.max(1, #audit_ - 9), #audit_ do
         local row = audit_[index]
@@ -368,6 +536,7 @@ function AdminPanel.Build(UI, options)
                             equipmentSection,
                             progressSection,
                             banSection,
+                            mailSection,
                             Section(UI, "最近审计", auditRows),
                         },
                     },

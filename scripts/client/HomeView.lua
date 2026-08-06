@@ -5,6 +5,7 @@ local Kit = require("client.ViewKit")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DailyVipView = require("client.DailyVipView")
 local LeaderboardController = require("client.LeaderboardController")
+local MailController = require("client.MailController")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
@@ -91,6 +92,83 @@ local function HomeActionButton(text, left, top, onClick)
     }
 end
 
+-- 邮件入口（首页左上区域最顶端左下）：信封图标 + 正下方「邮件」文字。
+-- 单击打开邮件；长按 5 秒进 GM（仅管理员，服务端校验）。带未读红点。
+local function MailEntry(left, top, game)
+    local summary = (game and game.mailSummary) or {}
+    local unread = math.max(0, math.floor(tonumber(summary.unread) or 0))
+    local iconSize = 84
+    local width = 104
+    local labelHeight = 40
+    local height = iconSize + labelHeight
+    local iconLeft = math.floor((width - iconSize) * 0.5)
+    return UI.Panel {
+        position = "absolute",
+        left = left,
+        top = top,
+        width = width,
+        height = height,
+        clickable = true,
+        alignItems = "center",
+        justifyContent = "center",
+        onPointerDown = function() MailController.SetPressing(true) end,
+        onPointerUp = function() MailController.SetPressing(false) end,
+        onPointerCancel = function() MailController.SetPressing(false) end,
+        onClick = function()
+            MailController.SetPressing(false)
+            MailController.Open()
+        end,
+        children = {
+            -- 信封图标本体（透明背景，非方形卡片）
+            UI.Panel {
+                position = "absolute",
+                left = iconLeft,
+                top = 0,
+                width = iconSize,
+                height = iconSize,
+                backgroundImage = ASSETS.ui.mailIcon,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            },
+            -- 正下方「邮件」文字
+            Kit.Txt("邮件", 22, C.text, {
+                position = "absolute",
+                left = 0,
+                top = iconSize - 2,
+                width = width,
+                height = labelHeight,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+                pointerEvents = "none",
+            }),
+            -- 未读红点
+            unread > 0 and UI.Panel {
+                position = "absolute",
+                right = 0,
+                top = 0,
+                minWidth = 38,
+                height = 30,
+                paddingLeft = 7,
+                paddingRight = 7,
+                alignItems = "center",
+                justifyContent = "center",
+                shape = "circle",
+                backgroundColor = C.error,
+                borderWidth = 2,
+                borderColor = { 0, 0, 0, 120 },
+                children = {
+                    Kit.CompactTxt(tostring(unread), 17, C.text, {
+                        width = "100%",
+                        textAlign = "center",
+                        textStroke = { width = 1, color = "#000000" },
+                        pointerEvents = "none",
+                    }),
+                },
+            } or nil,
+        },
+    }
+end
+
 function HomeView.Build(context)
     context = context or {}
     local game = assert(context.game)
@@ -106,8 +184,7 @@ function HomeView.Build(context)
     -- 背景板容器：玩家信息、标题、VIP 徽标、三个按钮全部作为其子项，
     -- 保证这些内容绘制在背景板图片之上，不会被遮挡。
     local heroPanel = UI.Panel {
-        position = "absolute", left = 16, top = 0,
-        width = 1048, height = 620,
+        width = 1048, height = 620, flexShrink = 0, position = "relative",
         backgroundImage = ASSETS.ui.heroPanel, backgroundFit = "contain",
         children = {
             UI.Panel {
@@ -160,22 +237,41 @@ function HomeView.Build(context)
         },
     }
 
+    -- 中间区域可能比设计高度矮（如 iPad 短屏）：首页内容放进垂直滚动容器，
+    -- 短屏时可滚动查看完整内容，避免超出屏幕被裁剪。
+    local statGrid = UI.Panel {
+        width = statGridW, height = statGridH, flexShrink = 0,
+        marginTop = -16, position = "relative",
+        children = {
+            UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", Kit.FormatInt(stats.atkBig or stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
+            UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", Kit.FormatInt(stats.defBig or stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
+            UI.Panel { position = "absolute", left = 0, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("暴击", Kit.FormatPercent(stats.crit), C.gold, ASSETS.ui.statCrit, statCardW, statCardH) } },
+            UI.Panel { position = "absolute", left = statCardW + statGapX, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("攻速", string.format("%.1f", stats.atkSpeed), C.mp, ASSETS.ui.statSpeed, statCardW, statCardH) } },
+            UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", Kit.FormatInt(game.hpBig or game.hp) .. "/" .. Kit.FormatInt(game.playerMaxHp or stats.hpBig or stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
+            UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", (game.displayedPower or stats.power) and Kit.FormatInt(game.displayedPower or stats.power) or "待评估", C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
+        },
+    }
+
+    -- 邮件入口固定在首页左上（ScrollView 之外），避免短屏滚动时被 ScrollView 的
+    -- pan 手势取消长按状态（UI.CancelPointer 会中断按压）。
     return UI.Panel {
         width = "100%", height = "100%", position = "relative",
         children = {
-            heroPanel,
-            UI.Panel {
-                position = "absolute", left = statGridX, top = 604,
-                width = statGridW, height = statGridH,
+            UI.ScrollView {
+                width = "100%", height = "100%",
+                scrollX = false, scrollY = true, showScrollbar = false,
                 children = {
-                    UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", Kit.FormatInt(stats.atkBig or stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", Kit.FormatInt(stats.defBig or stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = 0, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("暴击", Kit.FormatPercent(stats.crit), C.gold, ASSETS.ui.statCrit, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("攻速", string.format("%.1f", stats.atkSpeed), C.mp, ASSETS.ui.statSpeed, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", Kit.FormatInt(game.hpBig or game.hp) .. "/" .. Kit.FormatInt(game.playerMaxHp or stats.hpBig or stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
-                    UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", (game.displayedPower or stats.power) and Kit.FormatInt(game.displayedPower or stats.power) or "待评估", C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
+                    UI.Panel {
+                        width = "100%", flexShrink = 0,
+                        alignItems = "center",
+                        children = {
+                            heroPanel,
+                            statGrid,
+                        },
+                    },
                 },
             },
+            MailEntry(20, 14, game),
         },
     }
 end

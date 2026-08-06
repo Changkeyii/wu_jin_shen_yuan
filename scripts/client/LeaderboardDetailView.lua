@@ -290,6 +290,20 @@ function LeaderboardDetailView.Show(data)
         LeaderboardDetailView.Hide()
     end
 
+    local function CopyUid()
+        -- 官方编辑器复制逻辑：引擎全局 ui（原生 UI 实例，userdata）useSystemClipboard + SetClipboardText
+        local ok, reason = pcall(function()
+            ui.useSystemClipboard = true
+            ui:SetClipboardText(tostring(data.userId or ""))
+        end)
+        if ok then
+            UI.Toast.Show("已复制 uid", { duration = 1.5, variant = "success", position = "bottom" })
+        else
+            UI.Toast.Show("复制失败", { duration = 1.5, variant = "error", position = "bottom" })
+            print("[CopyUid] failed: " .. tostring(reason))
+        end
+    end
+
     local function UpdateTrashTalk(index)
         ServerClient.SetTrashTalk(index, function(response)
             if response and response.ok then
@@ -319,6 +333,51 @@ function LeaderboardDetailView.Show(data)
                 textStroke = { width = 2, color = "#000000" },
                 pointerEvents = "none",
             }),
+            -- 左下方 uid + 复制按钮（对齐底部按钮区上沿）
+            UI.Panel {
+                position = "absolute",
+                left = 41,
+                top = 1288,
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 12,
+                children = {
+                    Kit.CompactTxt("uid:" .. tostring(data.userId or "?"), 20, C.textDim, {
+                        maxWidth = "100%",
+                        height = 36,
+                        minHeight = 36,
+                        left = -2,
+                        top = 2,
+                        textAlign = "left",
+                        textStroke = { width = 1, color = "#000000" },
+                    }),
+                    UI.Panel {
+                        width = 101,
+                        height = 46,
+                        left = 4,
+                        top = 9,
+                        clickable = true,
+                        alignItems = "center",
+                        justifyContent = "center",
+                        backgroundImage = ASSETS.ui.buttonBlue,
+                        backgroundFit = "sliced",
+                        backgroundSlice = { 8, 8, 8, 8 },
+                        onClick = CopyUid,
+                        children = {
+                            Kit.CompactTxt("复制", 18, C.text, {
+                                width = "100%",
+                                height = 36,
+                                minHeight = 34,
+                                left = -2,
+                                top = -6,
+                                textAlign = "center",
+                                textStroke = { width = 1, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    },
+                },
+            },
             UI.ScrollView {
                 position = "absolute",
                 left = 60,

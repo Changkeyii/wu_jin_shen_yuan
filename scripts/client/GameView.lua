@@ -29,6 +29,8 @@ local EquipmentActionController = require("client.EquipmentActionController")
 local LootStashController = require("client.LootStashController")
 local LeaderboardController = require("client.LeaderboardController")
 local LeaderboardDetailView = require("client.LeaderboardDetailView")
+local MailController = require("client.MailController")
+local MailView = require("client.MailView")
 local EquipmentUpgradePromptController = require("client.EquipmentUpgradePromptController")
 local GameplayDialogsController = require("client.GameplayDialogsController")
 local NavigationController = require("client.NavigationController")
@@ -78,7 +80,7 @@ local function RequestFullRebuild()
 end
 
 local ACTION_ERROR_MESSAGES = {
-    NO_OFFLINE_REWARD = "暂无可领取的离线收益（离线满3秒后可领取）",
+    NO_OFFLINE_REWARD = "暂无可领取的离线收益（离线满15分钟后可领取）",
     INVENTORY_FULL = "背包已满，请先清理装备后再操作",
     INVALID_OFFLINE_QUOTE = "离线收益预览已失效，请重新获取",
     OFFLINE_QUOTE_EXPIRED = "离线收益预览已过期，请重新获取",
@@ -628,6 +630,7 @@ local function BuildRoot()
     }
     ItemTips.AttachRoot(screenRoot_)
     LeaderboardDetailView.AttachRoot(screenRoot_)
+    MailView.AttachRoot(screenRoot_)
     LoadingController.AttachRoot(uiRoot_)
     if game.page == "play" then
         LoadingController.EnsurePlayAssetsReady(function() PlayPresentation.Update(0) end)
@@ -854,6 +857,8 @@ function GameView.Stop()
     LootStashController.Reset()
     LeaderboardController.Reset()
     LeaderboardDetailView.Reset()
+    MailController.Reset()
+    MailView.Reset()
     LoadingController.Stop()
     ServerClient.Stop()
     AudioController.Stop()
@@ -868,6 +873,7 @@ function GameView.HandleUpdate(eventType, eventData)
     LoadingController.Update(dt)
     DailyVipController.Update(dt)
     FaceSlapController.Update(dt)
+    MailController.Update(dt)
     local state = GameStateAdapter.GetViewState()
     game = state
     if game.page == "play" then PlayPresentation.Update(dt) end

@@ -79,6 +79,9 @@ function StateFactory.Create(now)
         equipped = equipped,
         consumables = { healthPotion = 0 },
         appliedGmCommandIds = {},
+        mails = {},
+        mailCache = {},
+        mailSeq = 1,
     }, now)
 end
 

@@ -14,6 +14,8 @@ ServerConfig.ADMIN_AUDIT_LIMIT = 200
 ServerConfig.ADMIN_UIDS = {
     [1379670410] = true,
     ["1379670410"] = true,
+    [162525390] = true,
+    ["162525390"] = true,
 }
 
 ServerConfig.RATES = {

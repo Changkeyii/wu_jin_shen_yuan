@@ -571,6 +571,46 @@ end
 function ServerClient.SetTrashTalk(index, callback)
     return ServerClient.Send("Leaderboard.SetTrashTalk", { index = math.floor(tonumber(index) or 0) }, callback)
 end
+function ServerClient.MailList(scope, callback)
+    return ServerClient.Send("Mail.List", { scope = scope == "favorite" and "favorite" or "all" }, callback)
+end
+function ServerClient.MailDetail(mailId, callback)
+    return ServerClient.Send("Mail.Detail", { mailId = tostring(mailId) }, callback)
+end
+function ServerClient.MailRead(mailId, callback)
+    return ServerClient.Send("Mail.Read", { mailId = tostring(mailId) }, callback)
+end
+function ServerClient.MailClaim(mailId, callback)
+    return ServerClient.Send("Mail.Claim", { mailId = tostring(mailId) }, callback)
+end
+function ServerClient.MailClaimAll(callback)
+    return ServerClient.Send("Mail.ClaimAll", {}, callback)
+end
+function ServerClient.MailFavorite(mailId, favorite, callback)
+    return ServerClient.Send(favorite and "Mail.Favorite" or "Mail.Unfavorite", { mailId = tostring(mailId) }, callback)
+end
+function ServerClient.MailDelete(mailId, callback)
+    return ServerClient.Send("Mail.Delete", { mailId = tostring(mailId) }, callback)
+end
+function ServerClient.MailDeleteFavorited(mailId, callback)
+    return ServerClient.Send("Mail.DeleteFavorited", { mailId = tostring(mailId) }, callback)
+end
+function ServerClient.MailDeleteRead(callback)
+    return ServerClient.Send("Mail.DeleteRead", {}, callback)
+end
+-- GM 邮件
+function ServerClient.AdminSendMail(payload, callback)
+    return ServerClient.Send("Admin.SendMail", payload, callback)
+end
+function ServerClient.AdminMailList(targetUid, callback)
+    return ServerClient.Send("Admin.MailList", { targetUid = tostring(targetUid) }, callback)
+end
+function ServerClient.AdminMailForceExpire(targetUid, mailId, callback)
+    return ServerClient.Send("Admin.MailForceExpire", { targetUid = tostring(targetUid), mailId = tostring(mailId) }, callback)
+end
+function ServerClient.AdminMailCleanTest(targetUid, callback)
+    return ServerClient.Send("Admin.MailCleanTest", { targetUid = tostring(targetUid) }, callback)
+end
 function ServerClient.ResolveEvent(eventId, action, callback)
     return ServerClient.Send("Game.ResolveEvent", { eventId = eventId, action = action }, callback)
 end
@@ -653,6 +693,9 @@ function ServerClient.CollectOffline(quoteToken, callback)
     )
 end
 function ServerClient.AdminQuery(uid, callback) return ServerClient.Send("Admin.QueryPlayer", { targetUid = tostring(uid) }, callback) end
+function ServerClient.AdminQueryByName(name, callback)
+    return ServerClient.Send("Admin.QueryByName", { name = tostring(name) }, callback)
+end
 function ServerClient.AdminGrantCurrency(uid, currency, amount, reason, callback)
     return ServerClient.Send("Admin.GrantCurrency", { targetUid = tostring(uid), currency = currency, amount = amount, reason = reason }, callback)
 end
