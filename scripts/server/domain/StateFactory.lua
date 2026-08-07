@@ -2,6 +2,7 @@ local StateNormalizer = require("server.domain.StateNormalizer")
 local GameStateSchema = require("shared.GameStateSchema")
 local Catalog = require("server.domain.Catalog")
 local LargeNumber = require("shared.LargeNumber")
+local QuestEngine = require("server.domain.QuestEngine")
 
 local StateFactory = {}
 
@@ -82,6 +83,7 @@ function StateFactory.Create(now)
         mails = {},
         mailCache = {},
         mailSeq = 1,
+        quests = QuestEngine.NewQuests(),
     }, now)
 end
 

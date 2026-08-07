@@ -9,6 +9,7 @@ local PlayerTransition = require("server.domain.PlayerTransition")
 local DomainMath = require("server.domain.DomainMath")
 local EquipmentEngine = require("server.domain.EquipmentEngine")
 local CombatEngine = require("server.domain.CombatEngine")
+local QuestEngine = require("server.domain.QuestEngine")
 
 local AdventureEngine = {}
 local storyGateEvent
@@ -260,6 +261,7 @@ local function applyEventOutcome(working, pending, action)
     end
 
     if pending.eventType == "chest" then
+        QuestEngine.Track(working, "chest_open", 1, PlayerTransition.Now())
         local gold = Catalog.GetEventChestGold(pending.floor, pending.variant or 1)
         working.gold = LargeNumber.Add(working.gold, gold)
         granted.gold = gold

@@ -224,7 +224,7 @@ function FrameEditorView.Build(context)
                                 reset(selectedParams)
                                 context_.refresh()
                             end, { variant = "danger", width = 150 }),
-                            editorButton("去刷宝看效果", function()
+                            editorButton("去登塔看效果", function()
                                 context_.switchPage("play")
                             end, { variant = "success", width = 220 }),
                         } },

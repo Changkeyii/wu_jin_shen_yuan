@@ -75,7 +75,7 @@ function NavigationController.Build(game)
         { id = "bag", name = "背包" },
         { id = "codex", name = "图鉴" },
         { id = "equip", name = "装备" },
-        { id = "play", name = "刷宝" },
+        { id = "play", name = "登塔" },
         { id = "market", name = "市场" },
     }
     -- 管理页入口已改为「邮件入口长按 5 秒」（仅管理员，服务端校验），不再出现在底部导航。

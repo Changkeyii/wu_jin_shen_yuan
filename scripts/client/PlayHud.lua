@@ -247,7 +247,7 @@ function PlayHud.Build(options)
         },
     }
 
-    refs_.runButtonLabel = ports_.compactTxt("开始刷宝", 20, Colors().text, {
+    refs_.runButtonLabel = ports_.compactTxt("开始登塔", 20, Colors().text, {
         width = "100%", left = 2, top = -7,
         textAlign = "center",
         textStroke = {width = 2, color = "#000000"},
@@ -390,7 +390,7 @@ function PlayHud.Update(state)
 
     refs_.runButtonLabel:SetText(state.pendingAutoRun
         and "同步中"
-        or (state.visualAutoRun and "刷宝中" or "开始刷宝"))
+        or (state.visualAutoRun and "登塔中" or "开始登塔"))
     local unavailable = state.readOnly or state.assetsLoading
     refs_.runButton:SetDisabled(unavailable or state.pendingAutoRun)
     refs_.runButton:SetStyle({

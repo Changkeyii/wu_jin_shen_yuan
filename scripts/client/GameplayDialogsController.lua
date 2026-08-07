@@ -120,7 +120,7 @@ function GameplayDialogsController.ShowAidPrompt(value)
                     return
                 end
                 ServerClient.AutoRun(true, function(autoRunResponse)
-                    actionResult_(autoRunResponse, autoRunResponse and autoRunResponse.ok and "已继续刷宝" or nil)
+                    actionResult_(autoRunResponse, autoRunResponse and autoRunResponse.ok and "已继续登塔" or nil)
                 end)
             end)
         end,

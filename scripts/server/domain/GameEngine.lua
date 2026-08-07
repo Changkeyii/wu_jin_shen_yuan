@@ -19,6 +19,7 @@ local EquipmentEngine = require("server.domain.EquipmentEngine")
 local CombatEngine = require("server.domain.CombatEngine")
 local AdventureEngine = require("server.domain.AdventureEngine")
 local RewardEngine = require("server.domain.RewardEngine")
+local QuestEngine = require("server.domain.QuestEngine")
 
 local GameEngine = {}
 
@@ -47,6 +48,7 @@ end
 local function settleMonsterVictory(state, encounterKind, rng, now, events, context)
     local isBoss = encounterKind == "boss" or encounterKind == "chapterBoss"
     local isElite = encounterKind == "elite"
+    QuestEngine.Track(state, isBoss and "boss_kill" or (isElite and "elite_kill" or "monster_kill"), 1, now)
     local rate = rewardScale(context)
     local exp = math.floor((state.floor * 5 + 10) * (isBoss and 10 or (isElite and 2.3 or 1)) * rate)
     local gold = LargeNumber.MultiplyScalar(
@@ -163,6 +165,7 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         end
         state.floor = completedFloor + 1
         state.maxFloor = math.max(state.maxFloor, state.floor)
+        QuestEngine.Track(state, "floor_advance", 1, now)
         state.position = 0
         state.floorDefeats = 0
         state.aidPending = false

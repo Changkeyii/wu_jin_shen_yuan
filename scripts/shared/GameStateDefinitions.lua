@@ -652,6 +652,75 @@ local MARKET_LISTINGS_SCHEMA = {
 }
 
 
+local QUEST_COUNTER_SCHEMA = {
+    type = "integer",
+    min = 0,
+    max = LargeNumber.MAX_SAFE_INTEGER,
+}
+
+-- 任务系统存档：新手/每日/成就三块 + 累计计数器。
+local QUESTS_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "newbie", "daily", "achievement", "questStats" },
+    fields = {
+        newbie = {
+            type = "object",
+            allowUnknown = false,
+            required = { "claimed" },
+            fields = {
+                claimed = { type = "object", allowUnknown = true },
+            },
+        },
+        daily = {
+            type = "object",
+            allowUnknown = false,
+            required = { "dayKey", "progress", "claimed" },
+            fields = {
+                dayKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                progress = {
+                    type = "object",
+                    allowUnknown = false,
+                    fields = {
+                        monster_kill = QUEST_COUNTER_SCHEMA,
+                        elite_kill = QUEST_COUNTER_SCHEMA,
+                        boss_kill = QUEST_COUNTER_SCHEMA,
+                        item_pickup = QUEST_COUNTER_SCHEMA,
+                        chest_open = QUEST_COUNTER_SCHEMA,
+                        decompose = QUEST_COUNTER_SCHEMA,
+                        sell = QUEST_COUNTER_SCHEMA,
+                        floor_advance = QUEST_COUNTER_SCHEMA,
+                    },
+                },
+                claimed = { type = "object", allowUnknown = true },
+            },
+        },
+        achievement = {
+            type = "object",
+            allowUnknown = false,
+            required = { "claimed" },
+            fields = {
+                claimed = { type = "object", allowUnknown = true },
+            },
+        },
+        questStats = {
+            type = "object",
+            allowUnknown = false,
+            fields = {
+                monster_kill = QUEST_COUNTER_SCHEMA,
+                elite_kill = QUEST_COUNTER_SCHEMA,
+                boss_kill = QUEST_COUNTER_SCHEMA,
+                item_pickup = QUEST_COUNTER_SCHEMA,
+                chest_open = QUEST_COUNTER_SCHEMA,
+                decompose = QUEST_COUNTER_SCHEMA,
+                sell = QUEST_COUNTER_SCHEMA,
+                floor_advance = QUEST_COUNTER_SCHEMA,
+            },
+        },
+    },
+}
+
+
 local Definitions = {
     CURRENCY_SCHEMA = CURRENCY_SCHEMA,
     BIG_NUMBER_SCHEMA = BIG_NUMBER_SCHEMA,
@@ -671,6 +740,7 @@ local Definitions = {
     STORY_GATE_SCHEMA = STORY_GATE_SCHEMA,
     PENDING_EVENT_SCHEMA = PENDING_EVENT_SCHEMA,
     PENDING_EQUIP_SCHEMA = PENDING_EQUIP_SCHEMA,
+    QUESTS_SCHEMA = QUESTS_SCHEMA,
     LOADOUT_BACKUP_SCHEMA = LOADOUT_BACKUP_SCHEMA,
     SET_PROGRESS_SCHEMA = SET_PROGRESS_SCHEMA,
     STATS_SCHEMA = STATS_SCHEMA,

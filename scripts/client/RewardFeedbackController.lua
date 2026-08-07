@@ -252,6 +252,14 @@ local function ShowDeltaFeedback(payload)
                 fragments = BigNumber.Add(fragments, value.fragments or 0)
                 hasReward = true
             end
+        elseif kind == "quest_claimed" then
+            local reward = value.reward or {}
+            if reward.gold then gold = BigNumber.Add(gold, reward.gold) end
+            if reward.fragments then fragments = BigNumber.Add(fragments, reward.fragments) end
+            if reward.exp then exp = BigNumber.Add(exp, reward.exp) end
+            title = "任务奖励"
+            message = "任务奖励已发放"
+            hasReward = true
         elseif kind == "battle_lost" then
             UI.Toast.Show("挑战失败，已返回本层第1场重新整备", { duration = 2.8, variant = "error", position = "top" })
         elseif kind == "inventory_full" then
@@ -338,7 +346,7 @@ function RewardFeedbackController.ShowIdleSummary(onConfirm)
             "完成战斗 " .. tostring(summary.battles or 0) .. " 场，奖励已同步到当前角色。",
         },
         confirmText = "确认并离开",
-        cancelText = "继续刷宝",
+        cancelText = "继续登塔",
         showClose = true,
         cards = cards,
         onConfirm = function()

@@ -10,6 +10,7 @@ local PlayerTransition = require("server.domain.PlayerTransition")
 local DomainMath = require("server.domain.DomainMath")
 local InventoryState = require("server.domain.InventoryState")
 local EquipmentEngine = require("server.domain.EquipmentEngine")
+local QuestEngine = require("server.domain.QuestEngine")
 
 local RewardEngine = {}
 
@@ -174,6 +175,10 @@ end
 local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, events, options)
     local item = generatedEquipment(state, rarityId, isBoss, rng, now, source, options)
     if not item then return true, nil, false end
+    -- 玩家拾取装备计入任务（援助发放不计）。
+    if not (options and options.aidLocked == true) then
+        QuestEngine.Track(state, "item_pickup", 1, now)
+    end
     InventoryState.RecordCollection(state, item)
     local hasRoom, handled = EquipmentEngine.MakeRoomForDrop(state, item, events, not (options and options.requireInventory))
     local definition = Catalog.GetEquipmentDefinition(item.equipmentId)

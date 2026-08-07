@@ -392,7 +392,7 @@ local function ShowIdleSettings()
         backgroundFit = "sliced",
         backgroundSlice = { 14, 14, 14, 14 },
         children = {
-            Kit.Txt("挂机自动处理设置", 32, C.text, { position = "absolute", left = 90, top = 34, width = 760, height = 48, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
+            Kit.Txt("登塔自动处理设置", 32, C.text, { position = "absolute", left = 90, top = 34, width = 760, height = 48, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
             UI.Panel {
                 position = "absolute",
                 right = 22,

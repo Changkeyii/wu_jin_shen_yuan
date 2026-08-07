@@ -248,7 +248,7 @@ local function SetAutoRun(enabled)
                     ActionResult(response)
                     return
                 end
-                ActionResult(response, "挂机已开始")
+                ActionResult(response, "登塔已开始")
                 context_.serverClient.RequestSnapshot(function(snapshotResponse)
                     if not snapshotResponse or not snapshotResponse.ok then
                         print("[Play] auto-run enabled; waiting for authoritative delta")
@@ -266,7 +266,7 @@ local function SetAutoRun(enabled)
                 return
             end
             requestedAutoRun_ = false
-            ActionResult(response, "挂机已暂停")
+            ActionResult(response, "登塔已暂停")
             context_.serverClient.RequestSnapshot()
         end)
     end

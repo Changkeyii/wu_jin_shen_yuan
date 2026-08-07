@@ -16,6 +16,7 @@ local SCALAR_DELTA_FIELDS = {
     "automationPolicy", "interactionMode", "storyProgress", "pendingStoryGate",
     "ruleAcknowledgements", "pendingEquipDecision", "previousLoadout", "rewardPity",
     "currentMonster", "currentEvent", "lootStash",
+    "quests",
 }
 
 function PlayerTransition.Now(now)

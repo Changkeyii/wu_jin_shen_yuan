@@ -10,6 +10,7 @@ local RewardPolicy = require("shared.RewardPolicy")
 local RarityCatalog = require("shared.RarityCatalog")
 local PowerEvaluator = require("shared.PowerEvaluator")
 local GameStateSchema = require("shared.GameStateSchema")
+local QuestEngine = require("server.domain.QuestEngine")
 
 local EquipmentEngine = {}
 
@@ -24,10 +25,12 @@ end
 
 local function disposeEquipment(state, item, mode)
     if mode == "sell" then
+        QuestEngine.Track(state, "sell", 1, PlayerTransition.Now())
         local gold = Catalog.GetSellValue(item, state.vipLevel)
         PlayerTransition.AddCurrency(state, "gold", gold)
         return { gold = gold, fragments = 0 }
     end
+    QuestEngine.Track(state, "decompose", 1, PlayerTransition.Now())
     local refund = Catalog.GetDecomposeRefund(item, state.vipLevel)
     PlayerTransition.AddCurrency(state, "gold", refund.gold)
     PlayerTransition.AddCurrency(state, "fragments", refund.fragments)
@@ -489,6 +492,7 @@ function EquipmentEngine.Decompose(inputState, maximumRank, now, candidateIds)
     if removed == 0 then
         return PlayerTransition.NoCommit(inputState, now, "decompose_empty")
     end
+    QuestEngine.Track(working, "decompose", removed, now)
     working.inventory = kept
     InventoryState.PruneLootStash(working)
     PlayerTransition.AddCurrency(working, "fragments", fragments)
@@ -532,6 +536,7 @@ function EquipmentEngine.Sell(inputState, maximumRank, now, candidateIds)
         end
     end
     if removed == 0 then return PlayerTransition.NoCommit(inputState, now, "sell_empty") end
+    QuestEngine.Track(working, "sell", removed, now)
     working.inventory = kept
     InventoryState.PruneLootStash(working)
     PlayerTransition.AddCurrency(working, "gold", gold)

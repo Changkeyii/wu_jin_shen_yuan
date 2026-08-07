@@ -2,6 +2,8 @@ local EquipmentCatalog = require("shared.EquipmentCatalog")
 local ItemPresentation = require("shared.ItemPresentation")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
+local QuestDefinitions = require("shared.QuestDefinitions")
+local ServerClock = require("client.ServerClock")
 
 local GameStateAdapter = {}
 
@@ -155,6 +157,9 @@ local function EventText(value)
         return "发现可提升整套战力的装备。"
     elseif kind == "equipment_reverted" or kind == "equip_undone" then
         return "已撤回上一次自动换装。"
+    elseif kind == "quest_claimed" then
+        local questDef = QuestDefinitions.Get(value and value.questId)
+        return "完成任务「" .. tostring(questDef and questDef.title or value and value.questId or "任务") .. "」，奖励已发放。"
     end
     return nil
 end
@@ -455,6 +460,8 @@ local function RebuildView()
         item.isEquipped = item.equippedSlot ~= nil
     end
     nextView.equipped = equippedObjects
+    -- 任务系统展示视图（进度/状态/奖励），服务端权威判定一致。
+    nextView.questsView = QuestDefinitions.BuildView(nextView, ServerClock.DayKey(ServerClock.Now()))
     view_ = nextView
     return view_
 end

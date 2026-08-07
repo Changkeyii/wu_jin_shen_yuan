@@ -17,6 +17,8 @@ local EquipmentCodexView = require("client.EquipmentCodexView")
 local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
 local EquipmentDispositionDialog = require("client.EquipmentDispositionDialog")
 local MarketView = require("client.MarketView")
+local QuestView = require("client.QuestView")
+local QuestController = require("client.QuestController")
 local RewardDialogView = require("client.RewardDialogView")
 local RewardFeedbackController = require("client.RewardFeedbackController")
 local OfflineClaimController = require("client.OfflineClaimController")
@@ -480,6 +482,7 @@ local function CreatePageContent()
     end
     if game.page == "play" then return PlayPresentation.BuildPage() end
     if game.page == "market" then return CreateMarketPage() end
+    if game.page == "quest" then return QuestView.BuildPage() end
     if game.page == "frameEditor" then return BuildFrameEditorPage() end
     return HomeView.Build {
         game = game,
@@ -749,6 +752,9 @@ function GameView.Start()
         showActionResult = ActionResult,
         requestPageRefresh = RequestPageRefresh,
         hideItemTips = ItemTips.Hide,
+    }
+    QuestController.Configure {
+        requestPageRefresh = RequestPageRefresh,
     }
     FaceSlapController.Configure {
         getGame = GameStateAdapter.GetViewState,

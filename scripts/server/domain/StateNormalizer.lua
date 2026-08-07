@@ -439,6 +439,49 @@ local function sanitizeDailyVip(value)
     }
 end
 
+local QUEST_COUNTER_METRICS = {
+    "monster_kill", "elite_kill", "boss_kill",
+    "item_pickup", "chest_open", "decompose", "sell", "floor_advance",
+}
+
+local function sanitizeQuestCounters(value)
+    local result = {}
+    value = type(value) == "table" and value or {}
+    for _, metric in ipairs(QUEST_COUNTER_METRICS) do
+        result[metric] = math.max(0, math.min(
+            TableUtils.ToInteger(value[metric], 0),
+            Catalog.MAX_VALUE
+        ))
+    end
+    return result
+end
+
+local function sanitizeQuestClaimed(value)
+    local result = {}
+    for key, flag in pairs(type(value) == "table" and value or {}) do
+        if type(key) == "string" and flag == true then result[key] = true end
+    end
+    return result
+end
+
+-- 任务系统存档规范化：旧存档缺失时补齐完整结构，数字钳制为非负。
+local function sanitizeQuests(value)
+    value = type(value) == "table" and value or {}
+    local rawNewbie = type(value.newbie) == "table" and value.newbie or {}
+    local rawDaily = type(value.daily) == "table" and value.daily or {}
+    local rawAchievement = type(value.achievement) == "table" and value.achievement or {}
+    return {
+        newbie = { claimed = sanitizeQuestClaimed(rawNewbie.claimed) },
+        daily = {
+            dayKey = math.max(0, TableUtils.ToInteger(rawDaily.dayKey, 0)),
+            progress = sanitizeQuestCounters(rawDaily.progress),
+            claimed = sanitizeQuestClaimed(rawDaily.claimed),
+        },
+        achievement = { claimed = sanitizeQuestClaimed(rawAchievement.claimed) },
+        questStats = sanitizeQuestCounters(value.questStats),
+    }
+end
+
 local function safePauseReason(value)
     if type(value) ~= "string" or #value > 64 then return nil end
     return value
@@ -566,6 +609,7 @@ function StateNormalizer.Normalize(rawState, now)
         mails = sanitizeMails(rawState.mails),
         mailCache = sanitizeMails(rawState.mailCache),
         mailSeq = clampInteger(rawState.mailSeq, 1, 100000000000, 1),
+        quests = sanitizeQuests(rawState.quests),
     }
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}

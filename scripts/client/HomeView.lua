@@ -6,6 +6,7 @@ local CommonPromptDialog = require("client.CommonPromptDialog")
 local DailyVipView = require("client.DailyVipView")
 local LeaderboardController = require("client.LeaderboardController")
 local MailController = require("client.MailController")
+local QuestController = require("client.QuestController")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
@@ -50,7 +51,7 @@ local function ShowRules(game)
     CommonPromptDialog.Show {
         kind = "rules",
         queueKey = "rules:tower-reward",
-        title = "挂机刷宝说明",
+        title = "登塔说明",
         message = "在线战斗收益为100%；离线收益固定按20%结算且只折算一次。",
         lines = {
             "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
@@ -71,8 +72,8 @@ local function ShowFeaturePreview(name)
     })
 end
 
-local function HomeActionButton(text, left, top, onClick)
-    return UI.Panel {
+local function HomeActionButton(text, left, top, onClick, badge)
+    local button = UI.Panel {
         position = "absolute",
         left = left,
         top = top,
@@ -90,6 +91,22 @@ local function HomeActionButton(text, left, top, onClick)
             }),
         },
     }
+    if badge and badge > 0 then
+        button:AddChild(UI.Panel {
+            position = "absolute", right = -6, top = -8, width = 44, height = 44,
+            shape = "circle", overflow = "hidden",
+            backgroundColor = C.error,
+            borderWidth = 2, borderColor = { 0, 0, 0, 120 },
+            alignItems = "center", justifyContent = "center",
+            children = {
+                Kit.CompactTxt(badge > 99 and "99+" or tostring(badge), 20, C.text, {
+                    width = "100%", height = 44, textAlign = "center",
+                    textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                }),
+            },
+        })
+    end
+    return button
 end
 
 -- 邮件入口（首页左上区域最顶端）：信封图标 + 正下方「邮件」文字。
@@ -210,7 +227,7 @@ function HomeView.Build(context)
                 top = 16,
                 onOpen = context.onOpenDailyVip,
             },
-            Kit.Txt("挂机刷宝", 34, C.text, {
+            Kit.Txt("登塔", 34, C.text, {
                 position = "absolute", left = 596, top = 196,
                 width = 270, textAlign = "center",
                 textStroke = { width = 4, color = "#000000" },
@@ -227,8 +244,10 @@ function HomeView.Build(context)
                 textStroke = { width = 2, color = "#000000" },
             }),
             HomeActionButton("任务", 596, 316, function()
-                ShowFeaturePreview("任务")
-            end),
+                QuestController.Open()
+            end, QuestController.CountClaimable(game, "newbie")
+                + QuestController.CountClaimable(game, "daily")
+                + QuestController.CountClaimable(game, "achievement")),
             HomeActionButton("活动", 596, 378, function()
                 ShowFeaturePreview("活动")
             end),
