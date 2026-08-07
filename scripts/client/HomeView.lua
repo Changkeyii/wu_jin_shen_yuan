@@ -92,16 +92,17 @@ local function HomeActionButton(text, left, top, onClick)
     }
 end
 
--- 邮件入口（首页左上区域最顶端左下）：信封图标 + 正下方「邮件」文字。
+-- 邮件入口（首页左上区域最顶端）：信封图标 + 正下方「邮件」文字。
 -- 单击打开邮件；长按 5 秒进 GM（仅管理员，服务端校验）。带未读红点。
 local function MailEntry(left, top, game)
     local summary = (game and game.mailSummary) or {}
     local unread = math.max(0, math.floor(tonumber(summary.unread) or 0))
-    local iconSize = 84
-    local width = 104
-    local labelHeight = 40
+    -- 放大后的邮件入口：信封图标放大 + 「邮件」文字在图标正下方。
+    -- 总高度控制在角色立绘上方，避免遮挡下方角色面板。
+    local iconSize = 132
+    local labelHeight = 44
+    local width = iconSize
     local height = iconSize + labelHeight
-    local iconLeft = math.floor((width - iconSize) * 0.5)
     return UI.Panel {
         position = "absolute",
         left = left,
@@ -122,7 +123,7 @@ local function MailEntry(left, top, game)
             -- 信封图标本体（透明背景，非方形卡片）
             UI.Panel {
                 position = "absolute",
-                left = iconLeft,
+                left = 0,
                 top = 0,
                 width = iconSize,
                 height = iconSize,
@@ -131,34 +132,34 @@ local function MailEntry(left, top, game)
                 pointerEvents = "none",
             },
             -- 正下方「邮件」文字
-            Kit.Txt("邮件", 22, C.text, {
+            Kit.Txt("邮件", 32, C.text, {
                 position = "absolute",
                 left = 0,
-                top = iconSize - 2,
+                top = iconSize - 4,
                 width = width,
                 height = labelHeight,
                 textAlign = "center",
                 textStroke = { width = 2, color = "#000000" },
                 pointerEvents = "none",
             }),
-            -- 未读红点
+            -- 未读红点（固定正圆，数字几何居中；超过 99 显示 99+）
             unread > 0 and UI.Panel {
                 position = "absolute",
-                right = 0,
-                top = 0,
-                minWidth = 38,
-                height = 30,
-                paddingLeft = 7,
-                paddingRight = 7,
+                right = 4,
+                top = 6,
+                width = 52,
+                height = 52,
                 alignItems = "center",
                 justifyContent = "center",
                 shape = "circle",
+                overflow = "hidden",
                 backgroundColor = C.error,
                 borderWidth = 2,
                 borderColor = { 0, 0, 0, 120 },
                 children = {
-                    Kit.CompactTxt(tostring(unread), 17, C.text, {
+                    Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 26, C.text, {
                         width = "100%",
+                        height = 52,
                         textAlign = "center",
                         textStroke = { width = 1, color = "#000000" },
                         pointerEvents = "none",
@@ -271,7 +272,7 @@ function HomeView.Build(context)
                     },
                 },
             },
-            MailEntry(20, 14, game),
+            MailEntry(16, 10, game),
         },
     }
 end

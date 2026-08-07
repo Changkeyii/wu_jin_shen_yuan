@@ -35,12 +35,14 @@ local detailRebuild_ = nil
 -- 格式化
 -- ============================================================================
 
-local function FormatClock(timestamp)
+local function FormatClock(timestamp, now)
+    now = now or os.time()
     timestamp = math.max(0, math.floor(tonumber(timestamp) or 0))
     if timestamp <= 0 then return "—" end
-    local day = math.floor(timestamp / 86400)
-    local hour = math.floor((timestamp % 86400) / 3600)
-    local minute = math.floor((timestamp % 3600) / 60)
+    local elapsed = math.max(0, now - timestamp)
+    local day = math.floor(elapsed / 86400)
+    local hour = math.floor((elapsed % 86400) / 3600)
+    local minute = math.floor((elapsed % 3600) / 60)
     if day > 0 then
         return string.format("%d天前", day)
     end
@@ -51,12 +53,23 @@ end
 
 local function RemainingText(expireAt, now)
     expireAt = math.max(0, math.floor(tonumber(expireAt) or 0))
+    now = math.max(0, math.floor(tonumber(now) or os.time()))
     if expireAt <= 0 then return "永久" end
     local remain = expireAt - now
     if remain <= 0 then return "已过期" end
-    local days = math.ceil(remain / 86400)
-    if days >= 1 then return "剩" .. tostring(days) .. "天" end
-    return "剩" .. tostring(math.max(1, math.ceil(remain / 3600))) .. "小时"
+    local days = math.floor(remain / 86400)
+    local hours = math.floor((remain % 86400) / 3600)
+    if days > 0 then
+        if hours > 0 then return string.format("剩%d天%d小时", days, hours) end
+        return string.format("剩%d天", days)
+    end
+    local minutes = math.max(1, math.floor((remain % 3600) / 60))
+    if hours > 0 then
+        if minutes > 0 then return string.format("剩%d小时%d分", hours, minutes) end
+        return string.format("剩%d小时", hours)
+    end
+    if minutes > 0 then return string.format("剩%d分钟", minutes) end
+    return "即将过期"
 end
 
 local function AttachLabel(state)
@@ -131,8 +144,8 @@ local function BuildListItem(item, onOpen)
                 width = 40,
                 textAlign = "center",
             }),
-            Kit.CompactTxt(RemainingText(item.expireAt, os.time()), 17, expired and C.error or C.textDim, {
-                width = 90,
+            Kit.CompactTxt(RemainingText(item.expireAt, os.time()), 16, expired and C.error or C.textDim, {
+                width = 132,
                 textAlign = "right",
                 textStroke = { width = 1, color = "#000000" },
             }),
@@ -528,6 +541,7 @@ function MailView.PresentDetail(mail)
     detailLayer_ = nil
 
     local expired = mail.expired == true
+    local isPermanent = (mail.expireAt or 0) <= 0
     local hasUnclaimed = mail.hasUnclaimed == true
     local attachRows = {}
     for _, attachment in ipairs(mail.attachments or {}) do
@@ -705,6 +719,7 @@ function MailView.PresentDetail(mail)
                         paddingTop = 8,
                         paddingBottom = 16,
                         children = {
+                            -- 发件人 + 发送时间
                             UI.Panel {
                                 width = "100%",
                                 flexDirection = "row",
@@ -714,13 +729,52 @@ function MailView.PresentDetail(mail)
                                     Kit.CompactTxt(mail.sender or "系统", 20, C.focus, {
                                         flexGrow = 1, flexBasis = 0, textAlign = "left",
                                     }),
-                                    Kit.CompactTxt(FormatClock(mail.sentAt), 18, C.textDim, {
-                                        width = 160, textAlign = "right",
+                                    Kit.CompactTxt("发送于 " .. FormatClock(mail.sentAt), 18, C.textDim, {
+                                        width = 220, textAlign = "right",
                                     }),
-                                    Kit.CompactTxt(RemainingText(mail.expireAt, os.time()), 18,
-                                        expired and C.error or C.textSecondary, {
-                                            width = 150, textAlign = "right",
-                                        }),
+                                },
+                            },
+                            -- 时效信息（醒目色块标签 + 剩余时间）
+                            UI.Panel {
+                                width = "100%",
+                                height = 54,
+                                flexDirection = "row",
+                                alignItems = "center",
+                                gap = 12,
+                                paddingLeft = 14,
+                                paddingRight = 14,
+                                borderRadius = 10,
+                                backgroundColor = expired and { 70, 22, 26, 150 } or { 18, 40, 76, 180 },
+                                children = {
+                                    UI.Panel {
+                                        width = 96,
+                                        height = 36,
+                                        flexShrink = 0,
+                                        alignItems = "center",
+                                        justifyContent = "center",
+                                        borderRadius = 8,
+                                        backgroundColor = expired and C.error or (isPermanent and C.textDim or C.gold),
+                                        children = {
+                                            Kit.CompactTxt(expired and "已过期" or (isPermanent and "永久有效" or "剩余时间"), 17, C.text, {
+                                                width = "100%",
+                                                textAlign = "center",
+                                                textStroke = { width = 2, color = "#000000" },
+                                                pointerEvents = "none",
+                                            }),
+                                        },
+                                    },
+                                    Kit.CompactTxt(
+                                        expired and "该邮件已过期，附件无法领取"
+                                            or (isPermanent and "本邮件长期有效" or RemainingText(mail.expireAt, os.time())),
+                                        18,
+                                        expired and C.error or (isPermanent and C.textSecondary or C.gold),
+                                        {
+                                            flexGrow = 1,
+                                            flexBasis = 0,
+                                            textAlign = "left",
+                                            textStroke = { width = 1, color = "#000000" },
+                                        }
+                                    ),
                                 },
                             },
                             UI.Panel {

@@ -10,7 +10,7 @@ GameStateContracts.SLOTS = {
 GameStateContracts.RARITIES = RarityCatalog.ORDER
 GameStateContracts.SET_IDS = { "nightmare", "lucky", "voyage", "abyss", "prophecy" }
 GameStateContracts.EVENT_TYPES = {
-    "monster", "elite", "chest", "merchant", "random", "boss", "chapter_boss",
+    "monster", "elite", "chest", "merchant", "random", "randomEvent", "boss", "chapter_boss",
 }
 
 GameStateContracts.PERSISTED_FIELDS = {
@@ -63,6 +63,8 @@ GameStateContracts.PERSISTED_FIELDS = {
     "mails",
     "mailCache",
     "mailSeq",
+    "receivedBroadcasts",
+    "totalPlaySeconds",
 }
 
 GameStateContracts.SNAPSHOT_FIELDS = {

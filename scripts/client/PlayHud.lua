@@ -219,14 +219,32 @@ function PlayHud.Build(options)
     }
     local settingsButton = UI.Panel {
         position = "absolute", right = 42, top = 1379,
-        width = 72, height = 72,
+        width = 210, height = 92,
         clickable = not options.readOnly,
         opacity = options.readOnly and 0.45 or 1.0,
-        backgroundImage = assets.ui.idleSettings,
+        alignItems = "center", justifyContent = "center",
+        padding = 0, borderWidth = 0, boxShadow = {},
+        backgroundImage = assets.ui.playAutoRunButton,
         backgroundFit = "contain",
         onClick = function()
             if ports_.onOpenIdleSettings then ports_.onOpenIdleSettings() end
         end,
+        children = {
+            UI.Panel {
+                position = "absolute", left = 5, top = 12,
+                width = 60, height = 60,
+                backgroundImage = assets.ui.idleSettings,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            },
+            ports_.compactTxt("设置", 24, Colors().text, {
+                position = "absolute", left = 67, top = 18,
+                width = 120, height = 48,
+                textAlign = "center",
+                textStroke = {width = 2, color = "#000000"},
+                pointerEvents = "none",
+            }),
+        },
     }
 
     refs_.runButtonLabel = ports_.compactTxt("开始刷宝", 20, Colors().text, {

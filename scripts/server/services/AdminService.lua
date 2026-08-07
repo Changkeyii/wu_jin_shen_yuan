@@ -173,14 +173,57 @@ function AdminService:Query(actorUserId, targetUserId, onComplete)
         if state then
             summary.revision = state.revision
             summary.level = state.level
+            summary.vipLevel = state.vipLevel or 0
             summary.floor = state.floor
+            summary.maxFloor = state.maxFloor
             summary.position = state.position
             summary.gold = state.gold
             summary.fragments = state.fragments
             summary.inventoryCount = #state.inventory
             summary.power = state.stats and state.stats.power or 0
+            -- 作弊判定辅助数据
+            summary.totalPlaySeconds = state.totalPlaySeconds or 0
+            summary.autoRun = state.autoRun == true
+            summary.pendingOfflineSeconds = state.pendingOfflineSeconds or 0
+            summary.pendingEvent = state.pendingEvent ~= nil
+            summary.lastActiveAt = state.lastActiveAt or 0
+            local equippedCount = 0
+            if type(state.equipped) == "table" then
+                for _, slot in pairs(state.equipped) do
+                    if slot then equippedCount = equippedCount + 1 end
+                end
+            end
+            summary.equippedCount = equippedCount
+            local stats = state.stats or {}
+            summary.stats = {
+                power = stats.power or 0,
+                atk = stats.atk or 0,
+                def = stats.def or 0,
+                hp = stats.hp or 0,
+                crit = stats.crit or 0,
+                atkSpeed = stats.atkSpeed or 0,
+            }
         end
-        onComplete(Result(true, { player = summary, status = summary.online and "applied: online" or "applied: offline" }))
+        local function finish(nickname)
+            summary.nickname = nickname or ""
+            onComplete(Result(true, {
+                player = summary,
+                status = summary.online and "applied: online" or "applied: offline",
+            }))
+        end
+        local query = _G.GetUserNickname
+        if type(query) == "function" then
+            query {
+                userIds = { targetUserId },
+                onSuccess = function(nicknames)
+                    local row = type(nicknames) == "table" and nicknames[1] or nil
+                    finish(row and row.nickname or "")
+                end,
+                onError = function() finish("") end,
+            }
+        else
+            finish("")
+        end
     end)
 end
 

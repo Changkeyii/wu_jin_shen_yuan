@@ -46,6 +46,7 @@ local validateConsumables = Definitions.ValidateConsumables
 local validateAcknowledgements = Definitions.ValidateAcknowledgements
 local validateEquipmentCollection = Definitions.ValidateEquipmentCollection
 local validateAppliedGmCommandIds = Definitions.ValidateAppliedGmCommandIds
+local validateReceivedBroadcasts = Definitions.ValidateReceivedBroadcasts
 
 local MAIL_ATTACHMENT_SCHEMA = {
     type = "object",
@@ -218,6 +219,9 @@ PERSISTED_SCHEMA = {
             items = MAIL_SCHEMA,
         },
         mailSeq = { type = "integer", min = 1, max = LargeNumber.MAX_SAFE_INTEGER },
+        receivedBroadcasts = { type = "object", validate = validateReceivedBroadcasts },
+        -- 累计总实际游玩时长（秒，浮点累计，云端持久化；在线期间持续累加）
+        totalPlaySeconds = { type = "number", min = 0 },
     },
 }
 

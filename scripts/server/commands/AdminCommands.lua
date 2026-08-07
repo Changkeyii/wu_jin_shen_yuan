@@ -192,6 +192,64 @@ function AdminCommands.Register(router, adminService, services)
         service:SendMail(targetUserId, spec, done, sink)
     end)))
 
+    router:Register(Definition("Admin.SendBroadcastMail", {
+        type = "object",
+        required = { "title", "body", "mailType" },
+        allowUnknown = false,
+        fields = {
+            title = { type = "string", minLength = 1, maxLength = MailRules.MAX_TITLE },
+            body = { type = "string", minLength = 1, maxLength = MailRules.MAX_BODY },
+            mailType = { type = "string", enum = { "notice", "reward", "task", "ops", "special" } },
+            sender = { type = "string", minLength = 1, maxLength = 32 },
+            favorite = { type = "boolean" },
+            expireDays = { type = "integer", min = 1, max = 3650 },
+            attachments = ATTACH_SCHEMA,
+        },
+    }, ServerConfig.RATES.AdminMutation, function(context, payload, done)
+        local service = MailService(services)
+        if not service then
+            done(false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" })
+            return CommandRouter.PENDING
+        end
+        local spec = {
+            type = payload.mailType,
+            title = payload.title,
+            body = payload.body,
+            sender = payload.sender,
+            favorite = payload.favorite == true,
+            reason = "全服邮件",
+            attachments = payload.attachments,
+        }
+        if payload.expireDays then
+            spec.expireAt = os.time() + payload.expireDays * 24 * 3600
+        end
+        local sink = {}
+        service:SendBroadcast(spec, function(result)
+            local response = {
+                ok = result.ok,
+                code = result.ok and 0 or result.code,
+                reason = result.reason,
+                data = sink,
+            }
+            if result.ok then
+                -- 在线玩家投递成功后，推送轻量 mailSummary delta 刷新首页红点
+                if services.sendDelta and sink.deliveredUsers then
+                    for _, uid in ipairs(sink.deliveredUsers) do
+                        services.sendDelta(uid, { changes = {} })
+                    end
+                end
+                response.status = string.format(
+                    "全服邮件已创建（批次 %s，在线 %d 人，本次新投递 %d 封，离线玩家登录后自动补发）",
+                    tostring(sink.batchId or "-"),
+                    tonumber(sink.totalOnline or 0),
+                    tonumber(sink.delivered or 0)
+                )
+            end
+            done(result.ok, response)
+        end, sink)
+        return CommandRouter.PENDING
+    end))
+
     router:Register(Definition("Admin.MailList", {
         type = "object",
         required = { "targetUid" },

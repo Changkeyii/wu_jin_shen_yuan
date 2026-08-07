@@ -145,6 +145,10 @@ function PlayerProfileService:MarkReady(userId, generation)
     local session = self.sessions[userId]
     if not session or session.generation ~= generation then return false end
     session.ready = true
+    -- 记录本次会话开始时间戳（首次 ready / 重连重建会话时）
+    if not session.playSessionStart or session.playSessionStart <= 0 then
+        session.playSessionStart = self.clock()
+    end
     return true
 end
 
@@ -475,6 +479,16 @@ function PlayerProfileService:TouchAndDetach(userId, generation, onComplete)
         onComplete(Result(true, { detached = false, stale = true }))
         return
     end
+    -- 会话游玩时长并入累计值：now - playSessionStart 差值转秒，随断线检查点持久化
+    local now = self.clock()
+    local playStart = session.playSessionStart
+    session.playSessionStart = nil
+    if playStart and playStart > 0 and session.state then
+        local elapsed = math.max(0, now - playStart)
+        if elapsed > 0 then
+            session.state.totalPlaySeconds = (tonumber(session.state.totalPlaySeconds) or 0) + elapsed
+        end
+    end
     local touch = GameEngine.TouchActive
     if not touch then
         self.sessions[userId] = nil
@@ -483,7 +497,7 @@ function PlayerProfileService:TouchAndDetach(userId, generation, onComplete)
     end
     local before = session.state
     local persistedBefore = session.persistedState or before
-    local proposal = touch(before, self.clock())
+    local proposal = touch(before, now)
     if not proposal.ok or not proposal.commit or proposal.commit.kind == "none" then
         self.sessions[userId] = nil
         onComplete(Result(proposal.ok, { detached = true, persisted = false }, proposal.error and proposal.error.code, proposal.error and proposal.error.reason))

@@ -6,8 +6,12 @@ local SECTION_BACKGROUND = "image/ui/generated/panel_940x320.png"
 
 local AdminPanel = {}
 
+-- 管理面板分页签：玩家管理 / 邮件管理 / 系统审计。
+-- Build 重建时保留当前页签，切页签通过 onChanged 触发页面重刷。
+local activeTab_ = "player"
+
 -- Embedded page boundary contract (1080x1920 design space):
--- AdminRoot -> HeaderBand(100%) -> FormScroll(flex, clipped) -> StatusBand(100%).
+-- AdminRoot -> HeaderBand(标题 + 页签) -> ContentScroll(flex, clipped) -> StatusBand(100%).
 -- Each FormSection is an unframed sibling region with a 2px divider; no card nesting.
 -- The ScrollView always has flexBasis=0 so the footer cannot be pushed off-screen.
 local form_ = {
@@ -24,6 +28,7 @@ local form_ = {
     mailType = "reward",
     mailGold = "0",
     mailId = "",
+    broadcastExpireDays = "7",
     queryName = "",
 }
 local status_ = "管理员通道已就绪"
@@ -146,20 +151,133 @@ local function ButtonRow(UI, children)
     }
 end
 
-local function PlayerSummary()
-    local player = queriedPlayer_
-    if not player then return "尚未查询玩家" end
-    if player.missing then
-        return string.format("玩家 %s | 未建档%s", tostring(player.targetUid), player.banned and " | 已封禁" or "")
+-- ============================================================================
+-- 格式化
+-- ============================================================================
+
+local function PlaytimeText(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    local days = math.floor(seconds / 86400)
+    local hours = math.floor((seconds % 86400) / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    if days > 0 then return string.format("%d天%d小时", days, hours) end
+    if hours > 0 then return string.format("%d小时%d分", hours, minutes) end
+    return string.format("%d分钟", math.max(1, minutes))
+end
+
+local function ActiveText(timestamp)
+    timestamp = math.max(0, math.floor(tonumber(timestamp) or 0))
+    if timestamp <= 0 then return "未知" end
+    local elapsed = math.max(0, os.time() - timestamp)
+    local day = math.floor(elapsed / 86400)
+    local hour = math.floor((elapsed % 86400) / 3600)
+    local minute = math.floor((elapsed % 3600) / 60)
+    if day > 0 then return string.format("%d天前", day) end
+    if hour > 0 then return string.format("%d小时前", hour) end
+    if minute > 0 then return string.format("%d分钟前", minute) end
+    return "刚刚"
+end
+
+-- ============================================================================
+-- 玩家详情卡（查询后结构化展示核心数据，便于作弊判定）
+-- ============================================================================
+
+local function StatCell(UI, label, value)
+    return UI.Panel {
+        flexGrow = 1,
+        flexBasis = 0,
+        gap = 2,
+        children = {
+            Label(UI, label, 9, {154, 177, 226, 255}),
+            Label(UI, value, 11, {255, 255, 255, 255}),
+        },
+    }
+end
+
+local function PlayerDetailCard(UI, player)
+    if not player then
+        return UI.Panel {
+            width = "100%",
+            padding = 14,
+            gap = 6,
+            backgroundImage = SECTION_BACKGROUND,
+            backgroundFit = "sliced",
+            backgroundSlice = { 8, 8, 8, 8 },
+            children = { Label(UI, "尚未查询玩家", 10, {154, 177, 226, 255}) },
+        }
     end
-    local presence = player.online and "在线" or "离线"
-    local ban = player.banned and ("已封禁：" .. tostring(player.ban and player.ban.reason or "未填写原因")) or "正常"
-    return string.format(
-        "玩家 %s | %s | %s\n等级%s  第%s层 %s格  战力%s\n金币%s  碎片%s  装备%s件  版本%s",
-        tostring(player.targetUid), presence, ban,
-        tostring(player.level or "-"), tostring(player.floor or "-"), tostring(player.position or "-"), tostring(player.power or "-"),
-        LargeNumber.Format(player.gold or 0), LargeNumber.Format(player.fragments or 0), tostring(player.inventoryCount or "-"), tostring(player.revision or "-")
-    )
+    if player.missing then
+        return UI.Panel {
+            width = "100%",
+            padding = 14,
+            gap = 6,
+            backgroundImage = SECTION_BACKGROUND,
+            backgroundFit = "sliced",
+            backgroundSlice = { 8, 8, 8, 8 },
+            children = {
+                Label(UI, string.format("玩家 %s 未建档", tostring(player.targetUid or "-")), 10, {255, 180, 120, 255}),
+            },
+        }
+    end
+    local statusColor = player.banned and {255, 110, 110, 255}
+        or (player.online and {110, 231, 150, 255} or {200, 200, 210, 255})
+    local statusText = player.banned
+        and ("已封禁：" .. tostring(player.ban and player.ban.reason or "未填写原因"))
+        or (player.online and "● 在线" or "○ 离线")
+    local stats = player.stats or {}
+    local rows = {
+        { { label = "战力", value = LargeNumber.Format(player.power or 0) }, { label = "等级", value = tostring(player.level or "-") } },
+        { { label = "VIP", value = tostring(player.vipLevel or 0) }, { label = "进度", value = string.format("%s层 第%s格", tostring(player.floor or "-"), tostring(player.position or "-")) } },
+        { { label = "攻击", value = LargeNumber.Format(stats.atk or 0) }, { label = "防御", value = LargeNumber.Format(stats.def or 0) } },
+        { { label = "生命", value = LargeNumber.Format(stats.hp or 0) }, { label = "暴击", value = string.format("%.1f%%", (stats.crit or 0) * 100) } },
+        { { label = "攻速", value = string.format("%.1f", stats.atkSpeed or 0) }, { label = "金币", value = LargeNumber.Format(player.gold or 0) } },
+        { { label = "深渊碎片", value = LargeNumber.Format(player.fragments or 0) }, { label = "装备", value = string.format("%d件 / 已穿%d", player.inventoryCount or 0, player.equippedCount or 0) } },
+    }
+    local cells = {}
+    for _, row in ipairs(rows) do
+        cells[#cells + 1] = UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            gap = 10,
+            children = {
+                StatCell(UI, row[1].label, row[1].value),
+                StatCell(UI, row[2].label, row[2].value),
+            },
+        }
+    end
+    return UI.Panel {
+        width = "100%",
+        padding = 14,
+        gap = 8,
+        backgroundImage = SECTION_BACKGROUND,
+        backgroundFit = "sliced",
+        backgroundSlice = { 8, 8, 8, 8 },
+        children = {
+            UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 8,
+                children = {
+                    Label(UI, "UID " .. tostring(player.targetUid or "-"), 11, {255, 220, 120, 255}),
+                    Label(UI, tostring(player.nickname or ""), 11, {255, 255, 255, 255}),
+                    Label(UI, statusText, 10, statusColor),
+                },
+            },
+            UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 8,
+                children = {
+                    Label(UI, "总游玩时长 " .. PlaytimeText(player.totalPlaySeconds), 10, {200, 230, 255, 255}),
+                    Label(UI, "挂机 " .. (player.autoRun and "开" or "关"), 10, player.autoRun and {110, 231, 150, 255} or {200, 200, 210, 255}),
+                    Label(UI, "最近活跃 " .. ActiveText(player.lastActiveAt), 10, {200, 200, 210, 255}),
+                },
+            },
+            table.unpack(cells),
+        },
+    }
 end
 
 local function MailListSummary()
@@ -188,11 +306,54 @@ local function QueryByNameSummary()
     return table.concat(lines, "\n")
 end
 
+-- ============================================================================
+-- 页签栏
+-- ============================================================================
+
+local function TabBar(UI, onChanged)
+    local tabs = {
+        { id = "player", name = "玩家管理" },
+        { id = "mail", name = "邮件管理" },
+        { id = "audit", name = "系统审计" },
+    }
+    local children = {}
+    for _, tab in ipairs(tabs) do
+        local active = activeTab_ == tab.id
+        local tabId = tab.id
+        children[#children + 1] = UI.Panel {
+            flexGrow = 1,
+            flexBasis = 0,
+            height = 56,
+            alignItems = "center",
+            justifyContent = "center",
+            onClick = function()
+                if activeTab_ == tabId then return end
+                activeTab_ = tabId
+                if onChanged then onChanged() end
+            end,
+            children = {
+                Label(UI, tab.name, 13, active and {111, 231, 255, 255} or {154, 177, 226, 255}),
+            },
+        }
+    end
+    return UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        gap = 10,
+        children = children,
+    }
+end
+
+-- ============================================================================
+-- 面板构建
+-- ============================================================================
+
 function AdminPanel.Build(UI, options)
     options = options or {}
     local onChanged = options.onChanged
     local readOnly = options.readOnly == true
 
+    -- 玩家管理页
     local querySection = Section(UI, "玩家查询", {
         Field(UI, "目标玩家编号", "targetUid", "玩家编号"),
         ButtonRow(UI, {
@@ -209,25 +370,12 @@ function AdminPanel.Build(UI, options)
                     ServerClient.AdminQuery(form_.targetUid, function(response) SetStatus(response, onChanged) end)
                 end,
             },
-            UI.Button {
-                text = "刷新审计",
-                variant = "secondary",
-                width = 210,
-                disabled = readOnly,
-                onClick = function()
-                    ServerClient.AdminAudit(function(response)
-                        if response and response.ok and response.data then audit_ = response.data.audit or {} end
-                        SetStatus(response, onChanged)
-                    end)
-                end,
-            },
         }),
-        Label(UI, PlayerSummary(), 10, {213, 226, 255, 255}),
         Field(UI, "按昵称查询（在线玩家）", "queryName", "输入昵称"),
         ButtonRow(UI, {
             UI.Button {
-                text = "昵称查uid",
-                variant = "primary",
+                text = "按昵称查询",
+                variant = "secondary",
                 width = 210,
                 disabled = readOnly,
                 onClick = function()
@@ -383,6 +531,7 @@ function AdminPanel.Build(UI, options)
         }),
     })
 
+    -- 邮件管理页
     local mailSection = Section(UI, "GM 邮件", {
         Field(UI, "标题", "mailTitle", "邮件标题"),
         Field(UI, "正文", "mailBody", "邮件正文"),
@@ -412,6 +561,7 @@ function AdminPanel.Build(UI, options)
                     },
                 },
                 UI.Panel { flexGrow = 1, flexBasis = 0, children = { Field(UI, "金币附件", "mailGold", "0 = 无") } },
+                UI.Panel { flexGrow = 1, flexBasis = 0, children = { Field(UI, "有效期(天)", "broadcastExpireDays", "默认7天") } },
             },
         },
         Field(UI, "邮件ID（强制过期用）", "mailId", "查询后复制"),
@@ -439,6 +589,33 @@ function AdminPanel.Build(UI, options)
                         body = body,
                         mailType = form_.mailType,
                         batchId = "gm_test",
+                        attachments = attachments,
+                    }, function(response) SetStatus(response, onChanged) end)
+                end,
+            },
+            UI.Button {
+                text = "发送全服邮件",
+                variant = "warning",
+                width = 220,
+                disabled = readOnly,
+                onClick = function()
+                    local title = form_.mailTitle
+                    local body = form_.mailBody
+                    if title == "" or body == "" then
+                        SetStatus({ ok = false, reason = "标题和正文不能为空" }, onChanged)
+                        return
+                    end
+                    local gold = ToInteger(form_.mailGold) or 0
+                    local attachments = {}
+                    if gold > 0 then
+                        attachments[#attachments + 1] = { kind = "currency", currency = "gold", count = gold }
+                    end
+                    local expireDays = ToInteger(form_.broadcastExpireDays) or 7
+                    ServerClient.AdminSendBroadcastMail({
+                        title = title,
+                        body = body,
+                        mailType = form_.mailType,
+                        expireDays = expireDays,
                         attachments = attachments,
                     }, function(response) SetStatus(response, onChanged) end)
                 end,
@@ -495,6 +672,7 @@ function AdminPanel.Build(UI, options)
         Label(UI, MailListSummary(), 10, {213, 226, 255, 255}),
     })
 
+    -- 系统审计页
     local auditRows = {}
     for index = math.max(1, #audit_ - 9), #audit_ do
         local row = audit_[index]
@@ -506,6 +684,40 @@ function AdminPanel.Build(UI, options)
     end
     if #auditRows == 0 then auditRows[1] = Label(UI, "暂无审计记录", 10, {154, 177, 226, 255}) end
 
+    local contentChildren
+    if activeTab_ == "player" then
+        contentChildren = {
+            querySection,
+            PlayerDetailCard(UI, queriedPlayer_),
+            currencySection,
+            equipmentSection,
+            progressSection,
+            banSection,
+        }
+    elseif activeTab_ == "mail" then
+        contentChildren = { mailSection }
+    else
+        contentChildren = {
+            Section(UI, "最近审计", {
+                ButtonRow(UI, {
+                    UI.Button {
+                        text = "刷新审计",
+                        variant = "secondary",
+                        width = 210,
+                        disabled = readOnly,
+                        onClick = function()
+                            ServerClient.AdminAudit(function(response)
+                                if response and response.ok and response.data then audit_ = response.data.audit or {} end
+                                SetStatus(response, onChanged)
+                            end)
+                        end,
+                    },
+                }),
+                table.unpack(auditRows),
+            }),
+        }
+    end
+
     return UI.Panel {
         width = "100%",
         height = "100%",
@@ -514,10 +726,17 @@ function AdminPanel.Build(UI, options)
         children = {
             UI.Panel {
                 width = "100%",
-                height = 72,
                 flexShrink = 0,
-                justifyContent = "center",
-                children = { Label(UI, "管理后台", 18, {111, 231, 255, 255}) },
+                gap = 8,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        height = 56,
+                        justifyContent = "center",
+                        children = { Label(UI, "管理后台", 18, {111, 231, 255, 255}) },
+                    },
+                    TabBar(UI, onChanged),
+                },
             },
             UI.ScrollView {
                 width = "100%",
@@ -530,15 +749,7 @@ function AdminPanel.Build(UI, options)
                         width = "100%",
                         gap = 12,
                         paddingBottom = 24,
-                        children = {
-                            querySection,
-                            currencySection,
-                            equipmentSection,
-                            progressSection,
-                            banSection,
-                            mailSection,
-                            Section(UI, "最近审计", auditRows),
-                        },
+                        children = contentChildren,
                     },
                 },
             },

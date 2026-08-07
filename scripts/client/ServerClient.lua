@@ -602,6 +602,9 @@ end
 function ServerClient.AdminSendMail(payload, callback)
     return ServerClient.Send("Admin.SendMail", payload, callback)
 end
+function ServerClient.AdminSendBroadcastMail(payload, callback)
+    return ServerClient.Send("Admin.SendBroadcastMail", payload, callback)
+end
 function ServerClient.AdminMailList(targetUid, callback)
     return ServerClient.Send("Admin.MailList", { targetUid = tostring(targetUid) }, callback)
 end

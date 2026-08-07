@@ -109,8 +109,9 @@ end
 local function FilteredInventory()
     local list = {}
     for _, item in ipairs(game.inventory or {}) do
+        -- "all"（全部）页签不做分类过滤
         -- 快速筛选只作用于装备（消耗品/材料等道具始终完整展示）
-        if item.category == selectedCategory
+        if (selectedCategory == "all" or item.category == selectedCategory)
             and (not item.equipmentId or EquipmentQuickFilter.Matches("bag", item))
         then
             list[#list + 1] = item
@@ -272,8 +273,13 @@ local function CreateInventoryTabs()
     local viewportWidth = 790
     local arrowWidth = 64
     local arrowStep = tabWidth + tabGap
-    local tabChildren = {}
+    -- 页签首位固定插入「全部」分类（all 是展示用虚拟分类，不参与真实物品过滤）
+    local tabCategories = { { id = "all", name = "全部" } }
     for _, cat in ipairs(CATEGORIES) do
+        tabCategories[#tabCategories + 1] = cat
+    end
+    local tabChildren = {}
+    for _, cat in ipairs(tabCategories) do
         local active = selectedCategory == cat.id
         tabChildren[#tabChildren + 1] = UI.Panel {
             width = tabWidth,
@@ -301,8 +307,8 @@ local function CreateInventoryTabs()
             },
         }
     end
-    local tabContentWidth = #CATEGORIES * tabWidth
-        + math.max(0, #CATEGORIES - 1) * tabGap
+    local tabContentWidth = #tabCategories * tabWidth
+        + math.max(0, #tabCategories - 1) * tabGap
         + tabPadding * 2
     local maxScrollX = math.max(0, tabContentWidth - viewportWidth)
     local initialScrollX = math.max(0, math.min(GetInventoryTabScrollX(), maxScrollX))
@@ -583,7 +589,9 @@ local function CreateInventoryPage()
     local selectedItem = selectedInventoryId and GetItemById(selectedInventoryId) or nil
 
     if firstItem then
-        if not selectedItem or selectedItem.category ~= selectedCategory
+        local categoryMatches = selectedCategory == "all"
+            or (selectedItem and selectedItem.category == selectedCategory)
+        if not selectedItem or not categoryMatches
             or (selectedItem.equipmentId and not EquipmentQuickFilter.Matches("bag", selectedItem))
         then
             selectedInventoryId = firstItem.id

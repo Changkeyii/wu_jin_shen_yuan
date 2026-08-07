@@ -5,9 +5,13 @@
 local PlayerTransition = require("server.domain.PlayerTransition")
 local MailEngine = require("server.domain.MailEngine")
 local MailRules = require("shared.MailRules")
+local TableUtils = require("server.domain.TableUtils")
 
 local MailService = {}
 MailService.__index = MailService
+
+-- 广播队列最大保留条数（超出后丢弃最旧批次）
+local BROADCAST_QUEUE_LIMIT = 200
 
 local function Result(ok, data, code, reason)
     return { ok = ok == true, data = data or {}, code = code or (ok and 0 or -1), reason = tostring(reason or "") }
@@ -21,6 +25,8 @@ function MailService.New(options)
         log = options.log or print,
         clock = options.clock or os.time,
         expiryElapsed = 0,
+        broadcasts = {},
+        broadcastSeq = 0,
     }, MailService)
 end
 
@@ -228,6 +234,110 @@ function MailService:HasBizOrder(userId, bizOrderId)
 end
 
 -- ============================================================================
+-- 全服邮件（广播队列 + 在线投递 + 离线登录补发）
+-- ============================================================================
+
+--- 给单个玩家补发所有尚未送达的全服邮件（幂等：receivedBroadcasts 标记 + bizOrderId 双保险）。
+--- 在线投递与离线登录补发共用此函数；已送达的批次自动跳过。
+function MailService:DeliverBroadcasts(userId, onComplete)
+    if #self.broadcasts == 0 then
+        if onComplete then onComplete(Result(true, { delivered = 0 })) end
+        return
+    end
+    local queue = {}
+    for i = 1, #self.broadcasts do queue[i] = self.broadcasts[i] end
+    local index = 1
+    local delivered = 0
+    local function next()
+        if index > #queue then
+            if onComplete then onComplete(Result(true, { delivered = delivered })) end
+            return
+        end
+        local entry = queue[index]
+        index = index + 1
+        self.profileService:Apply(userId, "mail broadcast", function(state, now)
+            local working = PlayerTransition.Copy(state, now)
+            MailEngine.Ensure(working)
+            if type(working.receivedBroadcasts) ~= "table" then working.receivedBroadcasts = {} end
+            if working.receivedBroadcasts[entry.batchId] then
+                return PlayerTransition.NoCommit(state, now, "mail_broadcast_delivered")
+            end
+            local mail = MailEngine.Create(working, TableUtils.DeepCopy(entry.spec), now)
+            if not mail then
+                return PlayerTransition.Failure(state, now, "MAIL_CAPACITY_FULL", "邮箱已满，全服邮件将在之后自动重试")
+            end
+            working.receivedBroadcasts[entry.batchId] = true
+            return PlayerTransition.Finalize(state, working, now, "mail_broadcast", {}, false, false)
+        end, function(result)
+            if result.ok then delivered = delivered + 1 end
+            next()
+        end)
+    end
+    next()
+end
+
+--- 创建一封全服邮件批次并立即投递给当前在线玩家；离线玩家登录时自动补发。
+--- spec 与 SendMail 一致（title/body/mailType/sender/favorite/expireAt/attachments 等）。
+function MailService:SendBroadcast(spec, onComplete, resultSink)
+    spec = type(spec) == "table" and spec or {}
+    self.broadcastSeq = (self.broadcastSeq or 0) + 1
+    local batchId = string.format("broadcast-%d-%d", self.clock(), self.broadcastSeq)
+    local bizOrderId = "broadcast:" .. batchId
+    local entry = {
+        batchId = batchId,
+        bizOrderId = bizOrderId,
+        spec = TableUtils.DeepCopy(spec),
+        createdAt = self.clock(),
+    }
+    entry.spec.batchId = batchId
+    entry.spec.bizOrderId = bizOrderId
+    entry.spec.reason = entry.spec.reason or "全服邮件"
+    self.broadcasts[#self.broadcasts + 1] = entry
+
+    local online = self.profileService:OnlineUserIds()
+    if type(resultSink) == "table" then
+        resultSink.batchId = batchId
+        resultSink.totalOnline = #online
+        resultSink.delivered = 0
+    end
+    if #online == 0 then
+        if onComplete then onComplete(Result(true, { batchId = batchId, delivered = 0 })) end
+        return
+    end
+
+    -- 在线玩家逐个补发（DeliverBroadcasts 幂等，已收到的批次自动跳过）
+    local index = 1
+    local delivered = 0
+    local deliveredUsers = {}
+    local function next()
+        if index > #online then
+            if type(resultSink) == "table" then
+                resultSink.delivered = delivered
+                resultSink.deliveredUsers = deliveredUsers
+            end
+            if onComplete then
+                onComplete(Result(true, {
+                    batchId = batchId,
+                    delivered = delivered,
+                    deliveredUsers = deliveredUsers,
+                }))
+            end
+            return
+        end
+        local userId = online[index]
+        index = index + 1
+        self:DeliverBroadcasts(userId, function(result)
+            if result and result.ok and result.data and (result.data.delivered or 0) > 0 then
+                delivered = delivered + (result.data.delivered or 0)
+                deliveredUsers[#deliveredUsers + 1] = userId
+            end
+            next()
+        end)
+    end
+    next()
+end
+
+-- ============================================================================
 -- GM 操作
 -- ============================================================================
 
@@ -279,6 +389,14 @@ function MailService:Update(timeStep)
     self.expiryElapsed = self.expiryElapsed + (timeStep or 0)
     if self.expiryElapsed < 30 then return end
     self.expiryElapsed = 0
+    -- 广播队列只保留最近 BROADCAST_QUEUE_LIMIT 条
+    if #self.broadcasts > BROADCAST_QUEUE_LIMIT then
+        local keep = {}
+        for i = #self.broadcasts - BROADCAST_QUEUE_LIMIT + 1, #self.broadcasts do
+            keep[#keep + 1] = self.broadcasts[i]
+        end
+        self.broadcasts = keep
+    end
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         self.profileService:Apply(userId, "mail expiry", function(state, now)
             local working = PlayerTransition.Copy(state, now)

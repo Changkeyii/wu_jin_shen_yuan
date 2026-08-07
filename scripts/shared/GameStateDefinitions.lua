@@ -108,8 +108,8 @@ local FLOOR_ROUTE_ENCOUNTER_SCHEMA = {
         encounterId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
         room = { type = "integer", min = 1, max = 10 },
         distance = { type = "number", min = 0, max = 100000 },
-        kind = { type = "string", enum = { "normal", "elite", "boss", "chapterBoss" } },
-        eventType = { type = "string", enum = { "monster", "elite", "boss" } },
+        kind = { type = "string", enum = { "normal", "elite", "boss", "chapterBoss", "chest", "merchant", "randomEvent" } },
+        eventType = { type = "string", enum = { "monster", "elite", "boss", "chest", "merchant", "randomEvent" } },
         isBoss = { type = "boolean" },
     },
 }
@@ -607,6 +607,21 @@ local function validateAppliedGmCommandIds(value)
     return true
 end
 
+-- 全服邮件送达标记：{ batchId = true }。batchId 上限 128 字符，最多保留 512 条。
+local function validateReceivedBroadcasts(value)
+    if type(value) ~= "table" then return false, "Received broadcasts must be an object" end
+    local count = 0
+    for batchId, flag in pairs(value) do
+        if type(batchId) ~= "string" or #batchId < 1 or #batchId > 128 then
+            return false, "Broadcast batch id must be a string of length 1..128"
+        end
+        if flag ~= true then return false, "Broadcast receipt flag must be true" end
+        count = count + 1
+        if count > 512 then return false, "Received broadcast receipts exceed limit" end
+    end
+    return true
+end
+
 --- 卖家自己的挂单镜像。云端账本是挂单存在性的权威来源，
 --- 这份镜像用于挂单数上限校验与"我的挂单"展示，成交/退回的邮件被领取时同步移除。
 --- 挂单标识直接复用装备自身的 itemId（uuid），避免依赖云端分配的 list_id。
@@ -667,6 +682,7 @@ local Definitions = {
     ValidateAcknowledgements = validateAcknowledgements,
     ValidateEquipmentCollection = validateEquipmentCollection,
     ValidateAppliedGmCommandIds = validateAppliedGmCommandIds,
+    ValidateReceivedBroadcasts = validateReceivedBroadcasts,
 }
 
 return Definitions

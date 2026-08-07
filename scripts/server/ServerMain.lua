@@ -411,6 +411,7 @@ local function SendAdminResult(userId, result)
 end
 
 local FinalizeReady
+local FinalizeReadyAfterBroadcast
 
 local function ResolvePlayerNickname(entry)
     entry.metadata = entry.metadata or {}
@@ -429,7 +430,7 @@ local function ResolvePlayerNickname(entry)
             entry.nickname = nickname
             entry.metadata.nicknameResolved = true
             print("[Server] Tap nickname resolved uid=" .. tostring(entry.uid) .. " name=" .. nickname)
-            if entry.ready then FinalizeReady(entry) end
+            if entry.ready then FinalizeReadyAfterBroadcast(entry) end
         end,
         onError = function(errorCode)
             if not registry_:IsCurrent(entry) then return end
@@ -473,6 +474,28 @@ FinalizeReady = function(entry)
     end)
 end
 
+-- 玩家 ready 前先补发全服邮件（离线登录的补发点），补发完成再走 FinalizeReady，
+-- 保证首包快照里的 mailSummary（首页红点）已包含新到的全服邮件。
+FinalizeReadyAfterBroadcast = function(entry)
+    if not entry or not registry_:IsCurrent(entry) then return end
+    if not entry.metadata or entry.metadata.profileLoaded ~= true then
+        FinalizeReady(entry)
+        return
+    end
+    if not profileService_:GetSession(entry.uid) then
+        FinalizeReady(entry)
+        return
+    end
+    if not mailService_ then
+        FinalizeReady(entry)
+        return
+    end
+    mailService_:DeliverBroadcasts(entry.uid, function()
+        if not registry_:IsCurrent(entry) then return end
+        FinalizeReady(entry)
+    end)
+end
+
 local function MarkClientReady(entry, connection)
     if not entry or not connection then return false end
     entry.metadata = entry.metadata or {}
@@ -485,7 +508,7 @@ local function MarkClientReady(entry, connection)
     if not registry_:MarkReady(connection, true) then return false end
     FlushPendingStatuses(entry)
     print("[Server] ClientReady uid=" .. tostring(entry.uid))
-    FinalizeReady(entry)
+    FinalizeReadyAfterBroadcast(entry)
     return true
 end
 
@@ -521,7 +544,7 @@ local function HandleClientIdentity(eventType, eventData)
         existingSession.generation = entry.generation
         existingSession.ready = false
         if replaced and replaced.connection and replaced.connection ~= connection then replaced.connection:Disconnect(50) end
-        if entry.ready then FinalizeReady(entry) end
+        if entry.ready then FinalizeReadyAfterBroadcast(entry) end
         return
     end
 
@@ -545,7 +568,7 @@ local function HandleClientIdentity(eventType, eventData)
         end
         profileService_:Attach(userId, connection, entry.generation, result.data)
         entry.metadata.profileLoaded = true
-        if entry.ready then FinalizeReady(entry) end
+        if entry.ready then FinalizeReadyAfterBroadcast(entry) end
     end)
 end
 
