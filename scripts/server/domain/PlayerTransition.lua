@@ -17,6 +17,7 @@ local SCALAR_DELTA_FIELDS = {
     "ruleAcknowledgements", "pendingEquipDecision", "previousLoadout", "rewardPity",
     "currentMonster", "currentEvent", "lootStash",
     "quests",
+    "activities",
 }
 
 function PlayerTransition.Now(now)

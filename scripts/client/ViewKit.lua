@@ -300,6 +300,118 @@ local function SectionTitle(title, sub)
     }
 end
 
+-- 通用返回按钮：绝对定位，默认左上角，文字「‹ 返回」。
+-- @param props table { left, top, width, height, fontSize, text, onClick }
+local function BackButton(props)
+    props = props or {}
+    local width = props.width or 84
+    local height = props.height or 64
+    local left = props.left or 0
+    local top = props.top or 4
+    local fontSize = props.fontSize or 22
+    return UI.Panel {
+        position = "absolute",
+        left = left,
+        top = top,
+        width = width,
+        height = height,
+        clickable = true,
+        onClick = props.onClick,
+        children = {
+            CompactTxt(props.text or "‹ 返回", fontSize, C.text, {
+                width = width, height = height, textAlign = "center",
+                textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+            }),
+        },
+    }
+end
+
+-- 通用奖励道具小格子：slot 底框 + 道具图标 + 数量（正式格子视觉）。
+-- @param props table { icon, name, amount, rarity, size, frame }
+local function RewardCell(props)
+    props = props or {}
+    local size = props.size or 96
+    local frame = props.frame or ASSETS.ui.inventorySlotCommon
+    -- slot_common 是 180×180，按 size 等比缩放显示
+    local iconSize = math.floor(size * 0.58)
+    local iconLeft = math.floor((size - iconSize) * 0.5)
+    local amountTop = size - 30
+    return UI.Panel {
+        width = size,
+        height = size,
+        flexShrink = 0,
+        position = "relative",
+        backgroundImage = frame,
+        backgroundFit = "contain",
+        children = {
+            UI.Panel {
+                position = "absolute", left = iconLeft, top = iconLeft - 2,
+                width = iconSize, height = iconSize,
+                backgroundImage = props.icon, backgroundFit = "contain",
+                pointerEvents = "none",
+            },
+            CompactTxt(props.amount or "", 15, C.text, {
+                position = "absolute", left = 0, top = amountTop,
+                width = size, height = 24, textAlign = "center",
+                textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+            }),
+        },
+    }
+end
+
+-- 通用奖励长格子：顶部标题 + 状态，中间一行道具格子，整体可点击领取。
+-- @param props table
+--   title string 标题（如「第1天」）
+--   rewards table[] { icon, amount } 道具格子数据
+--   state string "claimable" | "claimed" | "unclaimed"
+--   onClick function 领取回调（仅 claimable 触发）
+--   width string|number 宽度（默认 "100%"）
+local function RewardStrip(props)
+    props = props or {}
+    local claimable = props.state == "claimable"
+    local claimed = props.state == "claimed"
+    local borderColor = claimable and { 255, 214, 110, 255 }
+        or (claimed and { 70, 150, 255, 220 } or { 60, 90, 140, 160 })
+    local bgColor = claimable and { 40, 52, 18, 235 }
+        or (claimed and { 16, 32, 62, 235 } or { 14, 24, 48, 235 })
+    local cells = {}
+    for _, rw in ipairs(props.rewards or {}) do
+        cells[#cells + 1] = RewardCell(rw)
+    end
+    return UI.Panel {
+        width = props.width or "100%",
+        flexShrink = 0,
+        borderRadius = 10,
+        borderWidth = 2,
+        borderColor = borderColor,
+        backgroundColor = bgColor,
+        padding = 12,
+        gap = 8,
+        clickable = claimable and props.onClick ~= nil,
+        onClick = claimable and props.onClick or nil,
+        children = {
+            UI.Panel {
+                width = "100%", flexShrink = 0,
+                flexDirection = "row", alignItems = "center", justifyContent = "space-between",
+                children = {
+                    CompactTxt(props.title or "", 22, claimable and C.gold or C.text, {
+                        textAlign = "left", textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+                    }),
+                    CompactTxt(claimable and "点击领取" or (claimed and "已领取" or "未领取"), 17,
+                        claimable and C.gold or (claimed and C.textSecondary or C.textDim), {
+                        textAlign = "right", textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                    }),
+                },
+            },
+            UI.Panel {
+                width = "100%", flexShrink = 0,
+                flexDirection = "row", justifyContent = "center", gap = 12,
+                children = cells,
+            },
+        },
+    }
+end
+
 ViewKit.CopyProps = CopyProps
 ViewKit.Clamp = Clamp
 ViewKit.ShortenText = ShortenText
@@ -317,5 +429,8 @@ ViewKit.SetImageProgress = SetImageProgress
 ViewKit.ImageButton = ImageButton
 ViewKit.PixelPanel = PixelPanel
 ViewKit.SectionTitle = SectionTitle
+ViewKit.BackButton = BackButton
+ViewKit.RewardCell = RewardCell
+ViewKit.RewardStrip = RewardStrip
 
 return ViewKit

@@ -3,6 +3,7 @@ local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DialogCoordinator = require("client.DialogCoordinator")
+local GameStatePolicy = require("shared.GameStatePolicy")
 local OfflineClaimView = require("client.OfflineClaimView")
 
 local OfflineClaimController = {}
@@ -181,7 +182,7 @@ end
 function OfflineClaimController.ShowLoginGuide(options)
     options = options or {}
     local game = GameStateAdapter.GetViewState()
-    if (game.pendingOfflineSeconds or 0) <= 0 then return false end
+    if (game.pendingOfflineSeconds or 0) < GameStatePolicy.OFFLINE_MIN_SECONDS then return false end
     loginGuideShown_ = true
     onLoginGuideClosed_ = options.onClosed
     local shown = CommonPromptDialog.Show {

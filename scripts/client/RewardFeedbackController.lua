@@ -260,6 +260,14 @@ local function ShowDeltaFeedback(payload)
             title = "任务奖励"
             message = "任务奖励已发放"
             hasReward = true
+        elseif kind == "activity_signed" or kind == "activity_claimed" then
+            local reward = value.reward or {}
+            if reward.gold then gold = BigNumber.Add(gold, reward.gold) end
+            if reward.fragments then fragments = BigNumber.Add(fragments, reward.fragments) end
+            if reward.exp then exp = BigNumber.Add(exp, reward.exp) end
+            title = "活动奖励"
+            message = "活动奖励已发放"
+            hasReward = true
         elseif kind == "battle_lost" then
             UI.Toast.Show("挑战失败，已返回本层第1场重新整备", { duration = 2.8, variant = "error", position = "top" })
         elseif kind == "inventory_full" then

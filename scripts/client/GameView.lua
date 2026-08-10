@@ -4,6 +4,7 @@ local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
 local AdminPanel = require("client.AdminPanel")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local GameStatePolicy = require("shared.GameStatePolicy")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local ItemTips = require("client.ItemTips")
@@ -19,6 +20,8 @@ local EquipmentDispositionDialog = require("client.EquipmentDispositionDialog")
 local MarketView = require("client.MarketView")
 local QuestView = require("client.QuestView")
 local QuestController = require("client.QuestController")
+local ActivityView = require("client.ActivityView")
+local ActivityController = require("client.ActivityController")
 local RewardDialogView = require("client.RewardDialogView")
 local RewardFeedbackController = require("client.RewardFeedbackController")
 local OfflineClaimController = require("client.OfflineClaimController")
@@ -483,6 +486,7 @@ local function CreatePageContent()
     if game.page == "play" then return PlayPresentation.BuildPage() end
     if game.page == "market" then return CreateMarketPage() end
     if game.page == "quest" then return QuestView.BuildPage() end
+    if game.page == "activity" then return ActivityView.BuildPage() end
     if game.page == "frameEditor" then return BuildFrameEditorPage() end
     return HomeView.Build {
         game = game,
@@ -677,6 +681,8 @@ local function BindServerEvents()
             or game.page == "equip"
             or game.page == "bag"
             or game.page == "codex"
+            or game.page == "quest"
+            or game.page == "activity"
         then
             -- These pages render authoritative values as static nodes, so
             -- rebuild after every accepted server delta.
@@ -756,6 +762,9 @@ function GameView.Start()
     QuestController.Configure {
         requestPageRefresh = RequestPageRefresh,
     }
+    ActivityController.Configure {
+        requestPageRefresh = RequestPageRefresh,
+    }
     FaceSlapController.Configure {
         getGame = GameStateAdapter.GetViewState,
         getCacheScope = function()
@@ -777,7 +786,7 @@ function GameView.Start()
         end,
         isEligible = function(key, currentGame)
             if key == "offline_claim_available" then
-                return (currentGame.pendingOfflineSeconds or 0) > 0
+                return (currentGame.pendingOfflineSeconds or 0) >= GameStatePolicy.OFFLINE_MIN_SECONDS
             end
             if key == "loot_stash_available" then
                 return #(currentGame.lootStash or {}) > 0
@@ -852,6 +861,7 @@ end
 function GameView.Stop()
     UnsubscribeFromEvent("Update")
     PlayPresentation.Reset()
+    ActivityView.Reset()
     CommonPromptDialog.Reset()
     DialogCoordinator.Clear(false)
     ItemTips.Stop()
@@ -884,6 +894,7 @@ function GameView.HandleUpdate(eventType, eventData)
     game = state
     if game.page == "play" then PlayPresentation.Update(dt) end
     if game.page == "frameEditor" then FrameEditorView.Update(dt) end
+    if game.page == "activity" then ActivityView.Update(dt) end
     local physicalWidth = graphics:GetWidth()
     local physicalHeight = graphics:GetHeight()
     if physicalWidth ~= viewportWidth_ or physicalHeight ~= viewportHeight_ then

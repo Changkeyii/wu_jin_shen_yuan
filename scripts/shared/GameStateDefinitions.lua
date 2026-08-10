@@ -658,6 +658,13 @@ local QUEST_COUNTER_SCHEMA = {
     max = LargeNumber.MAX_SAFE_INTEGER,
 }
 
+-- 活动系统存档：活动 id 为动态键，record 结构由服务端生成/规范化保证。
+local ACTIVITIES_SCHEMA = {
+    type = "object",
+    allowUnknown = true,
+    fields = {},
+}
+
 -- 任务系统存档：新手/每日/成就三块 + 累计计数器。
 local QUESTS_SCHEMA = {
     type = "object",
@@ -741,6 +748,7 @@ local Definitions = {
     PENDING_EVENT_SCHEMA = PENDING_EVENT_SCHEMA,
     PENDING_EQUIP_SCHEMA = PENDING_EQUIP_SCHEMA,
     QUESTS_SCHEMA = QUESTS_SCHEMA,
+    ACTIVITIES_SCHEMA = ACTIVITIES_SCHEMA,
     LOADOUT_BACKUP_SCHEMA = LOADOUT_BACKUP_SCHEMA,
     SET_PROGRESS_SCHEMA = SET_PROGRESS_SCHEMA,
     STATS_SCHEMA = STATS_SCHEMA,

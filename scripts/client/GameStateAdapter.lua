@@ -3,6 +3,7 @@ local ItemPresentation = require("shared.ItemPresentation")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local QuestDefinitions = require("shared.QuestDefinitions")
+local ActivityDefinitions = require("shared.ActivityDefinitions")
 local ServerClock = require("client.ServerClock")
 
 local GameStateAdapter = {}
@@ -160,6 +161,13 @@ local function EventText(value)
     elseif kind == "quest_claimed" then
         local questDef = QuestDefinitions.Get(value and value.questId)
         return "完成任务「" .. tostring(questDef and questDef.title or value and value.questId or "任务") .. "」，奖励已发放。"
+    elseif kind == "activity_signed" then
+        local activityDef = ActivityDefinitions.Get(value and value.activityId)
+        return "活动签到：「" .. tostring(activityDef and activityDef.title or "活动") .. "」第"
+            .. tostring(value.day or 1) .. "天奖励已发放。"
+    elseif kind == "activity_claimed" then
+        local activityDef = ActivityDefinitions.Get(value and value.activityId)
+        return "活动奖励已发放：「" .. tostring(activityDef and activityDef.title or "活动") .. "」。"
     end
     return nil
 end
@@ -462,6 +470,8 @@ local function RebuildView()
     nextView.equipped = equippedObjects
     -- 任务系统展示视图（进度/状态/奖励），服务端权威判定一致。
     nextView.questsView = QuestDefinitions.BuildView(nextView, ServerClock.DayKey(ServerClock.Now()))
+    -- 活动系统展示视图（签到/木桩/次数/红点）。
+    nextView.activitiesView = ActivityDefinitions.BuildView(nextView, ServerClock.Now())
     view_ = nextView
     return view_
 end

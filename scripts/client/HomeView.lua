@@ -7,6 +7,7 @@ local DailyVipView = require("client.DailyVipView")
 local LeaderboardController = require("client.LeaderboardController")
 local MailController = require("client.MailController")
 local QuestController = require("client.QuestController")
+local ActivityController = require("client.ActivityController")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
@@ -249,8 +250,8 @@ function HomeView.Build(context)
                 + QuestController.CountClaimable(game, "daily")
                 + QuestController.CountClaimable(game, "achievement")),
             HomeActionButton("活动", 596, 378, function()
-                ShowFeaturePreview("活动")
-            end),
+                ActivityController.Open()
+            end, ActivityController.HasRedDot(game) and 1 or nil),
             HomeActionButton("排行榜", 596, 440, function()
                 LeaderboardController.Open()
             end),

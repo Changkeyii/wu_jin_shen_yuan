@@ -21,15 +21,31 @@ function QuestController.Open()
     require("client.NavigationController").SwitchPage("quest")
 end
 
+-- 请求在途锁：同一任务/一键领取在回包前忽略连点（框架保证无论成败都会回包）。
+local pending_ = {}
+
 function QuestController.Claim(questId, onDone)
+    local key = "Quest.Claim:" .. tostring(questId)
+    if pending_[key] then
+        if onDone then onDone({ ok = false, reason = "处理中，请稍候" }) end
+        return
+    end
+    pending_[key] = true
     ServerClient.Send("Quest.Claim", { questId = questId }, function(response)
+        pending_[key] = nil
         if onDone then onDone(response) end
         QuestController.Refresh()
     end)
 end
 
 function QuestController.ClaimAll(onDone)
+    if pending_["all"] then
+        if onDone then onDone({ ok = false, reason = "处理中，请稍候" }) end
+        return
+    end
+    pending_["all"] = true
     ServerClient.Send("Quest.ClaimAll", {}, function(response)
+        pending_["all"] = nil
         if onDone then onDone(response) end
         QuestController.Refresh()
     end)

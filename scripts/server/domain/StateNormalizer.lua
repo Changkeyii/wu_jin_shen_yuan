@@ -7,6 +7,7 @@ local BigNumber = require("shared.BigNumber")
 local LargeNumber = require("shared.LargeNumber")
 local RarityCatalog = require("shared.RarityCatalog")
 local StoryCatalog = require("shared.StoryCatalog")
+local ActivityDefinitions = require("shared.ActivityDefinitions")
 
 local StateNormalizer = {}
 
@@ -464,6 +465,39 @@ local function sanitizeQuestClaimed(value)
     return result
 end
 
+-- 活动系统存档规范化：按已知活动补齐结构，数字钳制为非负。
+local function sanitizeActivities(value)
+    local result = {}
+    value = type(value) == "table" and value or {}
+    for id in pairs(ActivityDefinitions.ALL) do
+        local raw = type(value[id]) == "table" and value[id] or {}
+        local signInDays = {}
+        for day, flag in pairs(type(raw.signInDays) == "table" and raw.signInDays or {}) do
+            if flag == true then signInDays[tostring(day)] = true end
+        end
+        local session = nil
+        if type(raw.session) == "table" then
+            session = {
+                startedAt = math.max(0, TableUtils.ToInteger(raw.session.startedAt, 0)),
+                lastHitAt = math.max(0, TableUtils.ToInteger(raw.session.lastHitAt, 0)),
+                damage = math.max(0, math.min(TableUtils.ToInteger(raw.session.damage, 0), Catalog.MAX_VALUE)),
+                finished = raw.session.finished == true,
+            }
+        end
+        result[id] = {
+            signInDays = signInDays,
+            totalDays = math.max(0, math.min(TableUtils.ToInteger(raw.totalDays, 0), Catalog.MAX_VALUE)),
+            lastClaimAt = math.max(0, TableUtils.ToInteger(raw.lastClaimAt, 0)),
+            registeredAt = math.max(0, TableUtils.ToInteger(raw.registeredAt, 0)),
+            strikeDay = math.max(0, TableUtils.ToInteger(raw.strikeDay, 0)),
+            strikeCount = math.max(0, math.min(TableUtils.ToInteger(raw.strikeCount, 0), 100)),
+            adCount = math.max(0, math.min(TableUtils.ToInteger(raw.adCount, 0), 100)),
+            session = session,
+        }
+    end
+    return result
+end
+
 -- 任务系统存档规范化：旧存档缺失时补齐完整结构，数字钳制为非负。
 local function sanitizeQuests(value)
     value = type(value) == "table" and value or {}
@@ -610,6 +644,7 @@ function StateNormalizer.Normalize(rawState, now)
         mailCache = sanitizeMails(rawState.mailCache),
         mailSeq = clampInteger(rawState.mailSeq, 1, 100000000000, 1),
         quests = sanitizeQuests(rawState.quests),
+        activities = sanitizeActivities(rawState.activities),
     }
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}

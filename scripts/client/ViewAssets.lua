@@ -148,12 +148,18 @@ local ASSETS = {
         pickupSpark = "image/ui/generated/pickup_spark_82x82.png",
         loadingDot = "image/ui/generated/loading_dot_24x24.png",
         screenOverlay = "image/ui/generated/screen_overlay_1080x1920.png",
+        -- 活动系统素材（BrawlForge 风格）
+        strikeBg = "image/strike_bg_v2_20260807072726.png",
     },
     enemies = {
         slime = "image/punk_mech_enemy_grunt_alt_20260718113945.png",
         goblin = "image/punk_mech_enemy_grunt_alt_20260718113945.png",
         skeleton = "image/punk_mech_enemy_elite_alt_20260718113641.png",
         boss = "image/punk_mech_enemy_boss_alt_20260718113640.png",
+        -- 每日补充玩法木桩（BrawlForge 风格）
+        stumpGold = "image/stump_gold_v2_20260807072729.png",
+        stumpExp = "image/stump_exp_v2_20260807072729.png",
+        stumpFragments = "image/stump_fragments_v2_20260807072731.png",
     },
     items = {
         sword = "image/pixel_item_sword_20260713175812.png",

@@ -66,6 +66,7 @@ GameStateContracts.PERSISTED_FIELDS = {
     "receivedBroadcasts",
     "totalPlaySeconds",
     "quests",
+    "activities",
 }
 
 GameStateContracts.SNAPSHOT_FIELDS = {
@@ -125,6 +126,7 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "estimatedEasyFloor",
     "mailSummary",
     "quests",
+    "activities",
 }
 
 GameStateContracts.DELTA_FIELD_SET = {}

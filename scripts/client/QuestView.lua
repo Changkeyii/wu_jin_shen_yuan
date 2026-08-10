@@ -16,6 +16,10 @@ local QuestView = {}
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
 
+-- 与活动界面一致的机械蓝面背景板
+local SURFACE = { 33, 69, 138, 235 }
+local SURFACE_CAN = { 20, 62, 36, 235 }
+
 local TAB_NAMES = { newbie = "新手", daily = "每日", achievement = "成就" }
 
 local function NextDayCountdown()
@@ -102,7 +106,10 @@ local function QuestCard(quest)
         height = 168,
         flexShrink = 0,
         position = "relative",
-        backgroundColor = claimable and { 40, 84, 40, 230 } or { 12, 28, 56, 220 },
+        backgroundImage = ASSETS.ui.panelLarge,
+        backgroundFit = "sliced",
+        backgroundSlice = { 12, 12, 12, 12 },
+        backgroundColor = claimable and SURFACE_CAN or SURFACE,
         borderWidth = claimable and 3 or 2,
         borderColor = claimable and C.gold or C.border,
         borderRadius = 14,
@@ -243,16 +250,8 @@ function QuestView.BuildPage()
                         position = "absolute", left = 0, top = 8, width = 1000, height = 56,
                         textAlign = "center", textStroke = { width = 3, color = "#000000" },
                     }),
-                    UI.Panel {
-                        position = "absolute", left = 0, top = 4, width = 84, height = 64,
-                        clickable = true,
+                    Kit.BackButton {
                         onClick = function() require("client.NavigationController").SwitchPage("home") end,
-                        children = {
-                            Kit.Txt("‹ 返回", 22, C.text, {
-                                width = 84, height = 64, textAlign = "center",
-                                textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
-                            }),
-                        },
                     },
                     UI.Panel {
                         position = "absolute", right = 0, top = 0, width = 280, height = 72,

@@ -35,6 +35,7 @@ local STORY_GATE_SCHEMA = Definitions.STORY_GATE_SCHEMA
 local PENDING_EVENT_SCHEMA = Definitions.PENDING_EVENT_SCHEMA
 local PENDING_EQUIP_SCHEMA = Definitions.PENDING_EQUIP_SCHEMA
 local QUESTS_SCHEMA = Definitions.QUESTS_SCHEMA
+local ACTIVITIES_SCHEMA = Definitions.ACTIVITIES_SCHEMA
 local LOADOUT_BACKUP_SCHEMA = Definitions.LOADOUT_BACKUP_SCHEMA
 local SET_PROGRESS_SCHEMA = Definitions.SET_PROGRESS_SCHEMA
 local STATS_SCHEMA = Definitions.STATS_SCHEMA
@@ -136,6 +137,7 @@ PERSISTED_SCHEMA = {
         "marketListings",
         "appliedGmCommandIds",
         "quests",
+        "activities",
     },
     fields = {
         schemaVersion = { type = "integer", enum = { GameStateSchema.VERSION } },
@@ -225,6 +227,7 @@ PERSISTED_SCHEMA = {
         -- 累计总实际游玩时长（秒，浮点累计，云端持久化；在线期间持续累加）
         totalPlaySeconds = { type = "number", min = 0 },
         quests = QUESTS_SCHEMA,
+        activities = ACTIVITIES_SCHEMA,
     },
 }
 
@@ -297,6 +300,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
         },
     },
     quests = QUESTS_SCHEMA,
+    activities = ACTIVITIES_SCHEMA,
 }
 
 local SNAPSHOT_ENVELOPE_SCHEMAS = {
