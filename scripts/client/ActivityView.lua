@@ -10,10 +10,12 @@ local GameStateAdapter = require("client.GameStateAdapter")
 local ServerClock = require("client.ServerClock")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
 local LargeNumber = require("shared.LargeNumber")
+local CombatSequence = require("shared.CombatSequence")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ActivityController = require("client.ActivityController")
 local CommonPromptDialog = require("client.CommonPromptDialog")
+local ServerClient = require("client.ServerClient")
 
 local ActivityView = {}
 
@@ -39,6 +41,18 @@ local strikeRefs_ = {}
 local STRIKE_INTERVAL = ActivityDefinitions.STRIKE.INTERVAL
 local STRIKE_ATTACK_FRAMES = ASSETS.player.attackFrameSets and ASSETS.player.attackFrameSets[1]
     or (ASSETS.player.attack and { ASSETS.player.attack } or { ASSETS.player.icon })
+-- 当前攻击的随机帧组（每次攻击随机选一组，与登塔一致）
+---@type table
+local currentStrikeAttackFrames_ = nil
+-- 当前攻击动画参数（CombatSequence 生成，与登塔速度一致）
+local strikeWindup_ = 0
+local strikeRecovery_ = 0
+local strikeHitFrame_ = 1
+local strikeEndFrame_ = 1
+-- 三个攻击动画按顺序轮流播放的当前索引（A → B → C → A …）
+local strikeSequenceIndex_ = 0
+-- 当前攻击是否已触发命中（每次攻击仅触发一次伤害+飘字）
+local strikeHitTriggered_ = false
 
 -- ===== 页签状态 =====
 -- tab 固定顺序：新手签到 → 轮回签到 → 每日补给（三个补给放同一子页面）
@@ -293,6 +307,12 @@ local function StrikeCard(item)
                 strikeTimer_ = 0
                 strikeAttackTime_ = 0
                 strikeLastDamage_ = 0
+                currentStrikeAttackFrames_ = nil
+                strikeWindup_ = 0
+                strikeRecovery_ = 0
+                strikeHitFrame_ = 1
+                strikeEndFrame_ = 1
+                strikeSequenceIndex_ = 0
                 damageLabels_ = {}
                 strikeRefs_ = {}
             else
@@ -338,20 +358,21 @@ local function StrikeCard(item)
                         Kit.CompactTxt("今日 " .. tostring(item.todayCount or 0) .. " / " .. tostring(item.limit or 0) .. " 次", 18, (remaining or 0) > 0 and C.success or C.textDim, { width = "100%", height = 30, textAlign = "left", textStroke = { width = 1, color = "#000000" } }),
                     } },
                     UI.Panel {
-                        width = 150, height = 150, flexShrink = 0,
+                        width = 160, height = 160, flexShrink = 0,
                         flexDirection = "column", justifyContent = "center", alignItems = "center", gap = 10,
                         children = {
                             UI.Badge {
                                 text = (remaining or 0) > 0 and ("剩余 " .. tostring(remaining) .. " 次") or "已用完",
                                 variant = (remaining or 0) > 0 and "success" or "secondary",
                             },
-                            Kit.ImageButton("进入", 150, 60, ASSETS.ui.inventoryActionGold, function()
-                                if (remaining or 0) > 0 then
-                                    StartStrikeAction()
-                                else
-                                    Toast("今日次数已用完，明天再来", "warning")
-                                end
-                            end, false),
+                            -- 互斥操作：有剩余次数 → 进入；无次数且可看广告 → 看广告+1；否则 → 已用完
+                            (remaining or 0) > 0
+                                and Kit.ImageButton("进入", 150, 60, ASSETS.ui.inventoryActionGold, StartStrikeAction, false)
+                                or (adCan and Kit.ImageButton("看广告 +1次", 150, 60, ASSETS.ui.buttonBlueWide, WatchAdAction, false))
+                                or Kit.CompactTxt("今日次数已用完", 16, C.textDim, {
+                                    width = 160, height = 40, textAlign = "center",
+                                    textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                                }),
                         },
                     },
                 },
@@ -360,20 +381,6 @@ local function StrikeCard(item)
                 width = "100%", flexShrink = 0,
                 flexDirection = "row", flexWrap = "wrap", gap = 10,
                 children = tierBadges,
-            },
-            UI.Panel {
-                width = "100%", flexShrink = 0,
-                flexDirection = "row", justifyContent = "flex-end", gap = 14,
-                children = {
-                    adCan and Kit.ImageButton("看广告 +1次", 200, 60, ASSETS.ui.buttonBlueWide, WatchAdAction, false) or nil,
-                    Kit.ImageButton("开始打桩", 220, 64, ASSETS.ui.playAutoRunButton, function()
-                        if (remaining or 0) > 0 then
-                            StartStrikeAction()
-                        else
-                            Toast("今日次数已用完，明天再来", "warning")
-                        end
-                    end, false),
-                },
             },
         },
     }
@@ -385,7 +392,7 @@ local function SpawnDamageText(amount)
         if not label.active then
             label.active = true
             label.age = 0
-            label.node:SetText("-" .. tostring(amount))
+            label.node:SetText(tostring(amount))
             label.node:SetStyle({ visible = true, left = label.baseX, top = label.baseY })
             return
         end
@@ -414,8 +421,9 @@ end
 -- ===== 打桩场景（固定站位，玩家自动攻击木桩） =====
 local function BuildStrikeScene(item)
     local width, height = 1080, 1560
-    local playerX, playerY = 150, 900
-    local stumpX, stumpY = 720, 860
+    -- 角色与木桩整体居中：木桩在画面中央，角色在其左侧面向木桩
+    local playerX, playerY = 170, 900
+    local stumpX, stumpY = 390, 880
     local stumpSize = 300
     local stumpImage = StumpImage(item.rewardKind)
 
@@ -430,14 +438,19 @@ local function BuildStrikeScene(item)
     }
     sceneChildren[#sceneChildren + 1] = stump
 
+    -- 角色帧等比放大（2:1 匹配攻击帧，与木桩尺度相当）；初始用攻击起手帧，避免立绘闪现
+    local playerFirstFrame = (ASSETS.player.attackFrameSets
+        and ASSETS.player.attackFrameSets[1]
+        and ASSETS.player.attackFrameSets[1][1])
+        or ASSETS.player.icon
     local player = UI.Panel {
-        position = "absolute", left = playerX, top = playerY, width = 300, height = 330,
-        backgroundImage = ASSETS.player.icon, backgroundFit = "contain",
+        position = "absolute", left = playerX, top = playerY, width = 460, height = 230,
+        backgroundImage = playerFirstFrame, backgroundFit = "contain",
     }
     sceneChildren[#sceneChildren + 1] = player
 
     local slash = UI.Panel {
-        position = "absolute", left = playerX + 160, top = playerY + 60, width = 280, height = 120,
+        position = "absolute", left = playerX + 300, top = playerY + 70, width = 300, height = 130,
         visible = false, pointerEvents = "none",
         backgroundGradient = { type = "linear", direction = "to-right", from = { 255, 255, 255, 0 }, to = { 255, 220, 90, 0 } },
     }
@@ -486,7 +499,7 @@ local function BuildStrikeScene(item)
         }
     end
 
-    strikeRefs_ = { player = player, stump = stump, slash = slash, countdown = countdown, damageLabel = damageLabel, damageFill = damageFill }
+    strikeRefs_ = { player = player, stump = stump, slash = slash, countdown = countdown, damageLabel = damageLabel, damageFill = damageFill, playerX = playerX, stumpX = stumpX }
     strikeLastDamage_ = item.sessionDamage or 0
 
     return UI.Panel {
@@ -497,7 +510,29 @@ end
 
 local function TriggerAttack()
     if not strikeRefs_.player then return end
+    local count = CombatSequence.Count()
+    if count <= 0 then
+        currentStrikeAttackFrames_ = STRIKE_ATTACK_FRAMES
+        strikeWindup_ = 0.12
+        strikeRecovery_ = 0.18
+        strikeHitFrame_ = 1
+        strikeEndFrame_ = #STRIKE_ATTACK_FRAMES
+        strikeAttackTime_ = 0.01
+        return
+    end
+    -- 三个攻击动画按顺序轮流完整播放：A → B → C → A …（不随机、不闪切）
+    local index = (strikeSequenceIndex_ % count) + 1
+    strikeSequenceIndex_ = index
+    local sequence = CombatSequence.SEQUENCES[index]
+    local hitFrame = sequence.hitFrames[1]
+    local sets = ASSETS.player.attackFrameSets
+    currentStrikeAttackFrames_ = sets and sets[index] or STRIKE_ATTACK_FRAMES
+    strikeWindup_ = math.max(0.001, (hitFrame - 1) / sequence.fps)
+    strikeRecovery_ = math.max(0.001, (sequence.endFrame - hitFrame + 1) / sequence.fps)
+    strikeHitFrame_ = hitFrame
+    strikeEndFrame_ = sequence.endFrame
     strikeAttackTime_ = 0.01
+    strikeHitTriggered_ = false
     if strikeRefs_.slash then strikeRefs_.slash:SetStyle({ visible = true, opacity = 1 }) end
 end
 
@@ -506,30 +541,53 @@ local function UpdateAttack(dt)
     if strikeAttackTime_ > 0 then
         strikeAttackTime_ = strikeAttackTime_ + dt
         local t = strikeAttackTime_
-        local frameIndex = math.min(#STRIKE_ATTACK_FRAMES, 1 + math.floor(t / 0.3 * 5))
+        local frames = currentStrikeAttackFrames_ or STRIKE_ATTACK_FRAMES
+        local total = #frames
+        local windup = math.max(0.001, strikeWindup_ or 0.12)
+        local recovery = math.max(0.001, strikeRecovery_ or 0.18)
+        local hitFrame = math.max(1, math.min(total, strikeHitFrame_ or 16))
+        local endFrame = math.max(hitFrame, math.min(total, strikeEndFrame_ or total))
+        -- 登塔式帧插值：前摇 → 命中帧 → 收招帧
+        local frame
+        if t < windup then
+            frame = 1 + math.floor(math.max(0, math.min(1, t / windup)) * (hitFrame - 1))
+        else
+            frame = hitFrame + math.floor(math.max(0, math.min(1, (t - windup) / recovery)) * (endFrame - hitFrame))
+        end
+        frame = math.max(1, math.min(total, frame))
         strikeRefs_.player:SetStyle({
-            left = 150 + math.sin(math.min(1, t / 0.12) * math.pi) * 26,
-            backgroundImage = STRIKE_ATTACK_FRAMES[frameIndex],
-            scale = 1.0 + math.max(0, 1 - t / 0.3) * 0.06,
+            backgroundImage = frames[frame],
+            scale = 1.0 + math.max(0, 1 - t / (windup + recovery)) * 0.04,
         })
         strikeRefs_.stump:SetStyle({ scale = 1.0 + math.sin(t * 40) * 0.05 })
         if strikeRefs_.slash then
-            local progress = math.max(0, math.min(1, t / 0.22))
+            local progress = math.max(0, math.min(1, t / windup))
+            local playerX = strikeRefs_.playerX or 150
             strikeRefs_.slash:SetStyle({
                 visible = progress < 1,
-                left = 310 + progress * 380,
+                left = playerX + 300 + progress * 220,
                 opacity = (1 - progress) * 0.9,
-                scale = 0.6 + progress * 0.9,
+                scale = 0.7 + progress * 0.8,
             })
         end
-        if t >= 0.3 then
-            strikeAttackTime_ = 0
-            strikeRefs_.player:SetStyle({ left = 150, backgroundImage = ASSETS.player.icon, scale = 1 })
+        -- 命中帧：触发一次伤害（服务端按玩家属性计算，飘字随权威结算显示）
+        if not strikeHitTriggered_ and t >= windup then
+            strikeHitTriggered_ = true
+            if strikeId_ then ActivityController.Strike(strikeId_) end
+        end
+        if t >= windup + recovery then
+            -- 动画播完：保持收招帧短暂停留，避免切换闪帧
+            strikeAttackTime_ = -0.15
+            currentStrikeAttackFrames_ = nil
             if strikeRefs_.slash then strikeRefs_.slash:SetStyle({ visible = false }) end
         end
+    elseif strikeAttackTime_ < 0 then
+        -- 收招停留：保持当前帧倒计时，播完切下一个
+        strikeAttackTime_ = strikeAttackTime_ + dt
+        if strikeAttackTime_ >= 0 then strikeAttackTime_ = 0 end
     else
-        strikeRefs_.player:SetStyle({ left = 150, backgroundImage = ASSETS.player.icon, scale = 1 })
-        if strikeRefs_.slash then strikeRefs_.slash:SetStyle({ visible = false }) end
+        -- 动画空闲：开始下一次攻击动画（按顺序轮流完整播放）
+        TriggerAttack()
     end
 end
 
@@ -544,17 +602,12 @@ function ActivityView.Update(dt)
     end
     if not item then strikeId_ = nil return end
 
-    strikeTimer_ = strikeTimer_ - (dt or 0)
-    if strikeTimer_ <= 0 then
-        strikeTimer_ = STRIKE_INTERVAL
-        TriggerAttack()
-        ActivityController.Strike(strikeId_)
-    end
+    -- 攻击动画按放置挂机节奏推进（命中帧内触发一次伤害+飘字）
     UpdateAttack(dt)
 
+    -- 累计伤害同步（伤害条/文字，随服务端权威结算；飘字由活动事件驱动显示实际伤害）
     local damage = item.sessionDamage or 0
     if damage > strikeLastDamage_ then
-        SpawnDamageText(damage - strikeLastDamage_)
         strikeLastDamage_ = damage
         if strikeRefs_.damageLabel then strikeRefs_.damageLabel:SetText("累计伤害 " .. tostring(damage)) end
         if strikeRefs_.damageFill then
@@ -574,9 +627,13 @@ function ActivityView.Update(dt)
         strikeRemaining_ = 0
         strikeTimer_ = 0
         strikeAttackTime_ = 0
+        currentStrikeAttackFrames_ = nil
         damageLabels_ = {}
         strikeRefs_ = {}
-        ActivityController.FinishStrike(id)
+        ActivityController.FinishStrike(id, function()
+            -- 打桩结束后强制同步活动状态（次数/会话），确保按钮态正确
+            require("client.ServerClient").RequestSnapshot()
+        end)
     end
 end
 
@@ -634,9 +691,12 @@ function ActivityView.BuildPage()
                                     strikeRemaining_ = 0
                                     strikeTimer_ = 0
                                     strikeAttackTime_ = 0
+                                    currentStrikeAttackFrames_ = nil
                                     damageLabels_ = {}
                                     strikeRefs_ = {}
-                                    ActivityController.FinishStrike(active.id)
+                                    ActivityController.FinishStrike(active.id, function()
+                                        require("client.ServerClient").RequestSnapshot()
+                                    end)
                                     ActivityController.Refresh()
                                 end,
                             }
@@ -692,8 +752,29 @@ function ActivityView.Reset()
     strikeTimer_ = 0
     strikeAttackTime_ = 0
     strikeLastDamage_ = 0
+    currentStrikeAttackFrames_ = nil
+    strikeWindup_ = 0
+    strikeRecovery_ = 0
+    strikeHitFrame_ = 1
+    strikeEndFrame_ = 1
+    strikeSequenceIndex_ = 0
     damageLabels_ = {}
     strikeRefs_ = {}
 end
+
+function ActivityView.IsStriking()
+    return strikeId_ ~= nil
+end
+
+-- 打桩伤害飘字：监听服务端活动事件（权威实际伤害，含暴击）
+ServerClient.On("delta", function(payload)
+    if not strikeId_ then return end
+    for _, event in ipairs((payload and payload.events) or {}) do
+        local kind = event.kind or event.type
+        if kind == "activity_strike_hit" then
+            SpawnDamageText(event.damage or 0)
+        end
+    end
+end)
 
 return ActivityView

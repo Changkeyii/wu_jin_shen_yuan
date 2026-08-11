@@ -522,6 +522,9 @@ function GameStateAdapter.ApplyDelta(delta)
     if changes.equipped ~= nil then authoritative_.equipped = changes.equipped; changes.equipped = nil end
     if changes.consumables ~= nil then authoritative_.consumables = changes.consumables; changes.consumables = nil end
     if changes.stats ~= nil then authoritative_.stats = DeepCopy(changes.stats); changes.stats = nil end
+    -- activities/quests 整体替换：递归深合并会导致被删除的字段（如打桩 session 清空）残留
+    if changes.activities ~= nil then authoritative_.activities = DeepCopy(changes.activities); changes.activities = nil end
+    if changes.quests ~= nil then authoritative_.quests = DeepCopy(changes.quests); changes.quests = nil end
     Merge(authoritative_, changes)
     if delta.inventory ~= nil then authoritative_.inventory = ProjectInventory(delta.inventory) end
     if delta.consumables ~= nil then authoritative_.consumables = DeepCopy(delta.consumables) end

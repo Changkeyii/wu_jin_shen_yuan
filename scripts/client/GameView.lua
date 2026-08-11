@@ -682,11 +682,16 @@ local function BindServerEvents()
             or game.page == "bag"
             or game.page == "codex"
             or game.page == "quest"
-            or game.page == "activity"
         then
             -- These pages render authoritative values as static nodes, so
             -- rebuild after every accepted server delta.
             RequestPageRefresh()
+        elseif game.page == "activity" then
+            -- 打桩场景是实时动画场景：delta 到达时重建会立即清除伤害飘字，打桩中跳过重建；
+            -- 打桩结束后由快照/下一次刷新重建回卡片列表。
+            if not ActivityView.IsStriking() then
+                RequestPageRefresh()
+            end
         end
     end)
     ServerClient.On("status", function(payload)

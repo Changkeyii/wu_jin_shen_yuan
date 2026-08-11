@@ -352,6 +352,12 @@ local function finishVictory(state, monster, rng, now, events, context, callback
     return completed, inventoryChanged
 end
 
+-- 玩家单次命中伤害计算（与放置挂机同一套公式；target 需提供 encounter/def/defBig 等怪物属性）。
+-- 木桩等无防御目标传 { encounter = "normal", def = 0, defBig = BigNumber.Zero() }，其余沿用玩家面板。
+function CombatEngine.PlayerHitDamage(state, target, weight, rng)
+    return damageToMonster(state, target, weight, rng)
+end
+
 function CombatEngine.AdvanceActiveCombat(state, rng, now, timeStep, events, context, callbacks)
     local inventoryChanged = false
     local remaining = math.max(0, tonumber(timeStep) or 0)

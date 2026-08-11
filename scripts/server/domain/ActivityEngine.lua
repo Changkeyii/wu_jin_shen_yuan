@@ -4,7 +4,10 @@
 
 local PlayerTransition = require("server.domain.PlayerTransition")
 local QuestEngine = require("server.domain.QuestEngine")
+local CombatEngine = require("server.domain.CombatEngine")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
+local BigNumber = require("shared.BigNumber")
+local TowerRules = require("shared.TowerRules")
 
 local ActivityEngine = {}
 
@@ -180,11 +183,31 @@ function ActivityEngine.Strike(inputState, activityId, now)
         return PlayerTransition.NoCommit(inputState, now, "strike_too_fast", {})
     end
     session.lastHitAt = t
-    session.damage = (session.damage or 0) + STRIKE.DAMAGE_PER_HIT
+    -- 与放置挂机同一套伤害计算：木桩防御为 0，按攻击序列多段权重结算总伤害
+    -- （放置挂机一次攻击含多段命中 weights 0.30~0.85，累计约 2 倍攻击）
+    local sequenceIndex = math.random(1, 3)
+    local sequence = TowerRules.AttackSequence(sequenceIndex)
+    local weights = sequence and sequence.weights or { 1.0 }
+    local totalDamage = 0
+    local lastCritical = false
+    local lastLucky = false
+    for _, weight in ipairs(weights) do
+        local damage, critical, lucky = CombatEngine.PlayerHitDamage(working, {
+            encounter = "normal",
+            def = 0,
+            defBig = BigNumber.Zero(),
+        }, weight, nil)
+        totalDamage = totalDamage + math.max(1, math.floor(BigNumber.ToNumber(damage) or 0))
+        if critical then lastCritical = true end
+        if lucky then lastLucky = true end
+    end
+    session.damage = (session.damage or 0) + totalDamage
     local events = {
         PlayerTransition.Event("activity_strike_hit", {
             activityId = activityId,
-            damage = STRIKE.DAMAGE_PER_HIT,
+            damage = totalDamage,
+            critical = lastCritical,
+            lucky = lastLucky,
             total = session.damage,
         }),
     }

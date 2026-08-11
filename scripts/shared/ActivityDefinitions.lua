@@ -12,7 +12,6 @@ local ActivityDefinitions = {}
 ActivityDefinitions.STRIKE = {
     DURATION = 15,          -- 限时秒数
     INTERVAL = 0.3,         -- 攻击最小间隔（防连点）
-    DAMAGE_PER_HIT = 80,    -- 每次攻击固定伤害
     BASE_PER_DAY = 1,       -- 每日基础次数
     AD_PER_DAY = 1,         -- 看广告额外次数
 }
