@@ -36,6 +36,7 @@ local PENDING_EVENT_SCHEMA = Definitions.PENDING_EVENT_SCHEMA
 local PENDING_EQUIP_SCHEMA = Definitions.PENDING_EQUIP_SCHEMA
 local QUESTS_SCHEMA = Definitions.QUESTS_SCHEMA
 local ACTIVITIES_SCHEMA = Definitions.ACTIVITIES_SCHEMA
+local WISH_POOL_SCHEMA = Definitions.WISH_POOL_SCHEMA
 local LOADOUT_BACKUP_SCHEMA = Definitions.LOADOUT_BACKUP_SCHEMA
 local SET_PROGRESS_SCHEMA = Definitions.SET_PROGRESS_SCHEMA
 local STATS_SCHEMA = Definitions.STATS_SCHEMA
@@ -55,9 +56,11 @@ local MAIL_ATTACHMENT_SCHEMA = {
     allowUnknown = true,
     fields = {
         id = { type = "string", maxLength = 64 },
-        kind = { type = "string", enum = { "currency", "equipment" } },
+        kind = { type = "string", enum = { "currency", "equipment", "item" } },
         currency = { type = "string", maxLength = 16 },
         equipmentId = { type = "string", maxLength = 64 },
+        itemId = { type = "string", maxLength = 64 },
+        slot = { type = "string", maxLength = 32 },
         name = { type = "string", maxLength = 64 },
         count = { type = "integer", min = 1, max = 1000000000 },
         claimedCount = { type = "integer", min = 0, max = 1000000000 },
@@ -138,6 +141,7 @@ PERSISTED_SCHEMA = {
         "appliedGmCommandIds",
         "quests",
         "activities",
+        "wishPool",
     },
     fields = {
         schemaVersion = { type = "integer", enum = { GameStateSchema.VERSION } },
@@ -228,6 +232,7 @@ PERSISTED_SCHEMA = {
         totalPlaySeconds = { type = "number", min = 0 },
         quests = QUESTS_SCHEMA,
         activities = ACTIVITIES_SCHEMA,
+        wishPool = WISH_POOL_SCHEMA,
     },
 }
 
@@ -301,6 +306,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     },
     quests = QUESTS_SCHEMA,
     activities = ACTIVITIES_SCHEMA,
+    wishPool = WISH_POOL_SCHEMA,
 }
 
 local SNAPSHOT_ENVELOPE_SCHEMAS = {
@@ -353,7 +359,7 @@ local SNAPSHOT_REQUIRED_FIELDS = {
     "logs", "currentEvent", "recentDamage", "stats", "nextExp",
     "displayedPower", "recommendedPower", "nextChapterRecommendedPower",
     "powerRatio", "headroomFloors", "difficultyLabel", "bossScore", "eliteScore",
-    "estimatedEasyFloor",
+    "estimatedEasyFloor", "wishPool",
 }
 
 

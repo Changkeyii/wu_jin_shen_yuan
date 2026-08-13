@@ -3,6 +3,7 @@ local GameStateSchema = require("shared.GameStateSchema")
 local Catalog = require("server.domain.Catalog")
 local LargeNumber = require("shared.LargeNumber")
 local QuestEngine = require("server.domain.QuestEngine")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 
 local StateFactory = {}
 
@@ -84,6 +85,18 @@ function StateFactory.Create(now)
         mailCache = {},
         mailSeq = 1,
         quests = QuestEngine.NewQuests(),
+        wishPool = {
+            tickets = WishPoolDefinitions.STARTER_TICKETS,
+            jars = {},
+            adDayKey = 0,
+            adUsed = 0,
+            totalWishes = 0,
+            mythPity = 0,
+            mythGuarantees = 0,
+            characterPity = 0,
+            ownedCharacters = { ember_blade = true },
+            characterMarks = {},
+        },
     }, now)
 end
 

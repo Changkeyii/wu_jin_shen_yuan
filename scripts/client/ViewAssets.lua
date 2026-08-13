@@ -4,6 +4,7 @@
 
 local ImageCache = require("urhox-libs/UI/Core/ImageCache")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 
 local ViewAssets = {}
 
@@ -148,6 +149,29 @@ local ASSETS = {
         pickupSpark = "image/ui/generated/pickup_spark_82x82.png",
         loadingDot = "image/ui/generated/loading_dot_24x24.png",
         screenOverlay = "image/ui/generated/screen_overlay_1080x1920.png",
+        -- 许愿池：中间区页面背景（使用正式深渊走廊场景，不再用纯黑/旧六边形硬坐标背景）
+        wishPoolBackground = "image/market_page_background_20260802032512.png",
+        wishPoolHexBackground = "image/edited_wishpool_hex_dynamic_background_20260812102057.png",
+        wishPoolReelBackground = "image/edited_wishpool_reel_dynamic_background_20260812102222.png",
+        -- 许愿池道具图标
+        wishTicket = "image/wishpool_ticket_20260812130253.png",
+        wishJarRandom = "image/wishpool_jar_random_20260812130256.png",
+        wishJarWeapon = "image/wishpool_jar_weapon_20260812130218.png",
+        wishJarArmor = "image/wishpool_jar_armor_20260812130248.png",
+        wishJarJewelry = "image/wishpool_jar_jewelry_20260812130254.png",
+        wishJarLegendary = "image/wishpool_jar_legendary_20260812130250.png",
+        wishJarEpic = "image/wishpool_jar_epic_20260812130254.png",
+        wishJarMyth = "image/wishpool_jar_myth_20260812130257.png",
+        wishCharMark = "image/wishpool_character_mark_20260812130255.png",
+        wishCharEmberBlade = "image/wishpool_char_ember_blade_20260812130325.png",
+        wishCharVoidGuard = "image/wishpool_char_void_guard_20260812130345.png",
+        wishCharStormRanger = "image/wishpool_char_storm_ranger_20260812130328.png",
+        -- 许愿池套装徽记
+        wishSetNightmare = "image/wishpool_set_nightmare_20260813020048.png",
+        wishSetLucky = "image/wishpool_set_lucky_20260813020054.png",
+        wishSetVoyage = "image/wishpool_set_voyage_20260813020049.png",
+        wishSetAbyss = "image/wishpool_set_abyss_20260813020047.png",
+        wishSetProphecy = "image/wishpool_set_prophecy_20260813020046.png",
         -- 活动系统素材（BrawlForge 风格）
         strikeBg = "image/strike_bg_v2_20260807072726.png",
     },
@@ -219,6 +243,9 @@ function ViewAssets.PreloadItemIcons()
 
     local resources = { EquipmentCatalog.ATLAS_PATH }
     for _, path in pairs(ASSETS.items) do
+        resources[#resources + 1] = path
+    end
+    for _, path in ipairs(WishPoolDefinitions.AllIcons()) do
         resources[#resources + 1] = path
     end
 

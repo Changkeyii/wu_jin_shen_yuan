@@ -562,6 +562,15 @@ function ServerClient.Send(command, payload, callback)
 end
 
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
+function ServerClient.WishWithTicket(callback) return ServerClient.Send("WishPool.WishWithTicket", {}, callback) end
+function ServerClient.WishWithAd(callback) return ServerClient.Send("WishPool.WishWithAd", {}, callback) end
+function ServerClient.OpenWishJar(jarId, count, callback)
+    local payload = { jarId = tostring(jarId) }
+    if count and tonumber(count) then
+        payload.count = math.max(1, math.min(6, math.floor(tonumber(count))))
+    end
+    return ServerClient.Send("WishPool.OpenJar", payload, callback)
+end
 function ServerClient.ClaimDailyVip(callback) return ServerClient.Send("Game.ClaimDailyVip", {}, callback) end
 function ServerClient.ClaimDailyAdVip(callback) return ServerClient.Send("Game.ClaimDailyAdVip", {}, callback) end
 function ServerClient.GetLeaderboard(callback) return ServerClient.Send("Leaderboard.GetTop", {}, callback) end

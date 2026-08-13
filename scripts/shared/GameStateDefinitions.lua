@@ -665,6 +665,29 @@ local ACTIVITIES_SCHEMA = {
     fields = {},
 }
 
+local WISH_POOL_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = {
+        "tickets", "jars", "adDayKey", "adUsed", "totalWishes",
+        "mythPity", "mythGuarantees", "characterPity", "ownedCharacters",
+        "characterMarks",
+    },
+    fields = {
+        tickets = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        jars = { type = "object", allowUnknown = true },
+        adDayKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        adUsed = { type = "integer", min = 0, max = 20 },
+        totalWishes = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        mythPity = { type = "integer", min = 0, max = 119 },
+        mythGuarantees = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        characterPity = { type = "integer", min = 0, max = 399 },
+        ownedCharacters = { type = "object", allowUnknown = true },
+        characterMarks = { type = "object", allowUnknown = true },
+        lastWishAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+    },
+}
+
 -- 任务系统存档：新手/每日/成就三块 + 累计计数器。
 local QUESTS_SCHEMA = {
     type = "object",
@@ -749,6 +772,7 @@ local Definitions = {
     PENDING_EQUIP_SCHEMA = PENDING_EQUIP_SCHEMA,
     QUESTS_SCHEMA = QUESTS_SCHEMA,
     ACTIVITIES_SCHEMA = ACTIVITIES_SCHEMA,
+    WISH_POOL_SCHEMA = WISH_POOL_SCHEMA,
     LOADOUT_BACKUP_SCHEMA = LOADOUT_BACKUP_SCHEMA,
     SET_PROGRESS_SCHEMA = SET_PROGRESS_SCHEMA,
     STATS_SCHEMA = STATS_SCHEMA,

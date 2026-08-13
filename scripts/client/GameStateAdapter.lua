@@ -4,6 +4,7 @@ local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local QuestDefinitions = require("shared.QuestDefinitions")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local ServerClock = require("client.ServerClock")
 
 local GameStateAdapter = {}
@@ -319,7 +320,7 @@ end
 
 local function EmptyView()
     return {
-        schemaVersion = 6,
+        schemaVersion = 7,
         revision = 0,
         updatedAt = 0,
         floor = 1,
@@ -328,6 +329,11 @@ local function EmptyView()
         level = 1,
         vipLevel = 0,
         dailyVip = { signInDay = 0, adDay = 0 },
+        wishPool = {
+            tickets = 0, jars = {}, adDayKey = 0, adUsed = 0, totalWishes = 0,
+            mythPity = 0, mythGuarantees = 0, characterPity = 0,
+            ownedCharacters = { ember_blade = true }, characterMarks = {},
+        },
         exp = 0,
         nextExp = 100,
         gold = LargeNumber.Zero(),
@@ -439,6 +445,42 @@ local function RebuildView()
         end
     end
 
+    -- 许愿券是背包道具（可堆叠）：由服务端 wishPool.tickets 权威计数投影展示。
+    local wishTickets = nextView.wishPool and nextView.wishPool.tickets or 0
+    if wishTickets > 0 then
+        nextView.inventory[#nextView.inventory + 1] = {
+            id = "wish_ticket",
+            name = "许愿券",
+            category = "consumable",
+            rarity = "legendary",
+            quantity = wishTickets,
+            icon = WishPoolDefinitions.ICONS.ticket,
+            desc = "许愿池专用许愿券，使用后可随机获得装备罐或完整角色。",
+        }
+    end
+
+    -- 许愿池罐子是背包道具（可开启）：投影为 wishjar 分类道具。
+    -- 服务端权威库存仍在 wishPool.jars，开罐命令由服务端校验扣除。
+    local wishPoolJars = nextView.wishPool and nextView.wishPool.jars
+    if type(wishPoolJars) == "table" then
+        for jarId, count in pairs(wishPoolJars) do
+            local jar = WishPoolDefinitions.ResolveJar(jarId)
+            if jar and count > 0 then
+                nextView.inventory[#nextView.inventory + 1] = {
+                    id = "wishjar:" .. jarId,
+                    jarId = jarId,
+                    name = jar.name,
+                    category = "wishjar",
+                    rarity = jar.rarity
+                        or (jar.setId and "epic" or "legendary"),
+                    quantity = count,
+                    icon = jar.icon,
+                    desc = "许愿获得的装备罐，可在背包中点击开启。",
+                }
+            end
+        end
+    end
+
     for _, item in ipairs(nextView.inventory) do
         item.rawName = item.rawName or item.name
         item.name = ItemPresentation.DisplayName(item, "未知道具")
@@ -468,6 +510,15 @@ local function RebuildView()
         item.isEquipped = item.equippedSlot ~= nil
     end
     nextView.equipped = equippedObjects
+    -- 许愿池展示所需的日切只影响客户端文案，不改变服务端权威计数。
+    nextView.wishPool = nextView.wishPool or {
+        tickets = 0, jars = {}, adDayKey = 0, adUsed = 0, totalWishes = 0,
+        mythPity = 0, mythGuarantees = 0, characterPity = 0,
+        ownedCharacters = { ember_blade = true }, characterMarks = {},
+    }
+    local wishDayKey = WishPoolDefinitions.DayKey(ServerClock.Now())
+    nextView.wishPool.displayAdUsed = nextView.wishPool.adDayKey == wishDayKey
+        and (nextView.wishPool.adUsed or 0) or 0
     -- 任务系统展示视图（进度/状态/奖励），服务端权威判定一致。
     nextView.questsView = QuestDefinitions.BuildView(nextView, ServerClock.DayKey(ServerClock.Now()))
     -- 活动系统展示视图（签到/木桩/次数/红点）。
@@ -525,6 +576,7 @@ function GameStateAdapter.ApplyDelta(delta)
     -- activities/quests 整体替换：递归深合并会导致被删除的字段（如打桩 session 清空）残留
     if changes.activities ~= nil then authoritative_.activities = DeepCopy(changes.activities); changes.activities = nil end
     if changes.quests ~= nil then authoritative_.quests = DeepCopy(changes.quests); changes.quests = nil end
+    if changes.wishPool ~= nil then authoritative_.wishPool = DeepCopy(changes.wishPool); changes.wishPool = nil end
     Merge(authoritative_, changes)
     if delta.inventory ~= nil then authoritative_.inventory = ProjectInventory(delta.inventory) end
     if delta.consumables ~= nil then authoritative_.consumables = DeepCopy(delta.consumables) end

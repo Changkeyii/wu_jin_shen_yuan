@@ -141,6 +141,7 @@ function RewardDialogView.BuildOptions(options)
         kind = "equipment",
         priority = options.priority or 320,
         queueKey = options.queueKey or RewardDialogView.NextKey("reward"),
+        zIndex = options.zIndex or 2000,
         title = options.title or "获得奖励",
         celebration = true,
         entranceDuration = 0.52,

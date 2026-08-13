@@ -95,6 +95,11 @@ local KNOWN = {
     tower_aid_requested = true,
     vip_level_up = true,
     wish_pool = true,
+    wish_drawn = true,
+    wish_jar_granted = true,
+    wish_character_unlocked = true,
+    wish_character_duplicate = true,
+    wish_jar_opened = true,
 }
 
 local REQUIRED = {

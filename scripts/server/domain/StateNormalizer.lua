@@ -8,6 +8,7 @@ local LargeNumber = require("shared.LargeNumber")
 local RarityCatalog = require("shared.RarityCatalog")
 local StoryCatalog = require("shared.StoryCatalog")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 
 local StateNormalizer = {}
 
@@ -516,6 +517,46 @@ local function sanitizeQuests(value)
     }
 end
 
+local function sanitizeWishPool(value)
+    local supplied = type(value) == "table"
+    value = supplied and value or {}
+    local jars = {}
+    for jarId, count in pairs(type(value.jars) == "table" and value.jars or {}) do
+        if WishPoolDefinitions.ResolveJar(jarId) then
+            local quantity = math.max(0, TableUtils.ToInteger(count, 0))
+            if quantity > 0 then jars[jarId] = quantity end
+        end
+    end
+    local ownedCharacters = { ember_blade = true }
+    for characterId, owned in pairs(type(value.ownedCharacters) == "table" and value.ownedCharacters or {}) do
+        if WishPoolDefinitions.CHARACTERS[characterId] and owned == true then
+            ownedCharacters[characterId] = true
+        end
+    end
+    local characterMarks = {}
+    for characterId, count in pairs(type(value.characterMarks) == "table" and value.characterMarks or {}) do
+        if WishPoolDefinitions.CHARACTERS[characterId] then
+            characterMarks[characterId] = math.max(0, TableUtils.ToInteger(count, 0))
+        end
+    end
+    return {
+        tickets = math.max(0, TableUtils.ToInteger(
+            value.tickets,
+            supplied and 0 or WishPoolDefinitions.STARTER_TICKETS
+        )),
+        jars = jars,
+        adDayKey = math.max(0, TableUtils.ToInteger(value.adDayKey, 0)),
+        adUsed = clampInteger(value.adUsed, 0, WishPoolDefinitions.AD_DAILY_LIMIT, 0),
+        totalWishes = math.max(0, TableUtils.ToInteger(value.totalWishes, 0)),
+        mythPity = clampInteger(value.mythPity, 0, WishPoolDefinitions.MYTH_HARD_PITY - 1, 0),
+        mythGuarantees = math.max(0, TableUtils.ToInteger(value.mythGuarantees, 0)),
+        characterPity = clampInteger(value.characterPity, 0, WishPoolDefinitions.CHARACTER_HARD_PITY - 1, 0),
+        ownedCharacters = ownedCharacters,
+        characterMarks = characterMarks,
+        lastWishAt = math.max(0, TableUtils.ToInteger(value.lastWishAt, 0)),
+    }
+end
+
 local function safePauseReason(value)
     if type(value) ~= "string" or #value > 64 then return nil end
     return value
@@ -527,7 +568,7 @@ local MAIL_MAX_BODY = 600
 local function sanitizeMailAttachment(value, index)
     if type(value) ~= "table" then return nil end
     local kind = value.kind
-    if kind ~= "currency" and kind ~= "equipment" then return nil end
+    if kind ~= "currency" and kind ~= "equipment" and kind ~= "item" then return nil end
     local attachment = {
         id = type(value.id) == "string" and value.id:sub(1, 64) or string.format("att-%d", index),
         kind = kind,
@@ -537,8 +578,12 @@ local function sanitizeMailAttachment(value, index)
     }
     if kind == "currency" then
         attachment.currency = value.currency == "fragments" and "fragments" or "gold"
+    elseif kind == "item" then
+        attachment.itemId = type(value.itemId) == "string" and value.itemId:sub(1, 64) or ""
+        attachment.name = type(value.name) == "string" and value.name:sub(1, 64) or nil
     else
         attachment.equipmentId = type(value.equipmentId) == "string" and value.equipmentId:sub(1, 64) or ""
+        attachment.slot = type(value.slot) == "string" and value.slot:sub(1, 32) or nil
         attachment.name = type(value.name) == "string" and value.name:sub(1, 64) or nil
         attachment.level = clampInteger(value.level, 1, 1000000, 1)
         attachment.rarity = RarityCatalog.NormalizeId(value.rarity or "common")
@@ -645,6 +690,7 @@ function StateNormalizer.Normalize(rawState, now)
         mailSeq = clampInteger(rawState.mailSeq, 1, 100000000000, 1),
         quests = sanitizeQuests(rawState.quests),
         activities = sanitizeActivities(rawState.activities),
+        wishPool = sanitizeWishPool(rawState.wishPool),
     }
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}

@@ -7,6 +7,7 @@ local CATEGORY_NAMES = {
     special = "特殊",
     consumable = "消耗品",
     material = "材料",
+    wishjar = "许愿罐",
 }
 
 local SOURCE_NAMES = {

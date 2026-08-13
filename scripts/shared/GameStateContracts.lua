@@ -2,7 +2,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 
 local GameStateContracts = {}
 
-GameStateContracts.VERSION = 6
+GameStateContracts.VERSION = 7
 GameStateContracts.SLOTS = {
     "weapon", "shoulder", "coat", "pants", "belt", "shoes",
     "bracelet", "necklace", "ring", "support", "magicstone", "earring",
@@ -67,6 +67,7 @@ GameStateContracts.PERSISTED_FIELDS = {
     "totalPlaySeconds",
     "quests",
     "activities",
+    "wishPool",
 }
 
 GameStateContracts.SNAPSHOT_FIELDS = {
@@ -127,6 +128,7 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "mailSummary",
     "quests",
     "activities",
+    "wishPool",
 }
 
 GameStateContracts.DELTA_FIELD_SET = {}

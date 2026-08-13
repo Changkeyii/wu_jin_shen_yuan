@@ -17,6 +17,7 @@ local AdminService = require("server.services.AdminService")
 local GameCommands = require("server.commands.GameCommands")
 local QuestCommands = require("server.commands.QuestCommands")
 local ActivityCommands = require("server.commands.ActivityCommands")
+local WishPoolCommands = require("server.commands.WishPoolCommands")
 local AdminCommands = require("server.commands.AdminCommands")
 local MarketCommands = require("server.commands.MarketCommands")
 local MailCommands = require("server.commands.MailCommands")
@@ -609,6 +610,7 @@ local function HandleUpdate(eventType, eventData)
     adminService_:Update(timeStep)
     marketService_:Tick()
     if mailService_ then mailService_:Update(timeStep) end
+    if profileService_ then profileService_:CheckpointPlayTime(timeStep, 30) end
 end
 
 local function InitializeServices()
@@ -701,6 +703,7 @@ local function InitializeServices()
     GameCommands.Register(router_, commandServices)
     QuestCommands.Register(router_, commandServices)
     ActivityCommands.Register(router_, commandServices)
+    WishPoolCommands.Register(router_, commandServices)
     AdminCommands.Register(router_, adminService_, commandServices)
     MarketCommands.Register(router_, commandServices)
     MailCommands.Register(router_, commandServices)

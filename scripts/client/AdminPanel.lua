@@ -1,5 +1,6 @@
 local ServerClient = require("client.ServerClient")
 local LargeNumber = require("shared.LargeNumber")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local UI = require("urhox-libs/UI")
 
 local SECTION_BACKGROUND = "image/ui/generated/panel_940x320.png"
@@ -23,8 +24,8 @@ local form_ = {
     rarity = "epic",
     floor = "1",
     position = "1",
-    mailTitle = "",
-    mailBody = "",
+    mailTitle = "官方奖励发送",
+    mailBody = "您有一份奖励邮件，请查收。",
     mailType = "reward",
     mailGold = "0",
     mailId = "",
@@ -37,6 +38,62 @@ local audit_ = {}
 local queriedPlayer_ = nil
 local mailList_ = {}
 local byNameMatches_ = {}
+
+-- 道具发放（多选）状态：itemId -> { checked = bool, count = string }
+local itemSelections_ = {}
+
+-- 道具发放列表过滤
+local itemFilterType_ = "all"
+local itemFilterQuery_ = ""
+
+-- 邮件标题/正文模板（点击快速填充）
+local MAIL_TEMPLATES = {
+    { name = "奖励发放", title = "官方奖励发送", body = "您有一份奖励邮件，请查收。" },
+    { name = "运营补偿", title = "运营补偿", body = "感谢您的支持，特此发放补偿奖励，请查收。" },
+    { name = "测试道具", title = "测试道具", body = "测试环境道具发放，请查收。" },
+    { name = "清空", title = "", body = "" },
+}
+
+-- GM 可发放道具清单：许愿券 + 许愿池全部罐子（不含角色）。
+local GM_ITEM_OPTIONS = nil
+local function GmItemOptions()
+    if GM_ITEM_OPTIONS then return GM_ITEM_OPTIONS end
+    GM_ITEM_OPTIONS = {}
+    GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = "wish_ticket", name = "许愿券" }
+    for _, cell in ipairs(WishPoolDefinitions.DISPLAY_CELLS) do
+        if cell.kind ~= "character" then
+            local itemId = WishPoolDefinitions.MakeJarId(cell.kind, cell.rarity, cell.slot, cell.setId)
+            if itemId then
+                GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = itemId, name = cell.label or itemId }
+            end
+        end
+    end
+    return GM_ITEM_OPTIONS
+end
+
+-- 道具发放列表过滤（类型 + 名称搜索）
+local function ItemMatchesFilter(option)
+    local query = itemFilterQuery_
+    if query ~= "" then
+        local needle = string.lower(query)
+        local name = string.lower(option.name or "")
+        if not name:find(needle, 1, true) then return false end
+    end
+    local filter = itemFilterType_
+    if filter == "all" then return true end
+    if filter == "wish_ticket" then return option.itemId == "wish_ticket" end
+    for _, cell in ipairs(WishPoolDefinitions.DISPLAY_CELLS) do
+        if WishPoolDefinitions.MakeJarId(cell.kind, cell.rarity, cell.slot, cell.setId) == option.itemId then
+            if filter == "random" then return cell.kind == "random" end
+            if filter == "rarity" then return cell.kind == "rarity" end
+            if filter == "slot" then return cell.kind == "slot" end
+            if filter == "combo" then return cell.kind == "combo" end
+            if filter == "set" then return cell.kind == "set" end
+            return false
+        end
+    end
+    return false
+end
 
 local function ToInteger(value)
     local number = tonumber(value)
@@ -107,6 +164,38 @@ local function Label(UI, text, size, color)
     }
 end
 
+local DEFAULT_MAIL_TITLE = "官方奖励发送"
+local DEFAULT_MAIL_BODY = "您有一份奖励邮件，请查收。"
+
+local function MailText(value, fallback)
+    if type(value) ~= "string" or value:match("^%s*$") then
+        return fallback
+    end
+    return value
+end
+
+local function CurrentFieldText(id, storedValue)
+    local field = UI.FindById(id)
+    if field and field.GetValue then
+        return tostring(field:GetValue() or "")
+    end
+    return tostring(storedValue or "")
+end
+
+local function CurrentMailDraft()
+    local title = MailText(
+        CurrentFieldText("admin-mail-title", form_.mailTitle),
+        DEFAULT_MAIL_TITLE
+    )
+    local body = MailText(
+        CurrentFieldText("admin-mail-body", form_.mailBody),
+        DEFAULT_MAIL_BODY
+    )
+    form_.mailTitle = title
+    form_.mailBody = body
+    return title, body
+end
+
 local function Field(UI, label, key, placeholder)
     return UI.Panel {
         width = "100%",
@@ -114,12 +203,19 @@ local function Field(UI, label, key, placeholder)
         children = {
             Label(UI, label, 10, {154, 177, 226, 255}),
             UI.TextField {
+                id = key == "mailTitle" and "admin-mail-title"
+                    or (key == "mailBody" and "admin-mail-body" or nil),
                 width = "100%",
                 height = 54,
                 value = form_[key],
                 placeholder = placeholder or "",
-                maxLength = key == "reason" and 120 or 32,
-                onChange = function(self, value) form_[key] = value end,
+                maxLength = key == "reason" and 120
+                    or (key == "mailTitle" and 40)
+                    or (key == "mailBody" and 600)
+                    or 32,
+                onChange = function(self, value)
+                    form_[key] = tostring(value or "")
+                end,
             },
         },
     }
@@ -395,7 +491,72 @@ function AdminPanel.Build(UI, options)
         Label(UI, QueryByNameSummary(), 10, {213, 226, 255, 255}),
     })
 
-    local currencySection = Section(UI, "资源发放", {
+    -- 发放邮件信息：所有发放（金币/碎片/装备/道具）统一走邮箱，玩家自行领取。
+    local mailInfoSection = Section(UI, "发放邮件信息（所有发放均发到玩家邮箱）", {
+        ButtonRow(UI, (function()
+            local templateButtons = {}
+            for _, template in ipairs(MAIL_TEMPLATES) do
+                local item = template
+                templateButtons[#templateButtons + 1] = UI.Button {
+                    text = item.name,
+                    variant = "secondary",
+                    height = 44,
+                    disabled = readOnly,
+                    onClick = function()
+                        form_.mailTitle = item.title
+                        form_.mailBody = item.body
+                        if onChanged then onChanged() end
+                    end,
+                }
+            end
+            return templateButtons
+        end)()),
+        Field(UI, "邮件标题", "mailTitle", "默认：官方奖励发送"),
+        Field(UI, "邮件正文", "mailBody", "默认：请查收奖励邮件。"),
+    })
+
+    local function SendRewardMail(attachments)
+        if form_.targetUid == "" then
+            SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged)
+            return false
+        end
+        local title = MailText(
+            CurrentFieldText("admin-mail-title", form_.mailTitle),
+            DEFAULT_MAIL_TITLE
+        )
+        local body = MailText(
+            CurrentFieldText("admin-mail-body", form_.mailBody),
+            DEFAULT_MAIL_BODY
+        )
+        form_.mailTitle = title
+        form_.mailBody = body
+        if #attachments == 0 then
+            SetStatus({ ok = false, reason = "没有可发送的附件" }, onChanged)
+            return false
+        end
+        if #attachments > 6 then
+            SetStatus({ ok = false, reason = "单封邮件最多携带 6 种附件，请减少勾选" }, onChanged)
+            return false
+        end
+        ServerClient.AdminSendMail({
+            targetUid = form_.targetUid,
+            title = title,
+            body = body,
+            mailType = "reward",
+            batchId = "gm_mail",
+            attachments = attachments,
+        }, function(response) SetStatus(response, onChanged) end)
+        return true
+    end
+
+    local function ClearItemSelections()
+        for _, entry in pairs(itemSelections_) do
+            if entry then entry.checked = false end
+        end
+        if onChanged then onChanged() end
+    end
+
+    local currencySection = Section(UI, "资源发放（发送到玩家邮箱）", {
         UI.Panel {
             width = "100%",
             flexDirection = "row",
@@ -422,21 +583,24 @@ function AdminPanel.Build(UI, options)
             },
         },
         UI.Button {
-            text = "发放货币",
+            text = "发送到邮箱",
             variant = "success",
             width = 210,
             disabled = readOnly,
             onClick = function()
                 local amount = ToInteger(form_.amount)
-                if not amount then SetStatus({ ok = false, reason = "数量必须是整数" }, onChanged); return end
-                Submit(function(done)
-                    ServerClient.AdminGrantCurrency(form_.targetUid, form_.currency, amount, form_.reason, done)
-                end, onChanged)
+                if not amount or amount <= 0 then
+                    SetStatus({ ok = false, reason = "数量必须是正整数" }, onChanged)
+                    return
+                end
+                SendRewardMail({
+                    { kind = "currency", currency = form_.currency, count = amount },
+                })
             end,
         },
     })
 
-    local equipmentSection = Section(UI, "装备发放", {
+    local equipmentSection = Section(UI, "装备发放（发送到玩家邮箱）", {
         UI.Panel {
             width = "100%",
             flexDirection = "row",
@@ -470,14 +634,19 @@ function AdminPanel.Build(UI, options)
             },
         },
         UI.Button {
-            text = "发放装备",
+            text = "发送到邮箱",
             variant = "success",
             width = 210,
             disabled = readOnly,
             onClick = function()
-                Submit(function(done)
-                    ServerClient.AdminGrantEquipment(form_.targetUid, form_.slot, form_.rarity, form_.reason, done)
-                end, onChanged)
+                SendRewardMail({
+                    {
+                        kind = "equipment",
+                        slot = form_.slot,
+                        rarity = form_.rarity,
+                        count = 1,
+                    },
+                })
             end,
         },
     })
@@ -572,13 +741,12 @@ function AdminPanel.Build(UI, options)
                 width = 210,
                 disabled = readOnly,
                 onClick = function()
-                    local title = form_.mailTitle
-                    local body = form_.mailBody
+                    local title, body = CurrentMailDraft()
+                    local gold = ToInteger(form_.mailGold) or 0
                     if title == "" or body == "" then
                         SetStatus({ ok = false, reason = "标题和正文不能为空" }, onChanged)
                         return
                     end
-                    local gold = ToInteger(form_.mailGold) or 0
                     local attachments = {}
                     if gold > 0 then
                         attachments[#attachments + 1] = { kind = "currency", currency = "gold", count = gold }
@@ -599,13 +767,12 @@ function AdminPanel.Build(UI, options)
                 width = 220,
                 disabled = readOnly,
                 onClick = function()
-                    local title = form_.mailTitle
-                    local body = form_.mailBody
+                    local title, body = CurrentMailDraft()
+                    local gold = ToInteger(form_.mailGold) or 0
                     if title == "" or body == "" then
                         SetStatus({ ok = false, reason = "标题和正文不能为空" }, onChanged)
                         return
                     end
-                    local gold = ToInteger(form_.mailGold) or 0
                     local attachments = {}
                     if gold > 0 then
                         attachments[#attachments + 1] = { kind = "currency", currency = "gold", count = gold }
@@ -672,6 +839,185 @@ function AdminPanel.Build(UI, options)
         Label(UI, MailListSummary(), 10, {213, 226, 255, 255}),
     })
 
+    -- 道具发放（多选）：勾选道具并填写数量，发送到目标玩家邮箱。
+    local itemOptions = GmItemOptions()
+    local visibleItems = {}
+    for _, option in ipairs(itemOptions) do
+        if ItemMatchesFilter(option) then
+            visibleItems[#visibleItems + 1] = option
+        end
+    end
+    local itemRows = {}
+    for _, option in ipairs(visibleItems) do
+        local entry = itemSelections_[option.itemId]
+        if not entry then
+            entry = { checked = false, count = "1" }
+            itemSelections_[option.itemId] = entry
+        end
+        itemRows[#itemRows + 1] = UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            alignItems = "center",
+            gap = 8,
+            children = {
+                UI.Checkbox {
+                    size = 18,
+                    checked = entry.checked,
+                    onChange = function(self, checked)
+                        if checked == true then
+                            local selectedCount = 0
+                            for _, other in pairs(itemSelections_) do
+                                if other and other.checked then selectedCount = selectedCount + 1 end
+                            end
+                            if selectedCount >= 6 then
+                                self:SetChecked(false)
+                                SetStatus({ ok = false, reason = "单封邮件最多携带 6 种道具" }, onChanged)
+                                return
+                            end
+                        end
+                        entry.checked = checked == true
+                    end,
+                },
+                UI.Panel {
+                    width = 200,
+                    flexShrink = 0,
+                    children = { Label(UI, option.name, 10, {255, 255, 255, 255}) },
+                },
+                UI.TextField {
+                    flexGrow = 1,
+                    flexBasis = 0,
+                    height = 44,
+                    value = entry.count,
+                    maxLength = 9,
+                    onChange = function(self, value) entry.count = value end,
+                },
+            },
+        }
+    end
+    local itemSection = Section(UI, "道具发放（多选，勾选后发送到目标玩家邮箱）", {
+        UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            gap = 10,
+            children = {
+                UI.Dropdown {
+                    flexGrow = 1,
+                    flexBasis = 0,
+                    value = itemFilterType_,
+                    options = {
+                        { value = "all", label = "全部道具" },
+                        { value = "wish_ticket", label = "许愿券" },
+                        { value = "random", label = "全随机罐" },
+                        { value = "rarity", label = "品阶罐" },
+                        { value = "slot", label = "部位罐" },
+                        { value = "combo", label = "部位+品阶罐" },
+                        { value = "set", label = "套装罐" },
+                    },
+                    onChange = function(self, value)
+                        itemFilterType_ = value
+                        if onChanged then onChanged() end
+                    end,
+                },
+                UI.TextField {
+                    flexGrow = 1,
+                    flexBasis = 0,
+                    height = 48,
+                    value = itemFilterQuery_,
+                    placeholder = "搜索道具名称…",
+                    maxLength = 24,
+                    onChange = function(self, value)
+                        itemFilterQuery_ = value or ""
+                    end,
+                },
+                UI.Button {
+                    text = "搜索",
+                    variant = "primary",
+                    width = 96,
+                    disabled = readOnly,
+                    onClick = function()
+                        if onChanged then onChanged() end
+                    end,
+                },
+            },
+        },
+        UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            gap = 10,
+            children = {
+                UI.Button {
+                    text = "勾选前6个",
+                    variant = "secondary",
+                    width = 120,
+                    disabled = readOnly,
+                    onClick = function()
+                        for index, option in ipairs(itemOptions) do
+                            local entry = itemSelections_[option.itemId]
+                            if entry then
+                                entry.checked = index <= 6
+                            end
+                        end
+                        if onChanged then onChanged() end
+                    end,
+                },
+                UI.Button {
+                    text = "全部取消",
+                    variant = "secondary",
+                    width = 120,
+                    disabled = readOnly,
+                    onClick = function()
+                        for _, option in ipairs(itemOptions) do
+                            local entry = itemSelections_[option.itemId]
+                            if entry then entry.checked = false end
+                        end
+                        if onChanged then onChanged() end
+                    end,
+                },
+            },
+        },
+        table.unpack(itemRows),
+        ButtonRow(UI, {
+            UI.Button {
+                text = "发送选中道具",
+                variant = "success",
+                width = 280,
+                disabled = readOnly,
+                onClick = function()
+                    local attachments = {}
+                    for itemId, entry in pairs(itemSelections_) do
+                        if entry and entry.checked then
+                            local count = ToInteger(entry.count)
+                            if count and count > 0 then
+                                local optionName = itemId
+                                for _, option in ipairs(itemOptions) do
+                                    if option.itemId == itemId then optionName = option.name break end
+                                end
+                                attachments[#attachments + 1] = {
+                                    kind = "item",
+                                    itemId = itemId,
+                                    name = optionName,
+                                    count = count,
+                                }
+                            end
+                        end
+                    end
+                    if #attachments == 0 then
+                        SetStatus({ ok = false, reason = "至少勾选一个道具并填写数量" }, onChanged)
+                        return
+                    end
+                    if form_.targetUid == "" then
+                        SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged)
+                        return
+                    end
+                    if SendRewardMail(attachments) then
+                        -- 发送后清空勾选，避免误把历史勾选带入下次发送
+                        ClearItemSelections()
+                    end
+                end,
+            },
+        }),
+    })
+
     -- 系统审计页
     local auditRows = {}
     for index = math.max(1, #audit_ - 9), #audit_ do
@@ -689,8 +1035,10 @@ function AdminPanel.Build(UI, options)
         contentChildren = {
             querySection,
             PlayerDetailCard(UI, queriedPlayer_),
+            mailInfoSection,
             currencySection,
             equipmentSection,
+            itemSection,
             progressSection,
             banSection,
         }

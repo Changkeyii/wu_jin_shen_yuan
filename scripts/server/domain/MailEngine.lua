@@ -11,6 +11,7 @@ local InventoryState = require("server.domain.InventoryState")
 local DomainMath = require("server.domain.DomainMath")
 local TableUtils = require("server.domain.TableUtils")
 local MailRules = require("shared.MailRules")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 
 local MailEngine = {}
 
@@ -169,7 +170,11 @@ function MailEngine.Detail(mail, now)
             kind = attachment.kind,
             currency = attachment.currency,
             equipmentId = attachment.equipmentId,
+            itemId = attachment.itemId,
             name = attachment.name,
+            slot = attachment.slot,
+            rarity = attachment.rarity,
+            level = attachment.level,
             count = attachment.count or 1,
             claimedCount = attachment.claimedCount or 0,
             failReason = attachment.failReason,
@@ -220,6 +225,10 @@ function MailEngine.Create(state, spec, now)
                 kind = kind,
                 currency = attachment.currency,
                 equipmentId = attachment.equipmentId,
+                itemId = attachment.itemId,
+                slot = attachment.slot,
+                rarity = attachment.rarity,
+                level = attachment.level,
                 name = attachment.name,
                 count = math.max(1, TableUtils.ToInteger(attachment.count, 1)),
                 claimedCount = 0,
@@ -413,6 +422,16 @@ end
 
 local function createEquipmentItem(state, spec, now)
     local definition = Catalog.GetEquipmentDefinition(spec.equipmentId)
+    -- GM 按部位发放：未指定具体装备时，从该部位随机挑选一件
+    if not definition and spec.slot then
+        local candidates = {}
+        for _, entry in ipairs(Catalog.EQUIPMENT_DEFINITIONS or {}) do
+            if entry.slot == spec.slot then candidates[#candidates + 1] = entry end
+        end
+        if #candidates > 0 then
+            definition = candidates[math.random(1, #candidates)]
+        end
+    end
     if not definition then return nil end
     local level = Catalog.Clamp(TableUtils.ToInteger(spec.level, state.floor or 1), 1, 1000000)
     local enhance = Catalog.Clamp(TableUtils.ToInteger(spec.enhance, 0), 0, 1000)
@@ -470,6 +489,28 @@ function MailEngine.GrantAttachment(working, attachment, events, now)
         attachment.claimedCount = attachment.count or 1
         attachment.failReason = nil
         return true
+    end
+    if attachment.kind == "item" then
+        local itemId = tostring(attachment.itemId or "")
+        if type(working.wishPool) ~= "table" then working.wishPool = {} end
+        if itemId == "wish_ticket" then
+            working.wishPool.tickets = (working.wishPool.tickets or 0) + (attachment.count or 1)
+            attachment.claimedCount = attachment.count or 1
+            attachment.failReason = nil
+            return true
+        end
+        if itemId:match("^jar%.") then
+            local jar = WishPoolDefinitions.ResolveJar(itemId)
+            if jar then
+                if type(working.wishPool.jars) ~= "table" then working.wishPool.jars = {} end
+                working.wishPool.jars[itemId] = (working.wishPool.jars[itemId] or 0) + (attachment.count or 1)
+                attachment.claimedCount = attachment.count or 1
+                attachment.failReason = nil
+                return true
+            end
+        end
+        attachment.failReason = "REWARD_INVALID"
+        return false
     end
     if attachment.kind == "equipment" then
         local item = createEquipmentItem(working, attachment, now)

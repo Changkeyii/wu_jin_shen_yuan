@@ -1,6 +1,7 @@
 local Catalog = {}
 local BigNumber = require("shared.BigNumber")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
+local GameStateContracts = require("shared.GameStateContracts")
 local GameStatePolicy = require("shared.GameStatePolicy")
 local LargeNumber = require("shared.LargeNumber")
 local PowerEvaluator = require("shared.PowerEvaluator")
@@ -8,7 +9,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 local RewardPolicy = require("shared.RewardPolicy")
 local TowerRules = require("shared.TowerRules")
 
-Catalog.SCHEMA_VERSION = 6
+Catalog.SCHEMA_VERSION = GameStateContracts.VERSION
 Catalog.STEP_SECONDS = 12
 Catalog.COMBAT_TICK_SECONDS = 0.10
 Catalog.OFFLINE_REWARD_RATE = 0.20

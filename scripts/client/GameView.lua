@@ -11,6 +11,7 @@ local ItemTips = require("client.ItemTips")
 local FrameEditorView = require("client.FrameEditorView")
 local LoadingController = require("client.LoadingController")
 local PlayPresentation = require("client.PlayPresentation")
+local WishPoolController = require("client.WishPoolController")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DialogCoordinator = require("client.DialogCoordinator")
 local AudioController = require("client.AudioController")
@@ -22,6 +23,8 @@ local QuestView = require("client.QuestView")
 local QuestController = require("client.QuestController")
 local ActivityView = require("client.ActivityView")
 local ActivityController = require("client.ActivityController")
+local WishPoolView = require("client.WishPoolView")
+local WishPoolController = require("client.WishPoolController")
 local RewardDialogView = require("client.RewardDialogView")
 local RewardFeedbackController = require("client.RewardFeedbackController")
 local OfflineClaimController = require("client.OfflineClaimController")
@@ -202,6 +205,17 @@ local function BuildInventoryContext()
         end,
         showDisposition = function(mode, items)
             EquipmentDispositionDialog.Show(BuildDispositionContext(), { mode = mode, items = items })
+        end,
+        -- 道具使用入口（ItemTips 侧边按钮）：罐子打开 / 许愿券许愿等
+        useItem = function(item)
+            if not item then return false end
+            if item.category == "wishjar" and item.jarId then
+                return WishPoolController.OpenJar(item.jarId, 1)
+            end
+            if item.category == "consumable" and item.id == "wish_ticket" then
+                return WishPoolController.WishWithTicket()
+            end
+            return false
         end,
         setEquipmentLock = actionFns_.SetEquipmentLock,
         autoEquipBest = actionFns_.AutoEquipBest,
@@ -487,6 +501,7 @@ local function CreatePageContent()
     if game.page == "market" then return CreateMarketPage() end
     if game.page == "quest" then return QuestView.BuildPage() end
     if game.page == "activity" then return ActivityView.BuildPage() end
+    if game.page == "wish" then return WishPoolView.BuildPage() end
     if game.page == "frameEditor" then return BuildFrameEditorPage() end
     return HomeView.Build {
         game = game,
@@ -634,6 +649,16 @@ local function BuildRoot()
         showDisposition = function(mode, items)
             EquipmentDispositionDialog.Show(BuildDispositionContext(), { mode = mode, items = items })
         end,
+        useItem = function(item)
+            if not item then return false end
+            if item.category == "wishjar" and item.jarId then
+                return WishPoolController.OpenJar(item.jarId, 1)
+            end
+            if item.category == "consumable" and item.id == "wish_ticket" then
+                return WishPoolController.WishWithTicket()
+            end
+            return false
+        end,
     }
     ItemTips.AttachRoot(screenRoot_)
     LeaderboardDetailView.AttachRoot(screenRoot_)
@@ -671,6 +696,19 @@ local function BindServerEvents()
     end)
     ServerClient.On("delta", function(payload)
         game = GameStateAdapter.GetViewState()
+        -- 开罐事件：在背包/当前页全屏 overlay 播放开罐卷轴，不切换页面
+        for _, event in ipairs((payload and payload.events) or {}) do
+            local kind = event.kind or event.type
+            if kind == "wish_jar_opened" then
+                WishPoolView.HandleJarOpened(event)
+                break
+            end
+            -- 许愿券从背包使用：自动切到许愿池页播放跑马灯
+            if kind == "wish_drawn" and game.page ~= "wish" then
+                NavigationController.SwitchPage("wish")
+                break
+            end
+        end
         RewardFeedbackController.AccumulateDelta(payload)
         PlayPresentation.HandleDelta(payload)
         RewardFeedbackController.PresentDelta(payload)
@@ -692,6 +730,11 @@ local function BindServerEvents()
             if not ActivityView.IsStriking() then
                 RequestPageRefresh()
             end
+        elseif game.page == "wish" then
+            -- 许愿跑马灯和开罐卷轴由服务端事件驱动；动画期间禁止重建页面。
+            if not WishPoolView.IsAnimating() then
+                RequestPageRefresh()
+            end
         end
     end)
     ServerClient.On("status", function(payload)
@@ -699,6 +742,7 @@ local function BindServerEvents()
         if state ~= "ready" then
             FaceSlapController.ResetConnection()
             DailyVipController.ResetConnection()
+            WishPoolController.ResetConnection()
             OfflineClaimController.Reset()
             LootStashController.ResetConnection()
             PlayPresentation.CancelPendingAutoRun()
@@ -717,6 +761,7 @@ local function BindServerEvents()
     ServerClient.On("disconnected", function()
         FaceSlapController.ResetConnection()
         DailyVipController.ResetConnection()
+        WishPoolController.ResetConnection()
         OfflineClaimController.Reset()
         LootStashController.ResetConnection()
         PlayPresentation.CancelPendingAutoRun()
@@ -769,6 +814,16 @@ function GameView.Start()
     }
     ActivityController.Configure {
         requestPageRefresh = RequestPageRefresh,
+    }
+    WishPoolController.Configure {
+        requestPageRefresh = RequestPageRefresh,
+        -- 点击许愿后立即启动动画，消除“点击→动画启动”延迟；失败时取消动画
+        onWishStart = WishPoolView.StartPendingWish,
+        onWishError = WishPoolView.CancelAnimation,
+    }
+    WishPoolView.Configure {
+        requestPageRefresh = RequestPageRefresh,
+        root = screenRoot_,
     }
     FaceSlapController.Configure {
         getGame = GameStateAdapter.GetViewState,
@@ -867,6 +922,8 @@ function GameView.Stop()
     UnsubscribeFromEvent("Update")
     PlayPresentation.Reset()
     ActivityView.Reset()
+    WishPoolView.Reset()
+    WishPoolController.Reset()
     CommonPromptDialog.Reset()
     DialogCoordinator.Clear(false)
     ItemTips.Stop()
@@ -893,6 +950,7 @@ function GameView.HandleUpdate(eventType, eventData)
     ServerClient.Update(dt)
     LoadingController.Update(dt)
     DailyVipController.Update(dt)
+    WishPoolController.Update(dt)
     FaceSlapController.Update(dt)
     MailController.Update(dt)
     local state = GameStateAdapter.GetViewState()
@@ -900,6 +958,8 @@ function GameView.HandleUpdate(eventType, eventData)
     if game.page == "play" then PlayPresentation.Update(dt) end
     if game.page == "frameEditor" then FrameEditorView.Update(dt) end
     if game.page == "activity" then ActivityView.Update(dt) end
+    -- 许愿/开罐动画为全屏 overlay，任何页面都需要驱动；无动画时内部直接返回
+    WishPoolView.Update(dt)
     local physicalWidth = graphics:GetWidth()
     local physicalHeight = graphics:GetHeight()
     if physicalWidth ~= viewportWidth_ or physicalHeight ~= viewportHeight_ then

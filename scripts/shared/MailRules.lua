@@ -57,6 +57,7 @@ MailRules.CLAIM_ERRORS = {
 MailRules.ATTACH_KINDS = {
     currency = true,
     equipment = true,
+    item = true,
 }
 
 -- 补位优先级：高价值补偿 > 限时奖励 > 任务补发 > 普通奖励 > 系统通知

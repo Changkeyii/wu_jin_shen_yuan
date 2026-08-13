@@ -78,8 +78,9 @@ end
 
 local function ItemImage(item)
     if not item then return ASSETS.items.chest end
-    if item.category == "consumable" then return ASSETS.items.potion end
-    if item.category == "material" then return ASSETS.items.crystal end
+    if item.category == "consumable" then return item.icon or ASSETS.items.potion end
+    if item.category == "material" then return item.icon or ASSETS.items.crystal end
+    if item.category == "wishjar" then return item.icon or ASSETS.items.chest end
     local definition = item.equipmentId and EquipmentCatalog.Get(item.equipmentId)
     if definition and definition.icon then return definition.icon end
     return ASSETS.items.chest

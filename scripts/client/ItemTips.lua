@@ -356,7 +356,7 @@ local function BuildQuickActions(
     rightSideBlocked,
     allowActions
 )
-    if not context_.showDisposition then return nil end
+    if not context_.showDisposition and not (item.category == "wishjar" and context_.useItem) then return nil end
     -- 只读场景（如排行榜详情）隐藏出售/分解入口
     if allowActions == false then return nil end
 
@@ -367,8 +367,10 @@ local function BuildQuickActions(
     local buttonGap = 6
     local edgeOverlap = 4
     local margin = 28
+    local isWishJar = item.category == "wishjar"
+    -- 罐子是道具（只提供“使用”），不受神话装备/锁定拦截
     local protected = item.locked or item.aidLocked or context_.isEquipped(item)
-    local myth = context_.rarityName(item.rarity) == "神话"
+    local myth = not isWishJar and context_.rarityName(item.rarity) == "神话"
     if protected or myth then return nil end
 
     local function ShowPreview(mode)
@@ -376,21 +378,38 @@ local function BuildQuickActions(
         context_.showDisposition(mode, { item })
     end
 
-    local actions = {
-        {
-            label = "出售",
-            image = QUICK_ACTION_ASSETS.sell,
-            color = C.gold,
-            onClick = function() ShowPreview("sell") end,
-        },
-        {
-            label = "分解",
-            image = QUICK_ACTION_ASSETS.decompose,
-            color = C.text,
-            textTop = -3,
-            onClick = function() ShowPreview("decompose") end,
-        },
-    }
+    local actions
+    if isWishJar then
+        -- 罐子只提供“使用”入口，无出售 / 分解
+        actions = {
+            {
+                label = "使用",
+                image = context_.ASSETS.ui.inventoryActionGold,
+                color = C.text,
+                textTop = -3,
+                onClick = function()
+                    ItemTips.Hide("quick-use")
+                    context_.useItem(item)
+                end,
+            },
+        }
+    else
+        actions = {
+            {
+                label = "出售",
+                image = QUICK_ACTION_ASSETS.sell,
+                color = C.gold,
+                onClick = function() ShowPreview("sell") end,
+            },
+            {
+                label = "分解",
+                image = QUICK_ACTION_ASSETS.decompose,
+                color = C.text,
+                textTop = -3,
+                onClick = function() ShowPreview("decompose") end,
+            },
+        }
+    end
     local buttonCount = #actions
     local dockHeight = dockPadding * 2
         + buttonCount * buttonHeight

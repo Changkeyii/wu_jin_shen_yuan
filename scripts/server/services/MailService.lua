@@ -91,7 +91,8 @@ function MailService:Claim(userId, mailId, onComplete, resultSink)
                         resultSink.claimed[#resultSink.claimed + 1] = {
                             id = attachment.id, kind = attachment.kind,
                             currency = attachment.currency, equipmentId = attachment.equipmentId,
-                            name = attachment.name, count = attachment.count,
+                            itemId = attachment.itemId, name = attachment.name, count = attachment.count,
+                            slot = attachment.slot, rarity = attachment.rarity, level = attachment.level,
                         }
                     elseif attachment.failReason then
                         resultSink.failed[#resultSink.failed + 1] = {
@@ -111,6 +112,7 @@ function MailService:ClaimAll(userId, onComplete, resultSink)
         local proposal = MailEngine.ClaimAll(state, now)
         if proposal.ok and proposal.state and type(resultSink) == "table" then
             MailEngine.Ensure(proposal.state)
+            resultSink.claimed = {}
             resultSink.failed = {}
             local claimedCount = 0
             for _, mail in ipairs(proposal.state.mails) do
@@ -124,6 +126,16 @@ function MailService:ClaimAll(userId, onComplete, resultSink)
                     end
                 elseif MailEngine.HasAttachments(mail) then
                     claimedCount = claimedCount + 1
+                    for _, attachment in ipairs(mail.attachments) do
+                        if (attachment.claimedCount or 0) >= (attachment.count or 1) then
+                            resultSink.claimed[#resultSink.claimed + 1] = {
+                                id = attachment.id, kind = attachment.kind,
+                                currency = attachment.currency, equipmentId = attachment.equipmentId,
+                                itemId = attachment.itemId, name = attachment.name, count = attachment.count,
+                                slot = attachment.slot, rarity = attachment.rarity, level = attachment.level,
+                            }
+                        end
+                    end
                 end
             end
             resultSink.claimedCount = claimedCount

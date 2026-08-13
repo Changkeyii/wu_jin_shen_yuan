@@ -188,6 +188,35 @@ local function MailEntry(left, top, game)
     }
 end
 
+local function GameplayEntry(title, subtitle, accent, onClick)
+    return UI.Panel {
+        width = 480,
+        height = 128,
+        flexShrink = 0,
+        position = "relative",
+        clickable = true,
+        backgroundColor = { 10, 31, 72, 242 },
+        borderWidth = { 3, 5, 7, 3 },
+        borderColor = { 10, 16, 32, 255 },
+        boxShadow = { { x = 6, y = 6, blur = 0, color = { 0, 0, 0, 64 } } },
+        onClick = onClick,
+        children = {
+            UI.Panel {
+                position = "absolute", left = 12, top = 12, bottom = 12, width = 8,
+                backgroundColor = accent, pointerEvents = "none",
+            },
+            Kit.Txt(title, 27, C.text, {
+                position = "absolute", left = 42, top = 20, width = 400, height = 42,
+                textAlign = "left", textStroke = { width = 3, color = "#000000" },
+            }),
+            Kit.CompactTxt(subtitle, 16, C.textSecondary, {
+                position = "absolute", left = 42, top = 70, width = 400, height = 30,
+                textAlign = "left", textStroke = { width = 1, color = "#000000" },
+            }),
+        },
+    }
+end
+
 function HomeView.Build(context)
     context = context or {}
     local game = assert(context.game)
@@ -273,6 +302,23 @@ function HomeView.Build(context)
         },
     }
 
+    local gameplayEntries = UI.Panel {
+        width = statGridW,
+        height = 156,
+        flexShrink = 0,
+        marginTop = 6,
+        flexDirection = "row",
+        justifyContent = "space-between",
+        children = {
+            GameplayEntry("许愿池", "广告或稀有许愿券 · 传说起步", C.focus, function()
+                require("client.NavigationController").SwitchPage("wish")
+            end),
+            GameplayEntry("深渊远征", "4人数据团本 · 即将开放", C.mp, function()
+                ShowFeaturePreview("深渊远征")
+            end),
+        },
+    }
+
     -- 邮件入口固定在首页左上（ScrollView 之外），避免短屏滚动时被 ScrollView 的
     -- pan 手势取消长按状态（UI.CancelPointer 会中断按压）。
     return UI.Panel {
@@ -288,6 +334,7 @@ function HomeView.Build(context)
                         children = {
                             heroPanel,
                             statGrid,
+                            gameplayEntries,
                         },
                     },
                 },

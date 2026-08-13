@@ -28,6 +28,8 @@ ServerConfig.RATES = {
     PreviewOffline = { refillRate = 1, burst = 2 },
     CollectOffline = { refillRate = 0.1, burst = 1 },
     DailyClaim = { refillRate = 0.1, burst = 1 },
+    -- 许愿池：动画结算 + 服务端冷却兜底，限流需宽松，避免“跳过领取后立即再许愿”被误限
+    Wish = { refillRate = 1, burst = 4 },
     AdminQuery = { refillRate = 1, burst = 3 },
     AdminMutation = { refillRate = 0.2, burst = 2 },
     -- 市场：浏览走分片内缓存所以可以稍宽松；写操作会触发云事务，必须收紧。

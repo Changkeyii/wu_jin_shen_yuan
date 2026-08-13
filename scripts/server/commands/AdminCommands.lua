@@ -150,9 +150,12 @@ function AdminCommands.Register(router, adminService, services)
             type = "object",
             allowUnknown = false,
             fields = {
-                kind = { type = "string", enum = { "currency", "equipment" } },
+                kind = { type = "string", enum = { "currency", "equipment", "item" } },
                 currency = { type = "string", enum = { "gold", "fragments" } },
                 equipmentId = { type = "string", maxLength = 64 },
+                itemId = { type = "string", minLength = 1, maxLength = 64 },
+                slot = { type = "string", minLength = 1, maxLength = 32 },
+                name = { type = "string", minLength = 1, maxLength = 64 },
                 count = { type = "integer", min = 1, max = 1000000000 },
                 level = { type = "integer", min = 1, max = 1000000 },
                 rarity = { type = "string", enum = GameStateSchema.RARITIES },

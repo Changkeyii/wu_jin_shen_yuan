@@ -1,4 +1,5 @@
 local RarityCatalog = require("shared.RarityCatalog")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local Contracts = require("shared.GameStateContracts")
@@ -143,6 +144,18 @@ function Persistence.NewInitialState(now)
         automationPolicy = { autoEquip = false, lootAutoEquip = false, autoSkipStory = false },
         interactionMode = "normal",
         rewardPity = { epicMisses = 0, mythMisses = 0 },
+        wishPool = {
+            tickets = WishPoolDefinitions.STARTER_TICKETS,
+            jars = {},
+            adDayKey = 0,
+            adUsed = 0,
+            totalWishes = 0,
+            mythPity = 0,
+            mythGuarantees = 0,
+            characterPity = 0,
+            ownedCharacters = { ember_blade = true },
+            characterMarks = {},
+        },
         storyProgress = { introCompleted = false, highestCompletedChapter = 0, contentVersion = 1 },
         pendingStoryGate = nil,
         pendingEvent = nil,

@@ -18,6 +18,7 @@ local SCALAR_DELTA_FIELDS = {
     "currentMonster", "currentEvent", "lootStash",
     "quests",
     "activities",
+    "wishPool",
 }
 
 function PlayerTransition.Now(now)

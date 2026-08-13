@@ -35,6 +35,7 @@ function PlayerProfileService.New(options)
         clock = options.clock or os.time,
         sessions = {},
         offlineQuoteCounter = 0,
+        playTimeElapsed = 0,
     }, PlayerProfileService)
 end
 
@@ -309,6 +310,31 @@ function PlayerProfileService:OnlineUserIds()
         if session.ready and session.connection then result[#result + 1] = userId end
     end
     return result
+end
+
+-- 周期性结算在线游玩时长：每 playTimeInterval 秒把本次会话时长并入
+-- totalPlaySeconds（内存），并重置本次会话起点。
+-- 这样在线时长不再只等断线才入账，GM 查询（在线/离线）都能看到接近实时的累计值，
+-- 断线检查点（TouchAndDetach）仍负责最终持久化。
+function PlayerProfileService:CheckpointPlayTime(timeStep, playTimeInterval)
+    self.playTimeElapsed = self.playTimeElapsed + (timeStep or 0)
+    playTimeInterval = playTimeInterval or 30
+    if self.playTimeElapsed < playTimeInterval then return end
+    self.playTimeElapsed = 0
+    local now = self.clock()
+    for _, session in pairs(self.sessions) do
+        if session.ready and session.connection and session.state then
+            local playStart = session.playSessionStart
+            if playStart and playStart > 0 then
+                local elapsed = math.max(0, now - playStart)
+                if elapsed > 0 then
+                    session.state.totalPlaySeconds =
+                        (tonumber(session.state.totalPlaySeconds) or 0) + elapsed
+                end
+            end
+            session.playSessionStart = now
+        end
+    end
 end
 
 function PlayerProfileService:Snapshot(userId, isAdmin)

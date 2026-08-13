@@ -183,6 +183,13 @@ function AdminService:Query(actorUserId, targetUserId, onComplete)
             summary.power = state.stats and state.stats.power or 0
             -- 作弊判定辅助数据
             summary.totalPlaySeconds = state.totalPlaySeconds or 0
+            -- 在线会话时长并入累计：本次会话从 playSessionStart 起算，
+            -- 断线前累计在 totalPlaySeconds 中（TouchAndDetach 持久化）。
+            local activeSession = self.profileService:GetSession(targetUserId)
+            if result.data.online == true and activeSession and activeSession.playSessionStart then
+                local elapsed = math.max(0, self.clock() - (activeSession.playSessionStart or 0))
+                summary.totalPlaySeconds = summary.totalPlaySeconds + elapsed
+            end
             summary.autoRun = state.autoRun == true
             summary.pendingOfflineSeconds = state.pendingOfflineSeconds or 0
             summary.pendingEvent = state.pendingEvent ~= nil

@@ -8,6 +8,9 @@ local EquipmentItemSlot = require("client.EquipmentItemSlot")
 
 local InventoryView = {}
 
+-- 许愿罐批量开启数量：选中罐子后可在详情面板调整（1-6）
+local jarOpenCount_ = 1
+
 function InventoryView.EllipsizeName(text, maxChars)
     text = tostring(text or "")
     maxChars = math.max(1, math.floor(tonumber(maxChars) or 8))
@@ -246,13 +249,18 @@ end
 
 local function CreateItemIconCard(item, width, height)
     local selected = selectedInventoryId == item.id
+    local amount = item and (item.quantity or 1) or 1
+    local amountText = (amount > 1 or (item and item.category == "wishjar"))
+        and ("x" .. tostring(amount)) or nil
     return BackpackItemSlot.Build(context, item, {
         width = width or 180,
         height = height or width or 180,
         selected = selected,
         clickable = true,
-        showLockButton = true,
+        showLockButton = item and item.equipmentId ~= nil,
+        amountText = amountText,
         onClick = function(widget)
+            -- 罐子/许愿券等同普通道具：第一下选中，第二下或长按弹 Tips
             if selected and ShowItemTips then
                 local bounds = widget and widget.GetAbsoluteLayoutForHitTest
                     and widget:GetAbsoluteLayoutForHitTest()
@@ -389,6 +397,144 @@ local function CreateInventoryTabs()
     }
 end
 
+-- 罐子/许愿券等非装备道具详情：只有「使用」按钮，无出售/分解/穿戴/锁定。
+local function CreateItemUseDetail(item)
+    local isJar = item.category == "wishjar" and item.jarId ~= nil
+    local isTicket = item.id == "wish_ticket"
+    local WishPoolController = require("client.WishPoolController")
+
+    local detailRows = {
+        { "名称", item.name or "未知道具", RarityColor(item.rarity) },
+        { "品质", RarityName(item.rarity), RarityColor(item.rarity) },
+        { "分类", ItemPresentation.CategoryName(item.category), C.textSecondary },
+        { "数量", FormatInt(item.quantity or 1), C.textSecondary },
+        { "说明", item.desc or "许愿池玩法道具。", C.textSecondary },
+    }
+    local rows = {}
+    for _, row in ipairs(detailRows) do
+        rows[#rows + 1] = UI.Panel {
+            width = "100%",
+            height = 38,
+            flexDirection = "row",
+            alignItems = "center",
+            paddingLeft = 12,
+            paddingRight = 12,
+            backgroundImage = ASSETS.ui.detailRow,
+            backgroundFit = "contain",
+            children = {
+                UI.Panel {
+                    width = 96, height = 30, flexShrink = 0, justifyContent = "center",
+                    children = { CompactTxt(row[1], 18, C.textDim, { width = "100%", height = 30, textAlign = "left" }) },
+                },
+                UI.Panel {
+                    flexGrow = 1, flexBasis = 0, height = 30, justifyContent = "center",
+                    children = { CompactTxt(row[1] == "名称" and ShortenText(row[2], 16) or row[2], 18, row[3], {
+                        width = "100%", height = 30, textAlign = "right",
+                        textStroke = { width = 1, color = "#000000" },
+                    }) },
+                },
+            },
+        }
+    end
+
+    local onUse = nil
+    if isTicket then
+        onUse = function()
+            WishPoolController.WishWithTicket()
+        end
+    elseif isJar then
+        onUse = function()
+            WishPoolController.OpenJar(item.jarId, jarOpenCount_)
+        end
+    end
+
+    ---@type any[]
+    local rightChildren = {}
+    if onUse then
+        rightChildren[#rightChildren + 1] = UI.Panel {
+            position = "absolute", left = 748, top = 124, width = 150, height = 46,
+            alignItems = "center",
+            children = {
+                ImageButton("使用", 150, 46, ASSETS.ui.inventoryActionGold, function() onUse() end, false),
+            },
+        }
+    end
+
+    -- 许愿罐：批量开启数量选择（最多同时开 6 个，不能超过持有数量）
+    if isJar then
+        local maxCount = math.min(6, math.max(1, item.quantity or 1))
+        if jarOpenCount_ > maxCount then jarOpenCount_ = maxCount end
+        local chipRow = {}
+        for index = 1, maxCount do
+            local active = jarOpenCount_ == index
+            local chipIndex = index
+            chipRow[#chipRow + 1] = UI.Panel {
+                width = 46, height = 42, flexShrink = 0,
+                clickable = true,
+                backgroundImage = active and ASSETS.ui.inventoryTabOn or ASSETS.ui.inventoryTabOff,
+                backgroundFit = "sliced",
+                backgroundSlice = { 8, 8, 8, 8 },
+                borderWidth = active and 2 or 1,
+                borderColor = active and C.focus or C.border,
+                alignItems = "center", justifyContent = "center",
+                onClick = function()
+                    if jarOpenCount_ ~= chipIndex then
+                        jarOpenCount_ = chipIndex
+                        RequestPageRefresh()
+                    end
+                end,
+                children = {
+                    CompactTxt("x" .. tostring(chipIndex), 15, active and C.text or C.textSecondary, {
+                        width = 46, height = 42, textAlign = "center",
+                        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                    }),
+                },
+            }
+        end
+        rightChildren[#rightChildren + 1] = UI.Panel {
+            position = "absolute", left = 748, top = 184,
+            width = 150, height = 96,
+            flexDirection = "row", flexWrap = "wrap", gap = 6,
+            children = chipRow,
+        }
+    end
+
+    return UI.Panel {
+        width = 940, height = 470, flexShrink = 0,
+        backgroundImage = ASSETS.ui.inventoryDetail,
+        backgroundFit = "contain",
+        children = {
+            UI.Panel {
+                position = "absolute", left = 42, top = 66, width = 160, height = 160,
+                alignItems = "center", justifyContent = "center",
+                children = { InventoryImageBox(item, false, 152) },
+            },
+            UI.Panel {
+                position = "absolute", left = 210, top = 40, width = 520, height = 36,
+                justifyContent = "center",
+                children = { CompactTxt(ShortenText(item.name or "未知道具", 12), 24, RarityColor(item.rarity), {
+                    width = "100%", height = 36, textAlign = "left", textStroke = { width = 2, color = "#000000" },
+                }) },
+            },
+            UI.Panel {
+                position = "absolute", left = 210, top = 78, width = 520, height = 30,
+                justifyContent = "center",
+                children = { CompactTxt(RarityName(item.rarity) .. " / " .. ItemPresentation.CategoryName(item.category), 19, RarityColor(item.rarity), {
+                    width = "100%", height = 30, textAlign = "left", textStroke = { width = 1, color = "#000000" },
+                }) },
+            },
+            UI.ScrollView {
+                position = "absolute", left = 210, top = 116, width = 520, height = 260,
+                scrollY = true, showScrollbar = false,
+                children = {
+                    UI.Panel { width = "100%", gap = 6, paddingLeft = 0, paddingRight = 8, children = rows },
+                },
+            },
+            table.unpack(rightChildren),
+        },
+    }
+end
+
 local function CreateSelectedItemDetail()
     local item = GetItemById(selectedInventoryId)
     if not item then
@@ -405,6 +551,9 @@ local function CreateSelectedItemDetail()
                 UI.Panel { position = "absolute", left = 740, top = 132, width = 128, height = 128, backgroundImage = ASSETS.items.chest, backgroundFit = "contain", opacity = 0.55 },
             }
         }
+    end
+    if not item.equipmentId then
+        return CreateItemUseDetail(item)
     end
     local slotText = item.slot and SlotName(item.slot) or ItemPresentation.CategoryName(item.category)
     local setText = item.setId and (SETS[item.setId].short .. "套") or "散件"
@@ -594,8 +743,10 @@ local function CreateInventoryPage()
         if not selectedItem or not categoryMatches
             or (selectedItem.equipmentId and not EquipmentQuickFilter.Matches("bag", selectedItem))
         then
-            selectedInventoryId = firstItem.id
-            SetSelectedInventoryId(firstItem.id)
+            if firstItem then
+                selectedInventoryId = firstItem.id
+                SetSelectedInventoryId(firstItem.id)
+            end
         end
     else
         selectedInventoryId = nil

@@ -9,6 +9,9 @@ local Kit = require("client.ViewKit")
 local ServerClient = require("client.ServerClient")
 local MailRules = require("shared.MailRules")
 local CommonPromptDialog = require("client.CommonPromptDialog")
+local RewardDialogView = require("client.RewardDialogView")
+local EquipmentCatalog = require("shared.EquipmentCatalog")
+local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -85,6 +88,80 @@ end
 
 local function Toast(message, variant)
     UI.Toast.Show(tostring(message), { duration = 2.2, variant = variant or "error", position = "bottom" })
+end
+
+-- ============================================================================
+-- 附件解析（图标 / 名称）
+-- ============================================================================
+
+-- 附件图标：金币/碎片/装备/许愿券/罐子，统一解析为通用道具图标。
+local function AttachmentIcon(attachment)
+    if attachment.kind == "currency" then
+        return attachment.currency == "gold" and ASSETS.items.gold or ASSETS.items.crystal
+    end
+    if attachment.kind == "equipment" then
+        local definition = attachment.equipmentId and EquipmentCatalog.Get(attachment.equipmentId)
+        if definition and definition.icon then return definition.icon end
+        return ASSETS.items.chest
+    end
+    if attachment.kind == "item" then
+        local itemId = attachment.itemId or ""
+        if itemId == "wish_ticket" then return WishPoolDefinitions.ICONS.ticket end
+        if itemId:match("^jar%.") then
+            local jar = WishPoolDefinitions.ResolveJar(itemId)
+            if jar and jar.icon then return jar.icon end
+        end
+    end
+    return ASSETS.items.chest
+end
+
+local function AttachmentName(attachment)
+    if attachment.name and attachment.name ~= "" then return attachment.name end
+    if attachment.kind == "currency" then
+        return attachment.currency == "gold" and "金币" or "深渊碎片"
+    end
+    if attachment.kind == "equipment" then
+        local definition = attachment.equipmentId and EquipmentCatalog.Get(attachment.equipmentId)
+        if definition and definition.name then return definition.name end
+        return "装备"
+    end
+    if attachment.kind == "item" then
+        local itemId = attachment.itemId or ""
+        if itemId == "wish_ticket" then return "许愿券" end
+        local jar = WishPoolDefinitions.ResolveJar(itemId)
+        if jar and jar.name then return jar.name end
+        return "道具"
+    end
+    return "附件"
+end
+
+-- 领取结果弹出通用奖励弹窗（装备 / 货币 / 许愿券 / 罐子统一走通用卡片）。
+local function ShowClaimRewards(claimed)
+    local cards = {}
+    for _, att in ipairs(claimed or {}) do
+        local icon = AttachmentIcon(att)
+        local name = AttachmentName(att)
+        if att.kind == "equipment" then
+            RewardDialogView.AddCard(cards, icon, name, nil, att.rarity or "common", {
+                id = att.id,
+                equipmentId = att.equipmentId,
+                name = name,
+                rarity = att.rarity or "common",
+                level = att.level or 1,
+            })
+        else
+            RewardDialogView.AddCard(cards, icon, name, att.count or 1, "common", nil)
+        end
+    end
+    if #cards == 0 then return false end
+    RewardDialogView.Show({
+        title = "邮件奖励",
+        message = "奖励已领取",
+        cards = cards,
+        confirmText = "确认",
+        zIndex = 3200,
+    })
+    return true
 end
 
 -- ============================================================================
@@ -259,7 +336,10 @@ local function ActionBar()
                     onConfirm = function()
                         ServerClient.MailClaimAll(function(response)
                             if response and response.ok then
-                                Toast("领取完成", "success")
+                                local claimed = (response.data and response.data.claimed) or {}
+                                if #claimed == 0 or not ShowClaimRewards(claimed) then
+                                    Toast("领取完成", "success")
+                                end
                                 MailView.Refresh()
                             else
                                 Toast((response and response.reason) or "领取失败")
@@ -475,42 +555,59 @@ end
 -- 详情
 -- ============================================================================
 
+-- 附件展示：通用道具 icon 格子 + 名称 + 数量 + 领取状态。
 local function BuildAttachmentRow(attachment)
-    local label
-    if attachment.kind == "currency" then
-        label = (attachment.currency == "gold" and "金币" or "深渊碎片")
-            .. " × " .. Kit.FormatInt(attachment.count or 1)
-    else
-        label = (attachment.name or attachment.equipmentId or "装备")
-            .. " × " .. Kit.FormatInt(attachment.count or 1)
-    end
     local claimed = (attachment.claimedCount or 0) >= (attachment.count or 1)
+    local name = AttachmentName(attachment)
+    local levelText = attachment.level and attachment.level > 1
+        and string.format("Lv.%d", attachment.level)
+        or nil
+    local statusText = "未领取"
+    if claimed then
+        statusText = "已领取"
+    elseif attachment.failReason then
+        statusText = MailRules.CLAIM_ERRORS[attachment.failReason] or attachment.failReason
+    end
     return UI.Panel {
-        width = "100%",
-        height = 52,
+        width = 128,
+        height = 158,
         flexShrink = 0,
-        flexDirection = "row",
         alignItems = "center",
-        paddingLeft = 16,
-        paddingRight = 16,
-        borderBottomWidth = 1,
-        borderBottomColor = C.border,
+        justifyContent = "flex-start",
+        gap = 2,
+        paddingTop = 8,
         children = {
-            Kit.CompactTxt(label, 20, claimed and C.textSecondary or C.text, {
-                flexGrow = 1,
-                flexBasis = 0,
-                textAlign = "left",
+            UI.Panel {
+                width = 88,
+                height = 88,
+                flexShrink = 0,
+                backgroundImage = AttachmentIcon(attachment),
+                backgroundFit = "contain",
+                borderWidth = 1,
+                borderColor = claimed and C.border or C.focus,
+                borderRadius = 10,
+            },
+            Kit.CompactTxt(Kit.ShortenText(name, 6), 16, claimed and C.textSecondary or C.text, {
+                width = 118,
+                textAlign = "center",
                 textStroke = { width = 1, color = "#000000" },
+                pointerEvents = "none",
             }),
-            attachment.failReason
-                and Kit.CompactTxt(MailRules.CLAIM_ERRORS[attachment.failReason] or attachment.failReason, 17, C.error, {
-                    width = 220,
-                    textAlign = "right",
-                })
-                or Kit.CompactTxt(claimed and "已领取" or "未领取", 18, claimed and C.success or C.gold, {
-                    width = 120,
-                    textAlign = "right",
-                }),
+            levelText and Kit.CompactTxt(levelText, 15, C.gold, {
+                width = 118,
+                textAlign = "center",
+                pointerEvents = "none",
+            }) or Kit.CompactTxt("×" .. Kit.FormatInt(attachment.count or 1), 16, C.gold, {
+                width = 118,
+                textAlign = "center",
+                textStroke = { width = 1, color = "#000000" },
+                pointerEvents = "none",
+            }),
+            Kit.CompactTxt(statusText, 15, claimed and C.success or (attachment.failReason and C.error or C.warning), {
+                width = 118,
+                textAlign = "center",
+                pointerEvents = "none",
+            }),
         },
     }
 end
@@ -607,7 +704,10 @@ function MailView.PresentDetail(mail)
             onClick = function()
                 ServerClient.MailClaim(mail.mailId, function(response)
                     if response and response.ok then
-                        Toast("领取成功", "success")
+                        local claimed = (response.data and response.data.claimed) or {}
+                        if #claimed == 0 or not ShowClaimRewards(claimed) then
+                            Toast("领取成功", "success")
+                        end
                         MailView.ShowDetail(mail.mailId)
                     else
                         Toast((response and response.reason) or "领取失败")
@@ -797,6 +897,10 @@ function MailView.PresentDetail(mail)
                                 borderRadius = 10,
                                 overflow = "hidden",
                                 backgroundColor = { 10, 26, 52, 160 },
+                                flexDirection = "row",
+                                flexWrap = "wrap",
+                                gap = 8,
+                                padding = 10,
                                 children = #attachRows > 0 and attachRows or {
                                     Kit.CompactTxt("无附件", 20, C.textDim, {
                                         width = "100%", height = 52, textAlign = "center",
