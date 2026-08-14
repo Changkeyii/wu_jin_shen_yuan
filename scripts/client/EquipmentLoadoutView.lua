@@ -637,6 +637,7 @@ function EquipmentLoadoutView.Build(context)
                     if TutorialController.NotifyAction then
                         TutorialController.NotifyAction("equip_select")
                     end
+                    if item.slot then SetSelectedSlot(item.slot) end
                     SetSelectedInventoryId(item.id)
                     RequestPageRefresh()
                     return
@@ -650,6 +651,8 @@ function EquipmentLoadoutView.Build(context)
                     ShowItemTips(item, bounds, { source = "equipment" })
                     return
                 end
+                -- 选中列表装备时同步部位，保证强化/升星命中正确槽位。
+                if item.slot then SetSelectedSlot(item.slot) end
                 SetSelectedInventoryId(item.id)
                 RequestPageRefresh()
             end,
@@ -768,14 +771,25 @@ function EquipmentLoadoutView.Build(context)
         detailChildren[1] = CompactTxt("点击装备卡选择装备", 20, C.textDim, { width = "100%", height = 30, textAlign = "center" })
     end
 
-    local equippedForSelectedSlot = game.equipped and game.equipped[selectedSlot]
+    -- 强化/升星/卸下一律以「当前部位已穿戴装备」为准，与列表选中的候选卡解耦。
+    -- 12 个部位均可操作，不限制武器。
+    local equippedForSelectedSlot = nil
+    if game.equipped then
+        local raw = game.equipped[selectedSlot]
+        if type(raw) == "table" and raw.id then
+            equippedForSelectedSlot = raw
+        elseif raw ~= nil then
+            equippedForSelectedSlot = GetItemById(raw)
+        end
+    end
+    local hasEquippedOnSlot = equippedForSelectedSlot ~= nil
     local TutorialController = require("client.TutorialController")
     local tutorialStrengthenStep = TutorialController.IsActive
         and TutorialController.IsActive()
         and TutorialController.GetStep
         and TutorialController.GetStep() == 4
     -- 强化按钮：构造时写入 id + 教学蓝框；点击时主动推进引导，不依赖几何命中。
-    local strengthenDisabled = readOnly or not equippedForSelectedSlot
+    local strengthenDisabled = readOnly or not hasEquippedOnSlot
     local strengthenButton = UI.Panel {
         id = "tutorialStrengthen",
         width = 190,
@@ -801,10 +815,15 @@ function EquipmentLoadoutView.Build(context)
         } or nil,
         onClick = function()
             if strengthenDisabled then return end
+            -- 确保后续强化命令使用当前部位，而不是列表里未穿戴候选。
+            if equippedForSelectedSlot and equippedForSelectedSlot.id then
+                SetSelectedInventoryId(equippedForSelectedSlot.id)
+            end
+            SetSelectedSlot(selectedSlot)
             if TutorialController.NotifyAction then
                 TutorialController.NotifyAction("strengthen_open")
             end
-            if equippedForSelectedSlot then StrengthenSelected() end
+            StrengthenSelected()
         end,
         children = {
             CompactTxt("强化", 20, C.text, {
@@ -822,8 +841,23 @@ function EquipmentLoadoutView.Build(context)
         50,
         ASSETS.ui.buttonGreen or ASSETS.ui.buttonBlueWide,
         function()
-            if readOnly then return end
-            if AutoEquipBest then AutoEquipBest() end
+            if readOnly then
+                UI.Toast.Show("正在连接服务器，请稍后再试", {
+                    duration = 2.0,
+                    variant = "warning",
+                    position = "bottom",
+                })
+                return
+            end
+            if AutoEquipBest then
+                AutoEquipBest()
+            else
+                UI.Toast.Show("一键穿戴暂不可用", {
+                    duration = 2.0,
+                    variant = "warning",
+                    position = "bottom",
+                })
+            end
         end,
         readOnly
     )
@@ -842,11 +876,16 @@ function EquipmentLoadoutView.Build(context)
             autoEquipButton,
             strengthenButton,
             ImageButton("升星", 170, 50, ASSETS.ui.buttonPurple, function()
-                if equippedForSelectedSlot then StarSelected() end
-            end, readOnly or not equippedForSelectedSlot),
+                if not hasEquippedOnSlot then return end
+                if equippedForSelectedSlot and equippedForSelectedSlot.id then
+                    SetSelectedInventoryId(equippedForSelectedSlot.id)
+                end
+                SetSelectedSlot(selectedSlot)
+                StarSelected()
+            end, readOnly or not hasEquippedOnSlot),
             ImageButton("卸下", 170, 50, ASSETS.ui.buttonRed, function()
-                if equippedForSelectedSlot then UnequipSlot(selectedSlot) end
-            end, readOnly or not equippedForSelectedSlot),
+                if hasEquippedOnSlot then UnequipSlot(selectedSlot) end
+            end, readOnly or not hasEquippedOnSlot),
         },
     }
 

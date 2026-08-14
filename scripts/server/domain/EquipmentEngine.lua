@@ -281,48 +281,74 @@ local function considerEquipmentUpgrade(state, item, now, events)
     return true, tradeabilityChanged
 end
 
+-- 一键穿戴 / 自动整装：
+-- force=true（玩家点“一键穿戴”）：12 部位各自换成背包中战力最高的装备。
+-- force=false（挂机策略）：保留原有评分门槛，避免无脑换装破坏套装/生存。
 local function optimizeWholeLoadout(state, now, events, force)
-    if not force and not (state.automationPolicy and state.automationPolicy.autoEquip) then return false, false end
+    if not force and not (state.automationPolicy and state.automationPolicy.autoEquip) then
+        return false, false
+    end
     local originalEquipped = TableUtils.DeepCopy(state.equipped)
-    local original = evaluateLoadout(state, originalEquipped)
     local selected = TableUtils.DeepCopy(originalEquipped)
+    local changedSlots = {}
 
     for _, slot in ipairs(Catalog.SLOTS) do
-        local current = PlayerTransition.FindItem(state, selected[slot.id])
-        if not (current and (current.locked or current.aidLocked)) then
-            local bestEquipped = selected
-            local best = evaluateLoadout(state, selected)
-            local candidates = {}
-            for _, candidate in ipairs(state.inventory) do
-                if candidate.slot == slot.id and not candidate.aidLocked then
-                    candidates[#candidates + 1] = candidate
-                end
-            end
-            table.sort(candidates, function(left, right)
-                return Catalog.CompareItemPower(left, right) > 0
-            end)
-            for index = 1, math.min(6, #candidates) do
-                local candidate = candidates[index]
-                local proposal = TableUtils.DeepCopy(selected)
-                proposal[slot.id] = candidate.id
-                local evaluated = evaluateLoadout(state, proposal)
-                if upgradePasses(best, evaluated, 0)
-                    and (tonumber(evaluated.score.towerScore) or 0) > (tonumber(best.score.towerScore) or 0)
+        local slotId = slot.id
+        local current = PlayerTransition.FindItem(state, selected[slotId])
+        local locked = current and (current.locked or current.aidLocked)
+        if not locked then
+            local best = current
+            for _, candidate in ipairs(state.inventory or {}) do
+                if candidate
+                    and candidate.slot == slotId
+                    and candidate.equipmentId
+                    and not candidate.aidLocked
                 then
-                    best = evaluated
-                    bestEquipped = proposal
+                    if not best then
+                        best = candidate
+                    elseif Catalog.CompareItemPower(candidate, best) > 0 then
+                        best = candidate
+                    end
                 end
             end
-            selected = bestEquipped
+
+            if best and best.id and selected[slotId] ~= best.id then
+                local accept = true
+                if not force then
+                    -- 非强制路径仍做整装评分保护，避免挂机把生存/套装弄坏。
+                    local before = evaluateLoadout(state, selected)
+                    local proposal = TableUtils.DeepCopy(selected)
+                    proposal[slotId] = best.id
+                    local after = evaluateLoadout(state, proposal)
+                    accept = upgradePasses(before, after, 0)
+                        and (tonumber(after.score.towerScore) or 0)
+                            > (tonumber(before.score.towerScore) or 0)
+                    if accept then
+                        selected = proposal
+                    end
+                else
+                    selected[slotId] = best.id
+                end
+                if accept then
+                    changedSlots[#changedSlots + 1] = slotId
+                end
+            end
         end
     end
 
-    local optimized = evaluateLoadout(state, selected)
-    if TableUtils.DeepEqual(selected, originalEquipped)
-        or not upgradePasses(original, optimized, RewardPolicy.AUTO_EQUIP_MINIMUM_GAIN)
-    then
+    if #changedSlots == 0 or TableUtils.DeepEqual(selected, originalEquipped) then
         return false, false
     end
+
+    -- 挂机自动整装仍要求整体达到最小收益；手动一键穿戴只要有部位提升就提交。
+    if not force then
+        local original = evaluateLoadout(state, originalEquipped)
+        local optimized = evaluateLoadout(state, selected)
+        if not upgradePasses(original, optimized, RewardPolicy.AUTO_EQUIP_MINIMUM_GAIN) then
+            return false, false
+        end
+    end
+
     state.previousLoadout = {
         equipped = originalEquipped,
         createdAt = PlayerTransition.Now(now),
@@ -338,19 +364,21 @@ local function optimizeWholeLoadout(state, now, events, force)
         InventoryState.RemoveFromLootStash(state, itemId)
     end
     state.pendingEquipDecision = nil
-    original = evaluateLoadout(state, originalEquipped, true)
-    optimized = evaluateLoadout(state, selected, true)
+    local original = evaluateLoadout(state, originalEquipped, true)
+    local optimized = evaluateLoadout(state, selected, true)
     PlayerTransition.RefreshDerived(state)
     local equippedPayload = {
         automatic = true,
         batch = true,
-        changedSlots = true,
+        force = force == true,
+        changedSlots = changedSlots,
+        changedCount = #changedSlots,
         oldTowerScore = original.score.towerScore,
         newTowerScore = optimized.score.towerScore,
         oldBossScore = original.score.bossScore,
         newBossScore = optimized.score.bossScore,
-        headroomDelta = (optimized.display.equivalentFloor or 0)
-            - (original.display.equivalentFloor or 0),
+        headroomDelta = (optimized.display and optimized.display.equivalentFloor or 0)
+            - (original.display and original.display.equivalentFloor or 0),
     }
     DomainMath.AddMagnitudeFields(
         equippedPayload,
@@ -358,6 +386,11 @@ local function optimizeWholeLoadout(state, now, events, force)
         "displayedPowerDeltaBig",
         DomainMath.DisplayedPowerDelta(original.display, optimized.display))
     events[#events + 1] = PlayerTransition.Event("equipment_equipped", equippedPayload)
+    events[#events + 1] = PlayerTransition.Event("auto_equip", {
+        evaluatedBy = force and "ItemPower" or "PowerEvaluator",
+        changedCount = #changedSlots,
+        force = force == true,
+    })
     return true, tradeabilityChanged
 end
 
@@ -422,11 +455,11 @@ EquipmentEngine.UnequipItem = EquipmentEngine.Unequip
 function EquipmentEngine.AutoEquip(inputState, now)
     local working = PlayerTransition.Copy(inputState, now)
     local events = {}
+    -- 玩家主动一键穿戴：强制按 12 部位最高战力替换。
     local changed, tradeabilityChanged = optimizeWholeLoadout(working, now, events, true)
     if not changed then
         return PlayerTransition.NoCommit(inputState, now, "auto_equip_unchanged")
     end
-    events[#events + 1] = PlayerTransition.Event("auto_equip", { evaluatedBy = "PowerEvaluator" })
     return PlayerTransition.Finalize(inputState, working, now, "auto_equip", events, tradeabilityChanged, true)
 end
 

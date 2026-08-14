@@ -73,6 +73,42 @@ local function ShowDecomposeRewardDialog(gold, fragments, count)
     }
 end
 
+-- 解析当前强化/升星目标部位：
+-- 1) 优先使用当前选中的「已穿戴」装备所属部位
+-- 2) 否则使用当前选中的部位槽
+-- 3) 仅序章 step4 强制武器槽（教学需要）
+local function ResolveUpgradeSlot(preferTutorialWeapon)
+    local inventoryState = context_ and context_.inventoryState or {}
+    local game = context_ and context_.getGame and context_.getGame() or nil
+    local slotId = inventoryState.selectedSlot
+    local selectedId = inventoryState.selectedInventoryId
+
+    if game and selectedId ~= nil then
+        local selectedItem = ItemView.GetItemById(game, selectedId)
+        if selectedItem and selectedItem.slot and ItemView.IsEquipped(game, selectedItem) then
+            slotId = selectedItem.slot
+        end
+    end
+
+    if preferTutorialWeapon then
+        local TutorialController = require("client.TutorialController")
+        if TutorialController.IsActive
+            and TutorialController.IsActive()
+            and TutorialController.GetStep
+            and TutorialController.GetStep() == 4
+        then
+            if game and game.equipped and game.equipped.weapon then
+                slotId = "weapon"
+            end
+        end
+    end
+
+    if slotId and inventoryState then
+        inventoryState.selectedSlot = slotId
+    end
+    return slotId
+end
+
 local actionFns_ = {}
 actionFns_.CollectOffline = function(...) return context_.collectOffline(...) end
 actionFns_.EquipItem = function(item)
@@ -119,7 +155,14 @@ actionFns_.UnequipSlot = function(slotId)
     end
 end
 actionFns_.AutoEquipBest = function()
+    print("[Equip] AutoEquipBest clicked")
     ServerClient.AutoEquip(function(response)
+        print(string.format(
+            "[Equip] AutoEquip response ok=%s committed=%s code=%s",
+            tostring(response and response.ok),
+            tostring(response and response.data and response.data.committed),
+            tostring(response and response.code)
+        ))
         if response and response.ok then
             -- NoCommit 时 committed=false：当前已是最优搭配。
             local committed = response.data and response.data.committed == true
@@ -129,9 +172,11 @@ actionFns_.AutoEquipBest = function()
                     variant = "info",
                     position = "bottom",
                 })
+                if context_.requestPageRefresh then context_.requestPageRefresh() end
                 return
             end
-            context_.actionResult(response, "已自动穿戴最高战力装备")
+            if not context_.actionResult(response, "已自动穿戴最高战力装备") then return end
+            if context_.requestPageRefresh then context_.requestPageRefresh() end
             return
         end
         context_.actionResult(response)
@@ -424,21 +469,23 @@ actionFns_.SetEquipmentLock = function(item)
 end
 actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, context_.actionResult) end
 actionFns_.StrengthenSelected = function()
-    local slotId = context_.inventoryState.selectedSlot
-    -- 序章强化：强制对已穿戴武器槽发起预览，避免当前部位无装备导致无弹窗/无引导。
-    do
-        local TutorialController = require("client.TutorialController")
-        if TutorialController.IsActive
-            and TutorialController.IsActive()
-            and TutorialController.GetStep
-            and TutorialController.GetStep() == 4
-        then
-            local game = context_.getGame()
-            if game and game.equipped and game.equipped.weapon then
-                slotId = "weapon"
-                context_.inventoryState.selectedSlot = "weapon"
-            end
-        end
+    local slotId = ResolveUpgradeSlot(true)
+    if not slotId then
+        UI.Toast.Show("请先选择一个已穿戴的装备部位", {
+            duration = 2.0,
+            variant = "warning",
+            position = "bottom",
+        })
+        return
+    end
+    local game = context_.getGame()
+    if not (game and game.equipped and game.equipped[slotId]) then
+        UI.Toast.Show("该部位没有已穿戴装备，无法强化", {
+            duration = 2.0,
+            variant = "warning",
+            position = "bottom",
+        })
+        return
     end
     ServerClient.StrengthenPreview(slotId, function(response)
         if not response or not response.ok or type(response.data) ~= "table" then
@@ -555,7 +602,24 @@ actionFns_.StrengthenSelected = function()
     end)
 end
 actionFns_.StarSelected = function()
-    local slotId = context_.inventoryState.selectedSlot
+    local slotId = ResolveUpgradeSlot(false)
+    if not slotId then
+        UI.Toast.Show("请先选择一个已穿戴的装备部位", {
+            duration = 2.0,
+            variant = "warning",
+            position = "bottom",
+        })
+        return
+    end
+    local game = context_.getGame()
+    if not (game and game.equipped and game.equipped[slotId]) then
+        UI.Toast.Show("该部位没有已穿戴装备，无法升星", {
+            duration = 2.0,
+            variant = "warning",
+            position = "bottom",
+        })
+        return
+    end
     ServerClient.StarPreview(slotId, function(response)
         if not response or not response.ok or type(response.data) ~= "table" then
             context_.actionResult(response)
