@@ -35,6 +35,16 @@ end
 
 function EquipmentUpgradePromptController.Show(value)
     value = value or {}
+    -- 序章强引导期间禁止任何“发现更强装备”弹层，避免打断/卡死教学。
+    do
+        local ok, TutorialController = pcall(require, "client.TutorialController")
+        if ok and TutorialController and TutorialController.IsActive and TutorialController.IsActive() then
+            RemoveOverlay()
+            pendingValue_ = nil
+            pendingDecisionId_ = nil
+            return false
+        end
+    end
     local decisionId = value.decisionId or value.itemId
     if not root_ or not context_ or decisionId == nil then return false end
     if overlay_ and tostring(decisionId) == tostring(pendingDecisionId_) then return false end
@@ -173,6 +183,11 @@ function EquipmentUpgradePromptController.AttachRoot(root)
     root_ = root
     overlay_ = nil
     pendingDecisionId_ = nil
+    local ok, TutorialController = pcall(require, "client.TutorialController")
+    if ok and TutorialController and TutorialController.IsActive and TutorialController.IsActive() then
+        pendingValue_ = nil
+        return
+    end
     if pendingValue then EquipmentUpgradePromptController.Show(pendingValue) end
 end
 

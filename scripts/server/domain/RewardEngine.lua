@@ -274,14 +274,87 @@ end
 
 function RewardEngine.ClaimLootStash(inputState, now)
     local working = PlayerTransition.Copy(inputState, now)
+    InventoryState.PruneLootStash(working)
     local count = #(working.lootStash or {})
     if count == 0 then
-        return PlayerTransition.NoCommit(inputState, now, "loot_stash_empty")
+        -- 明确失败，避免客户端把 empty NoCommit 当成“成功但无反馈”。
+        return PlayerTransition.Failure(
+            inputState,
+            now,
+            "LOOT_STASH_EMPTY",
+            "暂存箱为空或装备已不在背包中"
+        )
     end
+    -- 暂存箱中的装备本就在 inventory 内，领取只是清标记，不占用新格子。
+    local freeSlots, capacity, used = Catalog.GetInventoryFreeSlots(working)
     working.lootStash = {}
     return PlayerTransition.Finalize(inputState, working, now, "loot_stash_claimed", {
-        PlayerTransition.Event("loot_stash_claimed", { count = count }),
-    }, false, false)
+        PlayerTransition.Event("loot_stash_claimed", {
+            count = count,
+            capacity = capacity,
+            used = used,
+            freeSlots = freeSlots,
+        }),
+    }, true, false)
+end
+
+--- 看广告解锁背包格子。
+function RewardEngine.ExpandInventoryByAd(inputState, now)
+    local working = PlayerTransition.Copy(inputState, now)
+    now = PlayerTransition.Now(now)
+    local dayKey = serverDayKey(now)
+    local expand = type(working.inventoryExpand) == "table" and working.inventoryExpand or {}
+    local adDayKey = math.max(0, math.floor(tonumber(expand.adDayKey) or 0))
+    local adUsed = math.max(0, math.floor(tonumber(expand.adUsed) or 0))
+    if adDayKey ~= dayKey then
+        adDayKey = dayKey
+        adUsed = 0
+    end
+    local bonus = math.max(0, math.floor(tonumber(working.inventoryBonusSlots) or 0))
+    if bonus >= Catalog.INVENTORY_EXPAND_MAX_BONUS then
+        return PlayerTransition.Failure(inputState, now, "INVENTORY_EXPAND_MAX", "背包扩容已达上限")
+    end
+    if adUsed >= Catalog.INVENTORY_EXPAND_AD_PER_DAY then
+        return PlayerTransition.Failure(inputState, now, "INVENTORY_EXPAND_AD_LIMIT", "今日广告扩容次数已用完")
+    end
+    local gain = math.min(
+        Catalog.INVENTORY_EXPAND_PER_AD,
+        Catalog.INVENTORY_EXPAND_MAX_BONUS - bonus
+    )
+    if gain <= 0 then
+        return PlayerTransition.Failure(inputState, now, "INVENTORY_EXPAND_MAX", "背包扩容已达上限")
+    end
+    working.inventoryBonusSlots = bonus + gain
+    working.inventoryExpand = {
+        adDayKey = dayKey,
+        adUsed = adUsed + 1,
+    }
+    -- 扩容后若仍有暂停，清掉满包暂停，便于继续挂机。
+    if working.pauseReason == "inventory_full" then
+        local freeSlots = select(1, Catalog.GetInventoryFreeSlots(working))
+        if freeSlots > 0 then
+            working.pauseReason = nil
+        end
+    end
+    local capacity = Catalog.GetInventoryCapacity(working)
+    local events = {
+        PlayerTransition.Event("inventory_expanded", {
+            gain = gain,
+            bonus = working.inventoryBonusSlots,
+            capacity = capacity,
+            adUsed = working.inventoryExpand.adUsed,
+            adPerDay = Catalog.INVENTORY_EXPAND_AD_PER_DAY,
+        }),
+    }
+    return PlayerTransition.Finalize(
+        inputState,
+        working,
+        now,
+        "inventory_expanded",
+        events,
+        false,
+        false
+    )
 end
 
 function RewardEngine.TouchActive(inputState, now)
@@ -492,7 +565,7 @@ local function simulateOfflineCollection(inputState, now, rng)
 
     local dropCount = math.floor(expectedDrops)
     if DomainMath.RandomFloat(rng) < expectedDrops - dropCount then dropCount = dropCount + 1 end
-    local availableSlots = math.max(0, Catalog.INVENTORY_CAP - #working.inventory)
+    local availableSlots = math.max(0, Catalog.GetInventoryCapacity(working) - #working.inventory)
     local generatedDrops = math.min(dropCount, availableSlots)
     local generatedChapterDrops = 0
     local generatedChapterRarities = {}
@@ -666,7 +739,7 @@ function RewardEngine.ClaimOfflineReward(inputState, ledger, now)
         if used[tostring(item.id)] then item.id = allocateItemId(working) end
         used[tostring(item.id)] = true
         InventoryState.RecordCollection(working, item)
-        if #working.inventory < Catalog.INVENTORY_CAP then
+        if #working.inventory < Catalog.GetInventoryCapacity(working) then
             working.inventory[#working.inventory + 1] = item
             InventoryState.AddToLootStash(working, item.id)
             stored = stored + 1
@@ -784,13 +857,13 @@ function RewardEngine.GrantEquipment(inputState, specification, now)
             return PlayerTransition.Finalize(inputState, working, now, "equipment_auto_disposed", events, false, false)
         end
         return PlayerTransition.Failure(inputState, now, "INVENTORY_FULL", "inventory is full", {
-            PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+            PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) }),
         })
     end
     item.power = Catalog.GetItemPower(item)
     working.inventory[#working.inventory + 1] = item
     PlayerTransition.RefreshDerived(working)
-    if #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
+    if #working.inventory >= Catalog.GetInventoryCapacity(working) and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
         working.autoRun = false
         working.pauseReason = "inventory_full"
     end

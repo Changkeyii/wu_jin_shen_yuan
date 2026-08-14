@@ -557,6 +557,15 @@ local function sanitizeWishPool(value)
     }
 end
 
+-- 新手剧情引导进度：保留 step/completed；缺失时默认从 step 1 开始。
+local function sanitizeTutorial(value)
+    if type(value) ~= "table" then return { step = 1, completed = false } end
+    local step = math.max(1, math.min(6, TableUtils.ToInteger(value.step, 1)))
+    local completed = value.completed == true
+    if completed then step = 6 end
+    return { step = step, completed = completed }
+end
+
 local function safePauseReason(value)
     if type(value) ~= "string" or #value > 64 then return nil end
     return value
@@ -670,6 +679,17 @@ function StateNormalizer.Normalize(rawState, now)
         currentMonster = nil,
         nextItemId = math.max(1, TableUtils.ToInteger(rawState.nextItemId or rawState.itemSequence, 1)),
         inventory = {},
+        inventoryBonusSlots = math.max(0, math.min(
+            Catalog.INVENTORY_EXPAND_MAX_BONUS or 700,
+            TableUtils.ToInteger(rawState.inventoryBonusSlots, 0)
+        )),
+        inventoryExpand = (function()
+            local raw = type(rawState.inventoryExpand) == "table" and rawState.inventoryExpand or {}
+            return {
+                adDayKey = math.max(0, TableUtils.ToInteger(raw.adDayKey, 0)),
+                adUsed = math.max(0, math.min(100, TableUtils.ToInteger(raw.adUsed, 0))),
+            }
+        end)(),
         overflowLoot = {},
         lootStash = {},
         equipped = {},
@@ -691,6 +711,7 @@ function StateNormalizer.Normalize(rawState, now)
         quests = sanitizeQuests(rawState.quests),
         activities = sanitizeActivities(rawState.activities),
         wishPool = sanitizeWishPool(rawState.wishPool),
+        tutorial = sanitizeTutorial(rawState.tutorial),
     }
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}
@@ -813,7 +834,7 @@ function StateNormalizer.Normalize(rawState, now)
         usedIds[itemId] = true
 
         local target = preferredTarget
-        if target == state.inventory and #state.inventory >= Catalog.INVENTORY_CAP then
+        if target == state.inventory and #state.inventory >= Catalog.GetInventoryCapacity(state) then
             target = state.overflowLoot
         end
         if target == state.overflowLoot and #state.overflowLoot >= GameStateSchema.TEMPORARY_LOOT_CAP then
@@ -942,7 +963,7 @@ function StateNormalizer.Normalize(rawState, now)
     end
     if #state.overflowLoot > 0
         or droppedOverflowCount > 0
-        or (#state.inventory >= Catalog.INVENTORY_CAP and state.inventoryPolicy.pauseOnFull and not autoPolicyEnabled)
+        or (#state.inventory >= Catalog.GetInventoryCapacity(state) and state.inventoryPolicy.pauseOnFull and not autoPolicyEnabled)
     then
         state.autoRun = false
         state.pauseReason = "inventory_full"

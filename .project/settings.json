@@ -29,8 +29,8 @@
         "enabled": true
       },
       "match_info": {
-        "desc_name": "free_match",
-        "immediately_start": false,
+        "desc_name": "free_match_with_ai",
+        "immediately_start": true,
         "match_timeout": 0,
         "player_number": 1
       }
@@ -48,7 +48,7 @@
         }
       ],
       "top_on_placements": [],
-      "synced_at": "2026-08-12T10:17:22.234Z"
+      "synced_at": "2026-08-14T12:27:34.550Z"
     }
   }
 }

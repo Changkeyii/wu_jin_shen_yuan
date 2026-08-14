@@ -220,6 +220,23 @@ function PlayEffects.GetLootDisplay()
     return lastLootText_, lastLootIcon_, lastLootRarity_
 end
 
+--- 是否仍在播放掉落/拾取表现（含队列与金币散射）。
+--- 仅统计“还在飞”的对象，过期残留不计入，避免引导永久等待。
+function PlayEffects.IsLootPresentationActive()
+    if pickup_ ~= nil then return true end
+    if #pickupQueue_ > 0 then return true end
+    for _, burst in pairs(currencyBursts_ or {}) do
+        if type(burst) == "table" then
+            local age = tonumber(burst.age) or 0
+            -- 金币散射完整动画约 1.18s；超过则视为已结束。
+            if age < 1.25 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 function PlayEffects.Update(dt, frame)
     if not refs_.pickup then return end
     local assets = Assets()

@@ -22,6 +22,14 @@ CombatSequence.SEQUENCES = {
         hitFrames = { 12, 14, 16, 18 },
         endFrame = 32,
     },
+    {
+        -- 终结技：更慢更有力、多段命中、范围伤害（连招链第 4 击）
+        id = "attackD",
+        frameCount = 48,
+        fps = 14,
+        hitFrames = { 16, 20, 24, 28, 32 },
+        endFrame = 44,
+    },
 }
 
 CombatSequence.TRAVEL_SECONDS = 0.55

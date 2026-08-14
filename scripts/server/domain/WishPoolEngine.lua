@@ -40,15 +40,6 @@ local function weightedPick(entries, rng)
     return entries[#entries]
 end
 
-local function resetAdDay(wishPool, now)
-    local dayKey = WishPoolDefinitions.DayKey(now)
-    if wishPool.adDayKey ~= dayKey then
-        wishPool.adDayKey = dayKey
-        wishPool.adUsed = 0
-    end
-    return dayKey
-end
-
 local function pickCharacter(wishPool, rng)
     local locked = {}
     for _, characterId in ipairs(WishPoolDefinitions.CHARACTER_ORDER) do
@@ -156,65 +147,104 @@ local function grantReward(wishPool, reward, events)
     end
 end
 
-function WishPoolEngine.Wish(inputState, payment, now, rng)
-    if payment ~= "ticket" and payment ~= "ad" then
-        return PlayerTransition.Failure(inputState, now, "INVALID_ARGUMENT", "未知许愿方式")
+-- payment 仅支持 ticket；count=1 扣 1 券，count=10 扣 8 券。
+function WishPoolEngine.Wish(inputState, payment, now, rng, count)
+    if payment ~= "ticket" then
+        return PlayerTransition.Failure(inputState, now, "INVALID_ARGUMENT", "仅支持许愿券许愿")
     end
+    local drawCount, ticketCost = WishPoolDefinitions.ResolveDrawPlan(count)
     local working = PlayerTransition.Copy(inputState, now)
     local wishPool = working.wishPool
     local cooldown = wishCooldownRemaining(wishPool, now)
     if cooldown then
         return PlayerTransition.Failure(inputState, now, "WISH_COOLDOWN", "许愿结算中，请稍候")
     end
-    local dayKey = resetAdDay(wishPool, now)
 
-    if payment == "ticket" then
-        if wishPool.tickets <= 0 then
-            return PlayerTransition.Failure(inputState, now, "WISH_TICKET_REQUIRED", "许愿券不足")
+    if (wishPool.tickets or 0) < ticketCost then
+        return PlayerTransition.Failure(inputState, now, "WISH_TICKET_REQUIRED", "许愿券不足")
+    end
+    wishPool.tickets = wishPool.tickets - ticketCost
+
+    local events = {}
+    local draws = {}
+    local showcase = nil
+    for drawIndex = 1, drawCount do
+        local reward = makeDrawReward(wishPool, rng)
+        updatePity(wishPool, reward)
+        grantReward(wishPool, reward, events)
+
+        local candidates = WishPoolDefinitions.CellCandidates(
+            reward.kind == "character" and "character" or reward.jarKind,
+            reward.rarity
+        )
+        local stopCell = candidates[randomInt(rng, 1, #candidates)]
+        local draw = {
+            index = drawIndex,
+            rewardKind = reward.kind,
+            jarId = reward.jarId,
+            jarKind = reward.jarKind,
+            rarity = reward.rarity,
+            slot = reward.slot,
+            characterId = reward.characterId,
+            stopCell = stopCell,
+            forced = reward.forced == true,
+        }
+        draws[#draws + 1] = draw
+
+        -- 十连展示优先：角色 > 神话 > 史诗 > 传说 > 其他；同级取最后一次。
+        local rank = 1
+        if reward.kind == "character" then
+            rank = 5
+        elseif reward.rarity == "myth" then
+            rank = 4
+        elseif reward.rarity == "epic" then
+            rank = 3
+        elseif reward.rarity == "legendary" then
+            rank = 2
         end
-        wishPool.tickets = wishPool.tickets - 1
-    else
-        if wishPool.adUsed >= WishPoolDefinitions.AD_DAILY_LIMIT then
-            return PlayerTransition.Failure(inputState, now, "WISH_AD_LIMIT_REACHED", "今日广告许愿次数已用完")
+        if not showcase or rank >= (showcase.rank or 0) then
+            showcase = {
+                rank = rank,
+                rewardKind = reward.kind,
+                jarId = reward.jarId,
+                jarKind = reward.jarKind,
+                rarity = reward.rarity,
+                slot = reward.slot,
+                characterId = reward.characterId,
+                stopCell = stopCell,
+                forced = reward.forced == true,
+            }
         end
-        wishPool.adUsed = wishPool.adUsed + 1
     end
 
-    local reward = makeDrawReward(wishPool, rng)
-    updatePity(wishPool, reward)
-    local events = {}
-    grantReward(wishPool, reward, events)
-
-    local candidates = WishPoolDefinitions.CellCandidates(
-        reward.kind == "character" and "character" or reward.jarKind,
-        reward.rarity
-    )
-    local stopCell = candidates[randomInt(rng, 1, #candidates)]
+    showcase = showcase or draws[#draws]
     events[#events + 1] = PlayerTransition.Event("wish_drawn", {
-        payment = payment,
-        dayKey = dayKey,
-        adUsed = wishPool.adUsed,
-        adLimit = WishPoolDefinitions.AD_DAILY_LIMIT,
+        payment = "ticket",
+        count = drawCount,
+        ticketCost = ticketCost,
         tickets = wishPool.tickets,
         totalWishes = wishPool.totalWishes,
         mythPity = wishPool.mythPity,
         characterPity = wishPool.characterPity,
-        rewardKind = reward.kind,
-        jarId = reward.jarId,
-        jarKind = reward.jarKind,
-        rarity = reward.rarity,
-        slot = reward.slot,
-        characterId = reward.characterId,
-        stopCell = stopCell,
-        forced = reward.forced == true,
+        -- 兼容旧客户端单抽字段：取十连中的展示奖励。
+        rewardKind = showcase.rewardKind,
+        jarId = showcase.jarId,
+        jarKind = showcase.jarKind,
+        rarity = showcase.rarity,
+        slot = showcase.slot,
+        characterId = showcase.characterId,
+        stopCell = showcase.stopCell,
+        forced = showcase.forced == true,
+        draws = draws,
     })
 
     print(string.format(
-        "[WishPool] payment=%s total=%d result=%s stop=%d",
-        payment,
+        "[WishPool] payment=ticket count=%d cost=%d total=%d showcase=%s stop=%d",
+        drawCount,
+        ticketCost,
         wishPool.totalWishes,
-        tostring(reward.jarId or reward.characterId),
-        stopCell
+        tostring(showcase.jarId or showcase.characterId),
+        showcase.stopCell or 0
     ))
     touchWishAction(wishPool, now)
     return PlayerTransition.Finalize(inputState, working, now, "wish_drawn", events, false, false)

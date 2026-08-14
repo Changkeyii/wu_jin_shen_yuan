@@ -709,8 +709,9 @@ local function CreateSelectedItemDetail()
     }
 end
 
-local function CreateInventoryActionButton(text, image, onClick)
+local function CreateInventoryActionButton(text, image, onClick, buttonId)
     return UI.Panel {
+        id = buttonId,
         width = 260,
         height = 58,
         flexShrink = 0,
@@ -727,6 +728,7 @@ local function CreateInventoryActionButton(text, image, onClick)
                 height = 58,
                 textAlign = "center",
                 textStroke = { width = 1, color = "#000000" },
+                pointerEvents = "none",
             }),
         },
     }
@@ -762,7 +764,13 @@ local function CreateInventoryPage()
             backgroundFit = "contain",
             children = {
                 Txt("深渊背包", 32, C.text, { position = "absolute", left = 94, top = 28, width = 300, height = 48, textAlign = "center", textStroke = { width = 3, color = "#000000" } }),
-                Txt(string.format("装备 %d / %d", game.equipmentInventoryCount or 0, game.inventoryCapacity or 300), 20, C.textSecondary, { position = "absolute", left = 450, top = 34, width = 370, height = 34, textAlign = "center", textStroke = { width = 1, color = "#000000" } }),
+                (function()
+                    local InventoryCapacity = require("client.InventoryCapacity")
+                    return Txt(InventoryCapacity.SummaryText(game), 20, C.textSecondary, {
+                        position = "absolute", left = 450, top = 34, width = 370, height = 34,
+                        textAlign = "center", textStroke = { width = 1, color = "#000000" },
+                    })
+                end)(),
                 UI.Panel { position = "absolute", left = 28, top = 86, width = 930, height = 122, alignItems = "center", children = { CreateInventoryTabs() } },
             },
         },
@@ -776,24 +784,109 @@ local function CreateInventoryPage()
             gap = 18,
             overflow = "hidden",
             children = {
-                CreateInventoryActionButton("一键分解", ASSETS.ui.inventoryActionBlue, function()
-                    local filter = EquipmentRecycleFilter.Get("decompose")
-                    local candidates = {}
-                    for _, item in ipairs(game.inventory or {}) do
-                        if item.equipmentId and filter[item.rarity] == true
-                            and not item.locked and not item.aidLocked and not IsEquipped(item) then
-                            candidates[#candidates + 1] = item
-                        end
-                    end
-                    if #candidates > 0 then
-                        ShowDisposition("decompose", candidates)
-                    else
-                        DecomposeByFilter()
-                    end
-                end),
+                (function()
+                    local InventoryCapacity = require("client.InventoryCapacity")
+                    local InventoryFullPrompt = require("client.InventoryFullPrompt")
+                    local remain = InventoryCapacity.TodayAdRemaining(game)
+                    local canExpand = InventoryCapacity.CanExpand(game) and remain > 0
+                    local expandButton = UI.Panel {
+                        width = 260,
+                        height = 58,
+                        flexShrink = 0,
+                        clickable = not readOnly and canExpand,
+                        opacity = (readOnly or not canExpand) and 0.45 or 1.0,
+                        backgroundImage = ASSETS.ui.inventoryActionGold,
+                        backgroundFit = "contain",
+                        onClick = function()
+                            if readOnly or not canExpand then return end
+                            InventoryFullPrompt.ExpandByAd(function(ok)
+                                if ok then RequestPageRefresh() end
+                            end)
+                        end,
+                        children = {
+                            Txt(canExpand and ("看广告+" .. tostring(InventoryCapacity.PerAd())) or "扩容已满", 20, C.text, {
+                                width = "100%", height = 58, textAlign = "center",
+                                textStroke = { width = 1, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    }
+                    return expandButton
+                end)(),
+                (function()
+                    local TutorialController = require("client.TutorialController")
+                    local tutorialDecomposeStep = TutorialController.IsActive
+                        and TutorialController.IsActive()
+                        and TutorialController.GetStep
+                        and TutorialController.GetStep() == 3
+                    local decomposeButton = UI.Panel {
+                        id = "tutorialDecompose",
+                        width = 260,
+                        height = 58,
+                        flexShrink = 0,
+                        clickable = not readOnly,
+                        opacity = readOnly and 0.45 or 1.0,
+                        backgroundImage = ASSETS.ui.inventoryActionBlue,
+                        backgroundFit = "contain",
+                        -- 按钮本体自带教学高亮：使用 focus 蓝，和游戏选中态一致。
+                        borderWidth = tutorialDecomposeStep and 5 or 0,
+                        borderColor = tutorialDecomposeStep and C.focus or nil,
+                        borderRadius = 10,
+                        boxShadow = tutorialDecomposeStep and {
+                            color = {
+                                (C.focus and C.focus[1]) or 111,
+                                (C.focus and C.focus[2]) or 231,
+                                (C.focus and C.focus[3]) or 255,
+                                180,
+                            },
+                            offsetX = 0, offsetY = 0, blurRadius = 18,
+                        } or nil,
+                        onClick = function()
+                            if readOnly then return end
+                            -- 主路径推进：不依赖几何命中，点开分解就进入弹窗子步骤。
+                            if TutorialController.NotifyAction then
+                                TutorialController.NotifyAction("decompose_open")
+                            end
+                            local filter = EquipmentRecycleFilter.Get("decompose")
+                            local candidates = {}
+                            local tutorialDecompose = TutorialController.IsActive
+                                and TutorialController.IsActive()
+                                and TutorialController.GetStep
+                                and TutorialController.GetStep() == 3
+                            for _, item in ipairs(game.inventory or {}) do
+                                if item.equipmentId
+                                    and not item.locked
+                                    and not item.aidLocked
+                                    and not IsEquipped(item)
+                                    and (
+                                        filter[item.rarity] == true
+                                        or tutorialDecompose
+                                    )
+                                then
+                                    candidates[#candidates + 1] = item
+                                end
+                            end
+                            if #candidates > 0 then
+                                ShowDisposition("decompose", candidates)
+                            else
+                                DecomposeByFilter()
+                            end
+                        end,
+                        children = {
+                            Txt("一键分解", 20, C.text, {
+                                width = "100%",
+                                height = 58,
+                                textAlign = "center",
+                                textStroke = { width = 1, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                        },
+                    }
+                    return decomposeButton
+                end)(),
                 CreateInventoryActionButton("分解筛选", ASSETS.ui.inventoryActionBlue, function()
                     ShowDecomposeFilter(RequestPageRefresh)
-                end),
+                end, "tutorialDecomposeFilter"),
                 CreateInventoryActionButton("快速筛选", ASSETS.ui.inventoryActionGold, function()
                     EquipmentQuickFilter.Show("bag", { onApplied = RequestPageRefresh })
                 end),

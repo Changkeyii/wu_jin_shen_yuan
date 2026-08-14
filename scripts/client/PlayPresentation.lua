@@ -26,6 +26,7 @@ local currentMonsterHp_ = 0
 local currentMonsterMaxHp_ = 1
 local currentEventLocked_ = false
 local currentAttackFrames_ = nil
+local finisherGhostTimer_ = 0
 local rewardOrigin_ = nil
 local lastEventType_ = "monster"
 local requestedAutoRun_ = nil
@@ -34,6 +35,9 @@ local sessionAutoStartAttempted_ = false
 
 local metrics_ = { width = 1080, height = 1400, enemyAnchorX = 820 }
 local Clamp
+
+-- 前向声明：终结技大范围特效，实现在 CreatePage 之后。
+local spawnFinisherEffect = nil
 
 local function C()
     return context_.colors
@@ -364,9 +368,13 @@ local function SetCombatSequence(
     )
     if not sequence then return end
     local job = context_.currentPlayer()
-    currentAttackFrames_ = job.attackFrameSets
+    local frameSet = job.attackFrameSets
         and job.attackFrameSets[resolvedIndex]
-        or job.attackFrames
+    if not frameSet and resolvedIndex >= 4 then
+        -- 终结技：暂用第二套攻击帧（动作差异明显）+ 残影/发光/范围特效表现
+        frameSet = job.attackFrameSets and job.attackFrameSets[2]
+    end
+    currentAttackFrames_ = frameSet or job.attackFrames
     combatSequenceIndex_ = resolvedIndex
     combatHitFrame_ = hitFrame or sequence.hitFrames[1]
     combatEndFrame_ = endFrame or sequence.endFrame
@@ -385,6 +393,10 @@ local function SetCombatSequence(
     lastAttackSoundKey_ = tostring(attackSerial or lastAttackSoundKey_ or "")
     combatAnimationTime_ = 0
     combatSequenceStartTime_ = 0
+    -- 终结技：触发大范围特效
+    if resolvedIndex >= 4 then
+        spawnFinisherEffect()
+    end
 end
 
 local function CreatePage()
@@ -427,6 +439,206 @@ local function CreatePage()
     return root
 end
 
+-- 终结技大范围特效：金色冲击波 + 横扫光弧 + 纵向光柱 + 角色发光 + 震屏（程序化表现，无额外素材）
+spawnFinisherEffect = function()
+    local root = refs_.root
+    if not root then return end
+    local effectLayer = context_.UI.Panel {
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        pointerEvents = "none",
+    }
+    root:AddChild(effectLayer)
+
+    local function spawn(node, keyframes, duration, delay)
+        effectLayer:AddChild(node)
+        node:Animate {
+            keyframes = keyframes,
+            duration = duration,
+            delay = delay or 0,
+            easing = "easeOut",
+            onComplete = function()
+                if node.parent then node.parent:RemoveChild(node) end
+            end,
+        }
+    end
+
+    -- 全屏冲击波圆环
+    spawn(
+        context_.UI.Panel {
+            position = "absolute",
+            left = 50, right = 50, top = 110, bottom = 110,
+            opacity = 0,
+            scale = 0.3,
+            borderWidth = 8,
+            borderColor = { 255, 224, 130, 235 },
+            borderRadius = 32,
+            boxShadow = {
+                color = { 255, 200, 90, 210 },
+                offsetX = 0, offsetY = 0, blurRadius = 46,
+            },
+        },
+        {
+            [0] = { opacity = 0, scale = 0.3 },
+            [0.32] = { opacity = 0.95, scale = 1.0 },
+            [1] = { opacity = 0, scale = 1.28 },
+        },
+        0.95,
+        0
+    )
+
+    -- 第二重冲击环（外圈扩散，迟发增强爆发感）
+    spawn(
+        context_.UI.Panel {
+            position = "absolute",
+            left = 80, right = 80, top = 150, bottom = 150,
+            opacity = 0,
+            scale = 0.45,
+            borderWidth = 5,
+            borderColor = { 255, 180, 90, 200 },
+            borderRadius = 40,
+            boxShadow = {
+                color = { 255, 150, 60, 160 },
+                offsetX = 0, offsetY = 0, blurRadius = 34,
+            },
+        },
+        {
+            [0] = { opacity = 0, scale = 0.45 },
+            [0.3] = { opacity = 0.8, scale = 1.05 },
+            [1] = { opacity = 0, scale = 1.35 },
+        },
+        1.1,
+        0.22
+    )
+
+    -- 横扫光弧（贯穿画面）
+    spawn(
+        context_.UI.Panel {
+            position = "absolute",
+            left = 30, right = 30, top = 430, height = 10,
+            opacity = 0,
+            scale = 0.2,
+            backgroundColor = { 255, 236, 170, 240 },
+            boxShadow = {
+                color = { 255, 205, 100, 235 },
+                offsetX = 0, offsetY = 0, blurRadius = 30,
+            },
+        },
+        {
+            [0] = { opacity = 0, scale = 0.2 },
+            [0.25] = { opacity = 1, scale = 1.0 },
+            [1] = { opacity = 0, scale = 1.3 },
+        },
+        0.8,
+        0.08
+    )
+
+    -- 纵向光柱（中心爆发）
+    spawn(
+        context_.UI.Panel {
+            position = "absolute",
+            left = 470, width = 140, top = 30, height = 1340,
+            opacity = 0,
+            backgroundColor = { 255, 232, 150, 70 },
+            boxShadow = {
+                color = { 255, 212, 120, 160 },
+                offsetX = 0, offsetY = 0, blurRadius = 44,
+            },
+        },
+        {
+            [0] = { opacity = 0 },
+            [0.3] = { opacity = 0.85 },
+            [1] = { opacity = 0 },
+        },
+        1.0,
+        0.1
+    )
+
+    -- 角色金色发光（终结技期间）
+    local player = PlayWorldView.GetPlayerNode()
+    if player then
+        local originalShadow = player.props and player.props.boxShadow
+        player:SetStyle({
+            boxShadow = {
+                color = { 255, 214, 110, 220 },
+                offsetX = 0, offsetY = 0, blurRadius = 46,
+            },
+        })
+        player:Animate {
+            keyframes = {
+                [0] = { opacity = 1 },
+                [1] = { opacity = 1 },
+            },
+            duration = 1.1,
+            delay = 0,
+            onComplete = function()
+                player:SetStyle({
+                    boxShadow = originalShadow,
+                })
+            end,
+        }
+    end
+
+    -- 震屏（页面抖动）
+    root:Animate {
+        keyframes = {
+            [0] = { translateX = 0 },
+            [0.12] = { translateX = -9 },
+            [0.26] = { translateX = 7 },
+            [0.4] = { translateX = -4 },
+            [0.55] = { translateX = 2 },
+            [1] = { translateX = 0 },
+        },
+        duration = 0.55,
+        easing = "easeOut",
+    }
+
+    -- 特效层自身收尾清理
+    local function cleanup()
+        if effectLayer.parent then effectLayer.parent:RemoveChild(effectLayer) end
+    end
+    effectLayer:Animate {
+        keyframes = { [0] = { opacity = 1 }, [1] = { opacity = 1 } },
+        duration = 1.3,
+        delay = 0,
+        onComplete = cleanup,
+    }
+end
+
+-- 终结技残影拖尾：在角色位置生成金色能量残影，淡出消散
+local function spawnFinisherGhost()
+    local root = refs_.root
+    local metrics = PlayWorldView.GetPlayerMetrics()
+    if not root or not metrics then return end
+    local ghost = context_.UI.Panel {
+        position = "absolute",
+        left = metrics.left - 12,
+        top = metrics.top - 12,
+        width = metrics.width + 24,
+        height = metrics.height + 24,
+        opacity = 0.4,
+        pointerEvents = "none",
+        backgroundColor = { 255, 222, 130, 80 },
+        borderRadius = 36,
+        boxShadow = {
+            color = { 255, 200, 90, 170 },
+            offsetX = 0, offsetY = 0, blurRadius = 40,
+        },
+    }
+    root:AddChild(ghost)
+    ghost:Animate {
+        keyframes = {
+            [0] = { opacity = 0.4, translateX = 0 },
+            [1] = { opacity = 0, translateX = -26 },
+        },
+        duration = 0.5,
+        easing = "easeOut",
+        onComplete = function()
+            if ghost.parent then ghost.parent:RemoveChild(ghost) end
+        end,
+    }
+end
+
 local function Update(dt)
     if not refs_.root then return end
     local game = Game()
@@ -443,6 +655,16 @@ local function Update(dt)
     EnsureRoadEvents()
     animationTime_ = animationTime_ + dt
     combatAnimationTime_ = currentEventLocked_ and (combatAnimationTime_ + dt) or 0
+    -- 终结技残影拖尾：攻击进行期间持续生成金色能量残影
+    if currentEventLocked_ and combatSequenceIndex_ and combatSequenceIndex_ >= 4 then
+        finisherGhostTimer_ = finisherGhostTimer_ + dt
+        if finisherGhostTimer_ >= 0.09 then
+            finisherGhostTimer_ = 0
+            spawnFinisherGhost()
+        end
+    else
+        finisherGhostTimer_ = 0
+    end
     if requestedAutoRun_ ~= nil and game.autoRun == requestedAutoRun_ then requestedAutoRun_ = nil; pendingAutoRun_ = nil end
     local visualAutoRun = game.autoRun
     if requestedAutoRun_ ~= nil then visualAutoRun = requestedAutoRun_ end
@@ -702,7 +924,7 @@ function PlayPresentation.HandleDelta(payload)
                 context_.playFeedback("combatAttack")
             end
             local sequenceIndex = value.sequenceIndex or tonumber(value.sequenceId)
-                or ({A = 1, B = 2, C = 3})[value.sequenceId]
+                or ({A = 1, B = 2, C = 3, D = 4})[value.sequenceId]
             SetCombatSequence(
                 sequenceIndex,
                 value.hitFrame or (value.hitFrames and value.hitFrames[1]),
@@ -861,7 +1083,10 @@ function PlayPresentation.HandleDelta(payload)
             pendingEncounterId_ = nil
             context_.showPendingEvent(value)
         elseif kind == "equipment_upgrade_available" and context_.showEquipmentUpgrade then
-            context_.showEquipmentUpgrade(value)
+            local ok, TutorialController = pcall(require, "client.TutorialController")
+            if not (ok and TutorialController and TutorialController.IsActive and TutorialController.IsActive()) then
+                context_.showEquipmentUpgrade(value)
+            end
         elseif (kind == "aid_pending" or kind == "tower_aid_requested") and context_.showAidPrompt then
             context_.showAidPrompt(value)
         elseif kind == "equipment_reverted" or kind == "equip_undone" then
@@ -931,8 +1156,11 @@ function PlayPresentation.HandleSnapshot()
     if game.pendingEvent and context_.showPendingEvent then
         context_.showPendingEvent(game.pendingEvent)
     end
-    if game.pendingEquipDecision and context_.showEquipmentUpgrade then
-        context_.showEquipmentUpgrade(game.pendingEquipDecision)
+if game.pendingEquipDecision and context_.showEquipmentUpgrade then
+        local ok, TutorialController = pcall(require, "client.TutorialController")
+        if not (ok and TutorialController and TutorialController.IsActive and TutorialController.IsActive()) then
+            context_.showEquipmentUpgrade(game.pendingEquipDecision)
+        end
     end
     if game.aidPending and context_.showAidPrompt then
         context_.showAidPrompt({

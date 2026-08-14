@@ -10,6 +10,7 @@ local TableUtils = require("shared.TableUtils")
 local GameStateSchema = {
     VERSION = Contracts.VERSION,
     INVENTORY_CAP = Policy.INVENTORY_CAP,
+    INVENTORY_HARD_CAP = Policy.INVENTORY_HARD_CAP or (Policy.INVENTORY_CAP + (Policy.INVENTORY_EXPAND_MAX_BONUS or 0)),
     TEMPORARY_LOOT_CAP = Policy.TEMPORARY_LOOT_CAP,
     LOOT_STASH_CAP = Policy.LOOT_STASH_CAP,
     OFFLINE_MAX_SECONDS = Policy.OFFLINE_MAX_SECONDS,

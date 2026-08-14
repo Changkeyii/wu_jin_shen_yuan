@@ -263,6 +263,16 @@ local function ApplyEvents(state, events)
             state.pendingEvent = nil
         elseif kind == "equip_decision_applied" then
             state.pendingEquipDecision = nil
+        elseif kind == "tutorial_step" then
+            -- 事件兜底同步：即使 delta.changes 漏了 tutorial，也按事件推进客户端状态。
+            local step = tonumber(value.step) or 1
+            step = math.max(1, math.min(6, math.floor(step)))
+            state.tutorial = {
+                step = step,
+                completed = value.completed == true or step >= 6,
+            }
+        elseif kind == "tutorial_completed" then
+            state.tutorial = { step = 6, completed = true }
         elseif kind == "battle" then
             local prefix = value.lucky and "触发777" or (value.critical and "暴击" or "造成")
             state.recentDamage = prefix .. " " .. tostring(value.lastDamage or 0) .. " 伤害"
@@ -404,7 +414,16 @@ local function RebuildView()
     nextView.lootStash = nextView.lootStash or {}
     nextView.marketListings = nextView.marketListings or {}
     nextView.equipmentInventoryCount = #nextView.inventory
-    nextView.inventoryCapacity = nextView.inventoryCapacity or 300
+    do
+        local bonus = math.max(0, math.min(700, math.floor(tonumber(nextView.inventoryBonusSlots) or 0)))
+        local localCap = 300 + bonus
+        local serverCap = tonumber(nextView.inventoryCapacity)
+        nextView.inventoryCapacity = math.max(localCap, serverCap or 0)
+        nextView.inventoryBonusSlots = bonus
+        nextView.inventoryExpand = type(nextView.inventoryExpand) == "table"
+            and nextView.inventoryExpand
+            or { adDayKey = 0, adUsed = 0 }
+    end
     nextView.equippedSlots = nextView.equippedSlots or nextView.equipped or {}
     nextView.room = nextView.room or nextView.encounter or math.max(1, math.min(10, (nextView.position or 0) + 1))
     nextView.playerMaxHp = nextView.playerMaxHp

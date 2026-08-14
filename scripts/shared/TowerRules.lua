@@ -58,9 +58,17 @@ TowerRules.ATTACK_SEQUENCES = {
         hitFrames = { 12, 14, 16, 18 },
         weights = { 0.25, 0.35, 0.55, 0.85 },
     },
+    -- 终结技：范围大伤害，多段命中，权重显著更高
+    attackD = {
+        id = "attackD",
+        duration = 3.00,
+        fps = 14,
+        hitFrames = { 16, 20, 24, 28, 32 },
+        weights = { 0.60, 0.80, 1.00, 1.30, 1.60 },
+    },
 }
 
-TowerRules.ATTACK_SEQUENCE_ORDER = { "attackA", "attackB", "attackC" }
+TowerRules.ATTACK_SEQUENCE_ORDER = { "attackA", "attackB", "attackC", "attackD" }
 
 local KIND_ALIASES = {
     normal = "normal",

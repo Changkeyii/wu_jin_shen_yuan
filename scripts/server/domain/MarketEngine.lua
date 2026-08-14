@@ -201,7 +201,7 @@ function MarketEngine.Cancel(inputState, payload, now)
     if type(record) ~= "table" or type(record.item) ~= "table" then
         return failure(inputState, now, "LISTING_GONE", "挂单已被买走或已下架")
     end
-    if #inputState.inventory >= Catalog.INVENTORY_CAP then
+    if #inputState.inventory >= Catalog.GetInventoryCapacity(inputState) then
         return failure(inputState, now, "INVENTORY_FULL", "背包已满，无法取回装备")
     end
 
@@ -260,7 +260,7 @@ function MarketEngine.Purchase(inputState, payload, now)
     if not hasCurrency(inputState, "gold", price) then
         return failure(inputState, now, "INSUFFICIENT_GOLD", "金币不足")
     end
-    if #inputState.inventory >= Catalog.INVENTORY_CAP then
+    if #inputState.inventory >= Catalog.GetInventoryCapacity(inputState) then
         return failure(inputState, now, "INVENTORY_FULL", "背包已满，无法购买")
     end
 
@@ -326,7 +326,7 @@ function MarketEngine.CollectMail(inputState, payload, now)
     end
 
     local working = stateCopy(inputState, now)
-    local capacity = Catalog.INVENTORY_CAP - #working.inventory
+    local capacity = Catalog.GetInventoryCapacity(working) - #working.inventory
     local collected = {}
     local totalGold = LargeNumber.Zero()
     local items = 0

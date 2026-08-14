@@ -142,6 +142,18 @@ function EquipmentRecycleFilter.Show(mode, options)
     assert(IsSupportedMode(mode), "unsupported equipment recycle filter mode")
     options = options or {}
     local draft = EquipmentRecycleFilter.Get(mode)
+    local tutorialMode = false
+    if mode == "decompose" then
+        local ok, TutorialController = pcall(require, "client.TutorialController")
+        tutorialMode = ok
+            and TutorialController
+            and TutorialController.IsActive
+            and TutorialController.IsActive()
+            and TutorialController.GetStep
+            and TutorialController.GetStep() == 3
+        -- 序章分解筛选：强制默认勾选普通/白色，避免点一下反选导致后续无候选。
+        if tutorialMode then draft.common = true end
+    end
     local rows = {}
     for _, rarityId in ipairs(FILTER_RARITIES) do
         local currentRarityId = rarityId
@@ -155,6 +167,7 @@ function EquipmentRecycleFilter.Show(mode, options)
             pointerEvents = "none",
         }
         rows[#rows + 1] = UI.Panel {
+            id = "tutorialRecycleFilterRarity:" .. currentRarityId,
             width = 390,
             height = 128,
             flexShrink = 0,
@@ -169,7 +182,11 @@ function EquipmentRecycleFilter.Show(mode, options)
             borderRadius = 12,
             backgroundColor = { 12, 28, 56, 210 },
             onClick = function()
-                draft[currentRarityId] = not draft[currentRarityId]
+                if tutorialMode and currentRarityId == "common" then
+                    draft.common = true
+                else
+                    draft[currentRarityId] = not draft[currentRarityId]
+                end
                 checkImage:SetProp("backgroundImage",
                     draft[currentRarityId] and CHECKBOX_ON or CHECKBOX_OFF)
             end,
@@ -213,6 +230,9 @@ function EquipmentRecycleFilter.Show(mode, options)
         closeOnOverlay = false,
         cancelText = "取消",
         confirmText = "保存筛选",
+        -- 序章强制引导：只允许确认保存；取消/关闭不进白名单。
+        tutorialConfirmId = mode == "decompose" and "tutorialDecomposeFilterConfirm" or nil,
+        zIndex = mode == "decompose" and 3850 or nil,
         content = UI.Panel {
             width = "100%",
             height = 414,
@@ -225,6 +245,7 @@ function EquipmentRecycleFilter.Show(mode, options)
             children = rows,
         },
         onConfirm = function()
+            if tutorialMode then draft.common = true end
             settings_[mode] = CopySelection(draft)
             Save()
             if options.onSaved then options.onSaved(EquipmentRecycleFilter.Get(mode)) end

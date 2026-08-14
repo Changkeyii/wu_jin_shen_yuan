@@ -5,6 +5,8 @@ ServerConfig.STEP_SECONDS = 3
 ServerConfig.COMBAT_TICK_SECONDS = 0.10
 ServerConfig.OFFLINE_MAX_SECONDS = 12 * 60 * 60
 ServerConfig.INVENTORY_CAP = 300
+-- 含广告扩容后的绝对上限（基础 300 + 最多 700）。
+ServerConfig.INVENTORY_HARD_CAP = 1000
 ServerConfig.MAX_PAYLOAD_BYTES = 16 * 1024
 ServerConfig.MAX_BATCH_OPERATIONS = 1000
 ServerConfig.REQUEST_CACHE_SIZE = 128
@@ -19,8 +21,8 @@ ServerConfig.ADMIN_UIDS = {
 }
 
 ServerConfig.RATES = {
-    ClientReady = { refillRate = 0.2, burst = 2 },
-    Snapshot = { refillRate = 0.2, burst = 2 },
+    ClientReady = { refillRate = 1, burst = 4 },
+    Snapshot = { refillRate = 1, burst = 4 },
     AutoRun = { refillRate = 1, burst = 3 },
     Encounter = { refillRate = 2, burst = 3 },
     Equipment = { refillRate = 2, burst = 4 },

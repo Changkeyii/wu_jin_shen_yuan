@@ -50,12 +50,13 @@ function EquipmentDispositionDialog.Show(context, options)
     local items = ItemSort.Sort(options.items or {})
     if #items == 0 then return false end
 
+    local tutorialSelection = options.tutorial == true and options.mode == "decompose"
     local selected = {}
     local previews = {}
     local cells = {}
     local previewReady = false
     local previewFailed = false
-    for _, item in ipairs(items) do selected[item.id] = true end
+    for _, item in ipairs(items) do selected[item.id] = not tutorialSelection end
 
     local countText = nil
     local goldText = nil
@@ -96,12 +97,18 @@ function EquipmentDispositionDialog.Show(context, options)
         if fragmentText then fragmentText:SetText("+" .. context.formatInt(fragments)) end
     end
 
+    local guideBlue = context.C.focus or { 111, 231, 255, 255 }
     local function RefreshCell(itemId)
         local cell = cells[itemId]
         if not cell then return end
         local isSelected = selected[itemId] == true
         cell.panel:SetBackgroundColor(isSelected and { 30, 90, 150, 120 } or { 12, 22, 40, 120 })
-        cell.panel:SetBorderColor(isSelected and context.C.focus or context.C.border)
+        -- 教学态用蓝色描边；选中时同样保持 focus 蓝。
+        if tutorialSelection then
+            cell.panel:SetBorderColor(guideBlue)
+        else
+            cell.panel:SetBorderColor(isSelected and context.C.focus or context.C.border)
+        end
         cell.label:SetText(isSelected and "✓ 已选择" or "○ 未选择")
         cell.label:SetFontColor(isSelected and context.C.success or context.C.textDim)
     end
@@ -110,18 +117,32 @@ function EquipmentDispositionDialog.Show(context, options)
     local itemContext = ItemContext(context)
     for _, item in ipairs(items) do
         local currentItem = item
-        local label = context.compactTxt("✓ 已选择", 15, context.C.success, {
-            width = "100%", height = 22, textAlign = "center",
-            textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
-        })
+        local label = context.compactTxt(
+            selected[currentItem.id] and "✓ 已选择" or "○ 未选择",
+            15,
+            selected[currentItem.id] and context.C.success or context.C.textDim,
+            {
+                width = "100%", height = 22, textAlign = "center",
+                textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+            }
+        )
         local itemCard = BackpackItemSlot.Build(itemContext, currentItem, {
             width = 174,
             height = 174,
             selected = false,
             clickable = false,
             showLockButton = false,
+            -- 预览格子由外层整卡接管点击，内部图标/文案不得截获命中。
+            itemTips = false,
         })
+        -- 整棵子树不参与命中：点击任意位置都落到外层 panel.onClick。
+        if itemCard and itemCard.SetProp then
+            itemCard:SetProp("pointerEvents", "none")
+        elseif itemCard and itemCard.props then
+            itemCard.props.pointerEvents = "none"
+        end
         local panel = UI.Panel {
+            id = tutorialSelection and ("tutorialDispositionCandidate:" .. tostring(currentItem.id)) or nil,
             width = 186,
             height = 216,
             flexShrink = 0,
@@ -131,14 +152,25 @@ function EquipmentDispositionDialog.Show(context, options)
             gap = 4,
             paddingTop = 6,
             paddingBottom = 6,
-            backgroundColor = { 30, 90, 150, 120 },
-            borderWidth = 2,
-            borderColor = context.C.focus,
+            backgroundColor = selected[currentItem.id]
+                and { 30, 90, 150, 120 }
+                or { 12, 22, 40, 120 },
+            -- 教学态：候选卡片自带蓝色描边，不依赖覆盖层几何高亮。
+            borderWidth = tutorialSelection and 4 or 2,
+            borderColor = tutorialSelection
+                and guideBlue
+                or (selected[currentItem.id] and context.C.focus or context.C.border),
             borderRadius = 10,
             onClick = function()
                 selected[currentItem.id] = not selected[currentItem.id]
                 RefreshCell(currentItem.id)
                 RefreshTotals()
+                if tutorialSelection and options.onTutorialSelectionChanged then
+                    options.onTutorialSelectionChanged(
+                        currentItem.id,
+                        selected[currentItem.id] == true
+                    )
+                end
             end,
             children = { itemCard, label },
         }
@@ -147,7 +179,7 @@ function EquipmentDispositionDialog.Show(context, options)
     end
 
     countText = context.compactTxt(
-        string.format("即将%s %d / %d 件装备", mode.verb, #items, #items),
+        string.format("即将%s %d / %d 件装备", mode.verb, SelectedCount(), #items),
         24, context.C.text, {
             width = "100%", height = 36, textAlign = "center",
             textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
@@ -271,7 +303,9 @@ function EquipmentDispositionDialog.Show(context, options)
             confirmText = "确认" .. mode.verb,
             danger = true,
             closeOnOverlay = false,
-            zIndex = 2500,
+            -- 引导层已提到 3900，弹窗保持 3850；真正可点由输入白名单控制。
+            zIndex = 3850,
+            tutorialConfirmId = tutorialSelection and "tutorialDispositionConfirm" or nil,
             bodyScrollY = false,
             content = content,
             foregroundContent = rewardPanel,
@@ -280,6 +314,13 @@ function EquipmentDispositionDialog.Show(context, options)
             foregroundWidth = 732,
             foregroundHeight = 109,
             onConfirm = Execute,
+            onPresented = function()
+                if not tutorialSelection then return end
+                local ok, TutorialController = pcall(require, "client.TutorialController")
+                if ok and TutorialController and TutorialController.NotifyAction then
+                    TutorialController.NotifyAction("decompose_dialog_ready")
+                end
+            end,
         }
     end
 

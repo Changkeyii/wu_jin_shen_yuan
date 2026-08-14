@@ -55,12 +55,13 @@ local strikeSequenceIndex_ = 0
 local strikeHitTriggered_ = false
 
 -- ===== 页签状态 =====
--- tab 固定顺序：新手签到 → 轮回签到 → 每日补给（三个补给放同一子页面）
+-- tab 固定顺序：新手签到 → 轮回签到 → 每日补给 → 热门活动（许愿池/深渊远征/PVP）
 local activityTab_ = "act_signin_newbie_7"
 local ACTIVITY_TABS = {
     { id = "act_signin_newbie_7", label = "新手签到", kind = "signin" },
     { id = "act_signin_loop_30", label = "轮回签到", kind = "signin" },
     { id = "strike", label = "每日补给", kind = "strike" },
+    { id = "act_hot", label = "热门活动", kind = "hot" },
 }
 
 local function BuildTabBar()
@@ -386,6 +387,90 @@ local function StrikeCard(item)
     }
 end
 
+-- ===== 热门活动入口卡片（许愿池 / 深渊远征 / PVP）=====
+-- 许愿池为已开放玩法（点击进入）；其余为“待开放”占位，点击提示。
+local function HotActivityCard(spec)
+    local opened = spec.opened == true
+    local icon = spec.icon
+    return UI.Panel {
+        width = "100%",
+        flexShrink = 0,
+        padding = 20,
+        gap = 14,
+        backgroundImage = ASSETS.ui.panelLarge,
+        backgroundFit = "sliced",
+        backgroundSlice = { 12, 12, 12, 12 },
+        backgroundColor = SURFACE,
+        borderWidth = 2,
+        borderColor = opened and C.focus or C.border,
+        borderRadius = 14,
+        opacity = opened and 1.0 or 0.82,
+        children = {
+            UI.Panel {
+                width = "100%", flexShrink = 0, flexDirection = "row", alignItems = "center",
+                children = {
+                    -- 左侧图标格
+                    UI.Panel {
+                        width = 110, height = 110, flexShrink = 0,
+                        backgroundImage = icon,
+                        backgroundFit = "contain",
+                    },
+                    UI.Panel { flexGrow = 1, flexBasis = 0, gap = 4, children = {
+                        Kit.Txt(spec.title, 28, opened and C.text or C.textDim, { width = "100%", height = 40, textAlign = "left", textStroke = { width = 2, color = "#000000" } }),
+                        Kit.CompactTxt(spec.desc, 16, C.textSecondary, { width = "100%", height = 26, textAlign = "left" }),
+                        Kit.CompactTxt(opened and spec.status or "待后续开放", 18, opened and C.success or C.textDim, { width = "100%", height = 30, textAlign = "left", textStroke = { width = 1, color = "#000000" } }),
+                    } },
+                    -- 右侧操作区：进入按钮与其他活动统一（金色图片按钮）
+                    UI.Panel {
+                        width = 170, height = 150, flexShrink = 0,
+                        flexDirection = "column", justifyContent = "center", alignItems = "center", gap = 10,
+                        children = {
+                            opened
+                                and Kit.ImageButton("进入", 150, 60, ASSETS.ui.inventoryActionGold, spec.onClick, false)
+                                or UI.Badge {
+                                    text = "待开放",
+                                    variant = "secondary",
+                                },
+                        },
+                    },
+                },
+            },
+        },
+    }
+end
+
+local function HotActivityCards()
+    local cards = {}
+    -- 许愿池：已开放，跳转许愿池页
+    cards[#cards + 1] = HotActivityCard {
+        title = "许愿池",
+        desc = "许愿券抽取 · 十连8券",
+        status = "开放中",
+        opened = true,
+        icon = ASSETS.ui.wishTicket,
+        onClick = function()
+            require("client.NavigationController").SwitchPage("wish")
+        end,
+    }
+    -- 深渊远征：4人数据团本，待开放
+    cards[#cards + 1] = HotActivityCard {
+        title = "深渊远征",
+        desc = "4人数据团本 · 高爆率掉落",
+        opened = false,
+        icon = ASSETS.ui.activityExpedition,
+        onClick = function() Toast("深渊远征筹备中，敬请期待", "info") end,
+    }
+    -- PVP 竞技场：玩家对战，待后续开放
+    cards[#cards + 1] = HotActivityCard {
+        title = "PVP 竞技场",
+        desc = "玩家对战 · 战力对决",
+        opened = false,
+        icon = ASSETS.ui.activityPvp,
+        onClick = function() Toast("PVP 竞技场筹备中，敬请期待", "info") end,
+    }
+    return cards
+end
+
 -- ===== 伤害飘字对象池 =====
 local function SpawnDamageText(amount)
     for _, label in ipairs(damageLabels_) do
@@ -648,9 +733,14 @@ function ActivityView.ListChildren(signinCards, strikeCards)
                         children[#children + 1] = card
                     end
                 end
-            else
+            elseif entry.kind == "strike" then
                 -- 每日补给：三个放同一子页面，竖行排列
                 for _, card in ipairs(strikeCards or {}) do
+                    children[#children + 1] = card
+                end
+            else
+                -- 热门活动：许愿池（开放）/ 深渊远征 / PVP（待开放）
+                for _, card in ipairs(HotActivityCards()) do
                     children[#children + 1] = card
                 end
             end

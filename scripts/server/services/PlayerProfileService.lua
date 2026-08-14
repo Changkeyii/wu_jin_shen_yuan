@@ -3,6 +3,7 @@ local GameEngine = require("server.domain.GameEngine")
 local TableUtils = require("server.domain.TableUtils")
 local Catalog = require("server.domain.Catalog")
 local GameStateSchema = require("shared.GameStateSchema")
+local TutorialEngine = require("server.domain.TutorialEngine")
 
 -- pcall 的返回值类型推断会产生 assign-type-mismatch 误报（成功值 table 与失败
 -- 错误 string 的联合类型无法赋给运行时实际类型），此处按需关闭该诊断类型。
@@ -137,6 +138,7 @@ function PlayerProfileService:Attach(userId, connection, generation, loadData)
         offlineClaiming = false,
         offlineReceipts = {},
     }
+    -- 新手剧情：终身一次。已完成玩家登录不再重置；未完成则沿用存档进度。
     -- 离线收益在上线时一次性由服务端权威结算并冻结，之后在线战斗不再影响它。
     self:FreezeOfflineReward(userId)
     return self.sessions[userId]
@@ -344,7 +346,7 @@ function PlayerProfileService:Snapshot(userId, isAdmin)
     snapshot.appliedGmCommandIds = nil
     snapshot.isAdmin = isAdmin == true
     snapshot.serverTime = self.clock()
-    snapshot.inventoryCapacity = Catalog.INVENTORY_CAP
+    snapshot.inventoryCapacity = Catalog.GetInventoryCapacity(session.state)
     snapshot.logs = snapshot.logs or {
         "权威存档已同步，所有玩法结算由服务器执行。",
         "已载入12部位装备体系与五套史诗套装。",

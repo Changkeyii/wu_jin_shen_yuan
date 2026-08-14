@@ -502,6 +502,14 @@ end
 
 function ItemTips.Show(item, anchor, options, expanded)
     if not item or not root_ or not context_ then return false end
+    -- 序章强引导期间禁止弹出装备 tips，避免遮挡/打断强制点击流程。
+    do
+        local ok, TutorialController = pcall(require, "client.TutorialController")
+        if ok and TutorialController and TutorialController.IsActive and TutorialController.IsActive() then
+            ItemTips.Hide("tutorial-active")
+            return false
+        end
+    end
     options = options or {}
     local allowActions = options.allowActions ~= false
     if allowActions

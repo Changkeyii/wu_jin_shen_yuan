@@ -135,8 +135,8 @@ end
 
 local function randomAttack(state, monster, rng)
     local count = CombatSequence.Count()
-    local index = DomainMath.RandomInt(rng, 1, count)
-    if count > 1 and index == (monster.lastSequenceIndex or 0) then index = index % count + 1 end
+    -- 连招链：A → B → C → 终结技(D) → 循环，按已完成攻击数取序列
+    local index = (monster.attackSerial or 0) % count + 1
     local attack = attackDefinition(index, state.stats.atkSpeed)
     monster.phase = "windup"
     monster.phaseRemaining = attack.hitTimes[1]

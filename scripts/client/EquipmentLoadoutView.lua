@@ -48,6 +48,7 @@ function EquipmentLoadoutView.Build(context)
     local RequestPageRefresh = actions.requestPageRefresh
     local EquipItem = actions.equipItem
     local UnequipSlot = actions.unequipSlot
+    local AutoEquipBest = actions.autoEquipBest
     local StrengthenSelected = actions.strengthenSelected
     local StarSelected = actions.starSelected
     local readOnly = state.readOnly
@@ -80,15 +81,81 @@ function EquipmentLoadoutView.Build(context)
         return ItemSlotBase.Icon(slotContext, item, props, fallbackImage)
     end
 
-    local filtered = {}
-    for _, item in ipairs(game.inventory or {}) do
-        if item.slot == selectedSlot and item.category ~= "consumable" and item.category ~= "material"
+    local function IsEquipCandidate(item)
+        return item
+            and item.equipmentId
+            and item.category ~= "consumable"
+            and item.category ~= "material"
             and EquipmentQuickFilter.Matches("equip", item)
-        then
-            filtered[#filtered + 1] = item
+    end
+
+    local function CollectSlotCandidates(slotId)
+        local list = {}
+        for _, item in ipairs(game.inventory or {}) do
+            if item.slot == slotId and IsEquipCandidate(item) then
+                list[#list + 1] = item
+            end
+        end
+        ItemSort.Sort(list)
+        return list
+    end
+
+    local filtered = CollectSlotCandidates(selectedSlot)
+    -- 序章穿戴/强化：优先切到已穿戴武器部位，保证强化按钮可用且高亮目标稳定。
+    do
+        local TutorialController = require("client.TutorialController")
+        local tutorialStep = TutorialController.IsActive and TutorialController.IsActive()
+            and TutorialController.GetStep and TutorialController.GetStep()
+            or nil
+        if tutorialStep == 2 or tutorialStep == 4 then
+            local preferred = nil
+            -- 强化教学：优先当前已穿戴武器。
+            if tutorialStep == 4 then
+                local equippedWeapon = game.equipped and game.equipped.weapon or nil
+                if type(equippedWeapon) == "table" and equippedWeapon.id then
+                    preferred = equippedWeapon
+                elseif equippedWeapon then
+                    preferred = GetItemById(equippedWeapon)
+                end
+            end
+            if not preferred then
+                for _, item in ipairs(game.inventory or {}) do
+                    if IsEquipCandidate(item) and item.source == "tutorial_drop" and item.slot == "weapon" then
+                        preferred = item
+                        break
+                    end
+                end
+            end
+            if not preferred then
+                for _, item in ipairs(game.inventory or {}) do
+                    if IsEquipCandidate(item) and item.source == "tutorial_drop" then
+                        preferred = item
+                        break
+                    end
+                end
+            end
+            if not preferred then
+                for _, item in ipairs(game.inventory or {}) do
+                    if IsEquipCandidate(item) then
+                        preferred = item
+                        break
+                    end
+                end
+            end
+            local preferredSlot = (preferred and preferred.slot)
+                or (tutorialStep == 4 and "weapon")
+                or nil
+            if preferredSlot and preferredSlot ~= selectedSlot then
+                SetSelectedSlot(preferredSlot)
+                selectedSlot = preferredSlot
+                filtered = CollectSlotCandidates(selectedSlot)
+            end
+            if preferred then
+                selectedInventoryId = preferred.id
+                SetSelectedInventoryId(preferred.id)
+            end
         end
     end
-    ItemSort.Sort(filtered)
 
     local selectedCandidate = selectedInventoryId and GetItemById(selectedInventoryId) or nil
     if not selectedCandidate or selectedCandidate.slot ~= selectedSlot
@@ -542,13 +609,38 @@ function EquipmentLoadoutView.Build(context)
 
     local function CreateEquipmentCard(item)
         local active = selectedCandidate and selectedCandidate.id == item.id
-        return EquipmentItemSlot.Build(slotContext, item, {
+        local TutorialController = require("client.TutorialController")
+        local tutorialEquipStep = TutorialController.IsActive
+            and TutorialController.IsActive()
+            and TutorialController.GetStep
+            and TutorialController.GetStep() == 2
+        local card = EquipmentItemSlot.Build(slotContext, item, {
+            -- 构造时写入 id，避免后写 props.id 导致引导层找不到。
+            id = "tutorialCandidate:" .. tostring(item.id),
             active = active,
             clickable = true,
             detailText = "战力 " .. ItemPowerText(item),
-            onPointerDown = function() StartDrag(item) end,
-            onPointerUp = function(event) DropAtPointer(event) end,
+            -- 序章穿戴：候选本体自带蓝色描边，不依赖覆盖层几何。
+            tutorialHighlight = tutorialEquipStep == true,
+            itemTips = tutorialEquipStep ~= true,
+            onPointerDown = function()
+                if tutorialEquipStep then return end
+                StartDrag(item)
+            end,
+            onPointerUp = function(event)
+                if tutorialEquipStep then return end
+                DropAtPointer(event)
+            end,
             onClick = function(widget)
+                if tutorialEquipStep then
+                    -- 主路径推进：选中候选后立刻进入“快捷穿戴”子步骤。
+                    if TutorialController.NotifyAction then
+                        TutorialController.NotifyAction("equip_select")
+                    end
+                    SetSelectedInventoryId(item.id)
+                    RequestPageRefresh()
+                    return
+                end
                 if active and ShowItemTips then
                     draggingItem = nil
                     if dragHint then dragHint:SetText("") end
@@ -562,6 +654,7 @@ function EquipmentLoadoutView.Build(context)
                 RequestPageRefresh()
             end,
             onLongPress = function(_, widget)
+                if tutorialEquipStep then return end
                 draggingItem = nil
                 if dragHint then dragHint:SetText("") end
                 if not ShowItemTips then return end
@@ -571,6 +664,7 @@ function EquipmentLoadoutView.Build(context)
                 ShowItemTips(item, bounds, { source = "equipment" })
             end,
         })
+        return card
     end
 
     local cardChildren = {}
@@ -610,6 +704,52 @@ function EquipmentLoadoutView.Build(context)
 
     local detailChildren = {}
     if selectedCandidate then
+        local TutorialController = require("client.TutorialController")
+        local tutorialEquipStep = TutorialController.IsActive
+            and TutorialController.IsActive()
+            and TutorialController.GetStep
+            and TutorialController.GetStep() == 2
+        -- 快捷穿戴：构造时写 id + 教学蓝框；点击主动推进，不依赖几何命中。
+        local equipNowButton = UI.Panel {
+            id = "tutorialEquipNow",
+            width = 170,
+            height = 50,
+            clickable = not readOnly,
+            opacity = readOnly and 0.45 or 1.0,
+            alignItems = "center",
+            justifyContent = "center",
+            backgroundImage = ASSETS.ui.buttonBlue,
+            backgroundFit = "sliced",
+            backgroundSlice = { 8, 8, 8, 8 },
+            borderWidth = tutorialEquipStep and 5 or 0,
+            borderColor = tutorialEquipStep and C.focus or nil,
+            borderRadius = 10,
+            boxShadow = tutorialEquipStep and {
+                color = {
+                    (C.focus and C.focus[1]) or 111,
+                    (C.focus and C.focus[2]) or 231,
+                    (C.focus and C.focus[3]) or 255,
+                    180,
+                },
+                offsetX = 0, offsetY = 0, blurRadius = 18,
+            } or nil,
+            onClick = function()
+                if readOnly then return end
+                if TutorialController.NotifyAction then
+                    TutorialController.NotifyAction("equip_now")
+                end
+                EquipItem(selectedCandidate)
+            end,
+            children = {
+                CompactTxt("快捷穿戴", 20, C.text, {
+                    width = "100%",
+                    height = 50,
+                    textAlign = "center",
+                    textStroke = { width = 2, color = "#000000" },
+                    pointerEvents = "none",
+                }),
+            },
+        }
         detailChildren = {
                 UI.Panel { width = 64, height = 64, children = { ItemIcon(selectedCandidate, { width = 64, height = 64 }) }, flexShrink = 0 },
             UI.Panel {
@@ -622,13 +762,71 @@ function EquipmentLoadoutView.Build(context)
                     CompactTxt(RarityName(selectedCandidate.rarity) .. " · " .. SlotName(selectedCandidate.slot), 17, C.textSecondary, { width = "100%", height = 24, textStroke = { width = 1, color = "#000000" } }),
                 },
             },
-            ImageButton("快捷穿戴", 170, 50, ASSETS.ui.buttonBlue, function() EquipItem(selectedCandidate) end, readOnly),
+            equipNowButton,
         }
     else
         detailChildren[1] = CompactTxt("点击装备卡选择装备", 20, C.textDim, { width = "100%", height = 30, textAlign = "center" })
     end
 
     local equippedForSelectedSlot = game.equipped and game.equipped[selectedSlot]
+    local TutorialController = require("client.TutorialController")
+    local tutorialStrengthenStep = TutorialController.IsActive
+        and TutorialController.IsActive()
+        and TutorialController.GetStep
+        and TutorialController.GetStep() == 4
+    -- 强化按钮：构造时写入 id + 教学蓝框；点击时主动推进引导，不依赖几何命中。
+    local strengthenDisabled = readOnly or not equippedForSelectedSlot
+    local strengthenButton = UI.Panel {
+        id = "tutorialStrengthen",
+        width = 190,
+        height = 50,
+        clickable = not strengthenDisabled,
+        opacity = strengthenDisabled and 0.45 or 1.0,
+        alignItems = "center",
+        justifyContent = "center",
+        backgroundImage = ASSETS.ui.buttonBlueWide,
+        backgroundFit = "sliced",
+        backgroundSlice = { 8, 8, 8, 8 },
+        borderWidth = tutorialStrengthenStep and 5 or 0,
+        borderColor = tutorialStrengthenStep and C.focus or nil,
+        borderRadius = 10,
+        boxShadow = tutorialStrengthenStep and {
+            color = {
+                (C.focus and C.focus[1]) or 111,
+                (C.focus and C.focus[2]) or 231,
+                (C.focus and C.focus[3]) or 255,
+                180,
+            },
+            offsetX = 0, offsetY = 0, blurRadius = 18,
+        } or nil,
+        onClick = function()
+            if strengthenDisabled then return end
+            if TutorialController.NotifyAction then
+                TutorialController.NotifyAction("strengthen_open")
+            end
+            if equippedForSelectedSlot then StrengthenSelected() end
+        end,
+        children = {
+            CompactTxt("强化", 20, C.text, {
+                width = "100%",
+                height = 50,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+                pointerEvents = "none",
+            }),
+        },
+    }
+    local autoEquipButton = ImageButton(
+        "一键穿戴",
+        190,
+        50,
+        ASSETS.ui.buttonGreen or ASSETS.ui.buttonBlueWide,
+        function()
+            if readOnly then return end
+            if AutoEquipBest then AutoEquipBest() end
+        end,
+        readOnly
+    )
     local upgradeActionBar = UI.Panel {
         width = 900,
         height = 82,
@@ -636,19 +834,17 @@ function EquipmentLoadoutView.Build(context)
         flexDirection = "row",
         alignItems = "center",
         justifyContent = "center",
-        gap = 18,
+        gap = 12,
         backgroundImage = ASSETS.ui.infoBarGold,
         backgroundFit = "sliced",
         backgroundSlice = { 10, 10, 10, 10 },
-        opacity = equippedForSelectedSlot and 1.0 or 0.55,
         children = {
-            ImageButton("强化", 190, 50, ASSETS.ui.buttonBlueWide, function()
-                if equippedForSelectedSlot then StrengthenSelected() end
-            end, readOnly or not equippedForSelectedSlot),
-            ImageButton("升星", 190, 50, ASSETS.ui.buttonPurple, function()
+            autoEquipButton,
+            strengthenButton,
+            ImageButton("升星", 170, 50, ASSETS.ui.buttonPurple, function()
                 if equippedForSelectedSlot then StarSelected() end
             end, readOnly or not equippedForSelectedSlot),
-            ImageButton("卸下", 190, 50, ASSETS.ui.buttonRed, function()
+            ImageButton("卸下", 170, 50, ASSETS.ui.buttonRed, function()
                 if equippedForSelectedSlot then UnequipSlot(selectedSlot) end
             end, readOnly or not equippedForSelectedSlot),
         },

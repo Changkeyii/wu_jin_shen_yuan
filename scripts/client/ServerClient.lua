@@ -172,6 +172,7 @@ local function ApplyCompleteSnapshot(snapshot, events)
         Emit("error", {
             code = ErrorCodes.INVALID_STATE,
             reason = validationError and validationError.reason or "invalid assembled snapshot",
+            path = validationError and validationError.details and validationError.details.path or nil,
         })
         return false
     end
@@ -301,6 +302,7 @@ local function HandleDelta(eventType, eventData)
         Emit("error", {
             code = ErrorCodes.INVALID_STATE,
             reason = validationError and validationError.reason or "invalid delta",
+            path = validationError and validationError.details and validationError.details.path or nil,
         })
         ServerClient.RequestSnapshot()
         return
@@ -562,8 +564,26 @@ function ServerClient.Send(command, payload, callback)
 end
 
 function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
-function ServerClient.WishWithTicket(callback) return ServerClient.Send("WishPool.WishWithTicket", {}, callback) end
-function ServerClient.WishWithAd(callback) return ServerClient.Send("WishPool.WishWithAd", {}, callback) end
+function ServerClient.WishWithTicket(count, callback)
+    if type(count) == "function" then
+        callback = count
+        count = 1
+    end
+    local drawCount = math.floor(tonumber(count) or 1)
+    if drawCount ~= 10 then drawCount = 1 end
+    return ServerClient.Send("WishPool.WishWithTicket", { count = drawCount }, callback)
+end
+-- 广告许愿已下线；保留空实现避免旧调用点报错。
+function ServerClient.WishWithAd(callback)
+    if callback then
+        callback({
+            ok = false,
+            code = "WISH_AD_DISABLED",
+            reason = "广告许愿已下线，请使用许愿券",
+        })
+    end
+    return nil
+end
 function ServerClient.OpenWishJar(jarId, count, callback)
     local payload = { jarId = tostring(jarId) }
     if count and tonumber(count) then
@@ -657,6 +677,9 @@ function ServerClient.AcknowledgeRules(ruleId, callback)
 end
 function ServerClient.ClaimAid(callback) return ServerClient.Send("Game.ClaimAid", {}, callback) end
 function ServerClient.ClaimLootStash(callback) return ServerClient.Send("Game.ClaimLootStash", {}, callback) end
+function ServerClient.ExpandInventoryByAd(callback)
+    return ServerClient.Send("Game.ExpandInventoryByAd", {}, callback)
+end
 function ServerClient.DispositionPreview(mode, candidateIds, callback)
     return ServerClient.Send("Game.DispositionPreview", {
         mode = mode,
@@ -672,6 +695,12 @@ end
 function ServerClient.Equip(itemId, callback) return ServerClient.Send("Game.Equip", { itemId = itemId }, callback) end
 function ServerClient.Unequip(slot, callback) return ServerClient.Send("Game.Unequip", { slot = slot }, callback) end
 function ServerClient.AutoEquip(callback) return ServerClient.Send("Game.AutoEquip", {}, callback) end
+function ServerClient.ResetTutorialLoadout(callback)
+    return ServerClient.Send("Game.ResetTutorialLoadout", {}, callback)
+end
+function ServerClient.CompleteTutorial(callback)
+    return ServerClient.Send("Game.CompleteTutorial", {}, callback)
+end
 function ServerClient.DecomposePreview(itemId, callback)
     return ServerClient.Send("Game.DecomposePreview", { itemId = itemId }, callback)
 end

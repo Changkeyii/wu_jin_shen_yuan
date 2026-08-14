@@ -22,17 +22,37 @@ local context_ = nil
 local function CollectDecomposeCandidateItems(selection)
     local game = context_.getGame()
     selection = type(selection) == "table" and selection or {}
+    local TutorialController = require("client.TutorialController")
+    local tutorialDecompose = TutorialController.IsActive
+        and TutorialController.IsActive()
+        and TutorialController.GetStep
+        and TutorialController.GetStep() == 3
     local items = {}
     for _, item in ipairs(game.inventory or {}) do
         local rarityId = RarityCatalog.NormalizeId(item.rarity)
         if item.equipmentId and item.id ~= nil
-            and selection[rarityId] == true
             and rarityId ~= "myth"
-            and not item.locked and not item.aidLocked and not ItemView.IsEquipped(game, item) then
+            and not item.locked and not item.aidLocked and not ItemView.IsEquipped(game, item)
+            and (selection[rarityId] == true or tutorialDecompose)
+        then
             items[#items + 1] = item
         end
     end
     return items
+end
+
+local function IsTutorialDecomposeStep()
+    local TutorialController = require("client.TutorialController")
+    if TutorialController.IsActive and TutorialController.IsActive()
+        and TutorialController.GetStep and TutorialController.GetStep() == 3
+    then
+        return true
+    end
+    local game = context_ and context_.getGame and context_.getGame() or nil
+    return game
+        and game.tutorial
+        and game.tutorial.completed ~= true
+        and tonumber(game.tutorial.step) == 3
 end
 
 local function ShowDecomposeRewardDialog(gold, fragments, count)
@@ -98,7 +118,25 @@ actionFns_.UnequipSlot = function(slotId)
         ServerClient.Unequip(slotId, context_.actionResult)
     end
 end
-actionFns_.AutoEquipBest = function() ServerClient.AutoEquip(context_.actionResult) end
+actionFns_.AutoEquipBest = function()
+    ServerClient.AutoEquip(function(response)
+        if response and response.ok then
+            -- NoCommit 时 committed=false：当前已是最优搭配。
+            local committed = response.data and response.data.committed == true
+            if not committed then
+                UI.Toast.Show("当前已是最高战力搭配", {
+                    duration = 2.0,
+                    variant = "info",
+                    position = "bottom",
+                })
+                return
+            end
+            context_.actionResult(response, "已自动穿戴最高战力装备")
+            return
+        end
+        context_.actionResult(response)
+    end)
+end
 actionFns_.DecomposeByFilter = function()
     local filter = EquipmentRecycleFilter.Get("decompose")
     local maximumRank = EquipmentRecycleFilter.MaxSelectedRank("decompose")
@@ -107,8 +145,9 @@ actionFns_.DecomposeByFilter = function()
         UI.Toast.Show("没有符合条件的未锁定、未穿戴装备", { duration = 1.8, variant = "info", position = "bottom" })
         return
     end
+    local tutorialSelection = IsTutorialDecomposeStep()
     local selected = {}
-    for _, item in ipairs(items) do selected[item.id] = true end
+    for _, item in ipairs(items) do selected[item.id] = not tutorialSelection end
     local refunds = {}
     local totalGoldText, totalFragText, headerCountText
     local cellRefs = {}
@@ -152,7 +191,11 @@ actionFns_.DecomposeByFilter = function()
         if not ref then return end
         local on = selected[itemId]
         ref.cell:SetBackgroundColor(on and { 30, 90, 150, 120 } or { 12, 22, 40, 120 })
-        ref.cell:SetBorderColor(on and C.focus or C.border)
+        if tutorialSelection then
+            ref.cell:SetBorderColor(C.focus)
+        else
+            ref.cell:SetBorderColor(on and C.focus or C.border)
+        end
         ref.label:SetText(on and "✓ 已选择" or "○ 未选择")
         ref.label:SetFontColor(on and C.success or C.textDim)
     end
@@ -183,20 +226,25 @@ actionFns_.DecomposeByFilter = function()
 
     local gridChildren = {}
     for _, item in ipairs(items) do
-        local label = Kit.CompactTxt(selected[item.id] and "✓ 已选择" or "○ 未选择", 15,
-            selected[item.id] and C.success or C.textDim, {
+        local currentItem = item
+        local label = Kit.CompactTxt(selected[currentItem.id] and "✓ 已选择" or "○ 未选择", 15,
+            selected[currentItem.id] and C.success or C.textDim, {
                 width = "100%", height = 22, textAlign = "center",
                 textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
             })
         local card = RewardDialogView.BuildItemCard(
-            ItemView.ItemImage(item),
-            item.name or "装备",
+            ItemView.ItemImage(currentItem),
+            currentItem.name or "装备",
             nil,
-            item.rarity or "common",
-            item
+            currentItem.rarity or "common",
+            currentItem
         )
         card:SetProp("pointerEvents", "none")
         local cell = UI.Panel {
+            -- 构造时写入 id，确保引导层能立刻按 id 命中（后写 props.id 不更新 instance.id）
+            id = tutorialSelection
+                and ("tutorialDispositionCandidate:" .. tostring(currentItem.id))
+                or nil,
             width = 186,
             height = 216,
             flexShrink = 0,
@@ -206,21 +254,28 @@ actionFns_.DecomposeByFilter = function()
             gap = 4,
             paddingTop = 6,
             paddingBottom = 6,
-            backgroundColor = selected[item.id] and { 30, 90, 150, 120 } or { 12, 22, 40, 120 },
-            borderWidth = 2,
-            borderColor = selected[item.id] and C.focus or C.border,
+            backgroundColor = selected[currentItem.id] and { 30, 90, 150, 120 } or { 12, 22, 40, 120 },
+            borderWidth = tutorialSelection and 4 or 2,
+            borderColor = tutorialSelection
+                and C.focus
+                or (selected[currentItem.id] and C.focus or C.border),
             borderRadius = 10,
             onClick = function()
-                selected[item.id] = not selected[item.id]
-                UpdateCellInPlace(item.id)
+                selected[currentItem.id] = not selected[currentItem.id]
+                UpdateCellInPlace(currentItem.id)
                 UpdateTotalsInPlace()
+                if tutorialSelection then
+                    require("client.TutorialController").SetDispositionSelected(
+                        selected[currentItem.id] == true
+                    )
+                end
             end,
             children = {
                 card,
                 label,
             },
         }
-        cellRefs[item.id] = { cell = cell, label = label }
+        cellRefs[currentItem.id] = { cell = cell, label = label }
         gridChildren[#gridChildren + 1] = cell
     end
 
@@ -314,6 +369,12 @@ actionFns_.DecomposeByFilter = function()
         },
     }
 
+    if tutorialSelection then
+        local ok, TutorialController = pcall(require, "client.TutorialController")
+        if ok and TutorialController and TutorialController.NotifyAction then
+            TutorialController.NotifyAction("decompose_open")
+        end
+    end
     CommonPromptDialog.Show {
         kind = "confirm",
         priority = 150,
@@ -327,10 +388,19 @@ actionFns_.DecomposeByFilter = function()
         confirmText = "确认分解",
         danger = true,
         closeOnOverlay = false,
-        zIndex = 2500,
+        -- 引导层 3900；弹窗 3850。可点性由输入白名单控制。
+        zIndex = 3850,
+        tutorialConfirmId = tutorialSelection and "tutorialDispositionConfirm" or nil,
         bodyScrollY = false,
         content = content,
         onConfirm = DoDecompose,
+        onPresented = function()
+            if not tutorialSelection then return end
+            local ok, TutorialController = pcall(require, "client.TutorialController")
+            if ok and TutorialController and TutorialController.NotifyAction then
+                TutorialController.NotifyAction("decompose_dialog_ready")
+            end
+        end,
     }
 
     for _, item in ipairs(items) do
@@ -355,6 +425,21 @@ end
 actionFns_.SetInventoryPolicy = function(policy) ServerClient.SetInventoryPolicy(policy, context_.actionResult) end
 actionFns_.StrengthenSelected = function()
     local slotId = context_.inventoryState.selectedSlot
+    -- 序章强化：强制对已穿戴武器槽发起预览，避免当前部位无装备导致无弹窗/无引导。
+    do
+        local TutorialController = require("client.TutorialController")
+        if TutorialController.IsActive
+            and TutorialController.IsActive()
+            and TutorialController.GetStep
+            and TutorialController.GetStep() == 4
+        then
+            local game = context_.getGame()
+            if game and game.equipped and game.equipped.weapon then
+                slotId = "weapon"
+                context_.inventoryState.selectedSlot = "weapon"
+            end
+        end
+    end
     ServerClient.StrengthenPreview(slotId, function(response)
         if not response or not response.ok or type(response.data) ~= "table" then
             context_.actionResult(response)
@@ -411,8 +496,33 @@ actionFns_.StrengthenSelected = function()
                 },
             },
         }
+        local tutorialStrengthen = (function()
+            local TutorialController = require("client.TutorialController")
+            if TutorialController.IsActive
+                and TutorialController.IsActive()
+                and TutorialController.GetStep
+                and TutorialController.GetStep() == 4
+            then
+                return true
+            end
+            local currentGame = context_.getGame()
+            return currentGame.tutorial and currentGame.tutorial.completed ~= true
+                and tonumber(currentGame.tutorial.step) == 4
+        end)()
+        if tutorialStrengthen then
+            local TutorialController = require("client.TutorialController")
+            if TutorialController.NotifyAction then
+                -- 预览回调返回时强制进入确认子步骤，避免异步窗口挂载后仍停在第 1 子步。
+                TutorialController.NotifyAction("strengthen_open")
+            end
+            -- 教学态必须有可点的强化确认：资源不足时也允许展示确认按钮（服务端会返回失败原因）。
+            if preview.canStrengthen ~= true then
+                preview.canStrengthen = true
+            end
+        end
         CommonPromptDialog.Show {
             kind = "confirm",
+            queueKey = "equipment-strengthen",
             title = "确认强化",
             content = content,
             dialogWidth = 900,
@@ -425,11 +535,21 @@ actionFns_.StrengthenSelected = function()
             confirmText = "确认强化",
             confirmEnabled = preview.canStrengthen == true,
             closeOnOverlay = false,
+            -- 引导层 3900；弹窗 3850。可点性由输入白名单控制。
+            zIndex = 3850,
+            tutorialConfirmId = tutorialStrengthen and "tutorialStrengthenConfirm" or nil,
             onConfirm = function()
                 ServerClient.Strengthen(slotId, function(result)
                     context_.actionResult(result, "强化成功")
                     if result and result.ok then context_.requestPageRefresh() end
                 end)
+            end,
+            onPresented = function()
+                if not tutorialStrengthen then return end
+                local TutorialController = require("client.TutorialController")
+                if TutorialController.NotifyAction then
+                    TutorialController.NotifyAction("strengthen_dialog_ready")
+                end
             end,
         }
     end)

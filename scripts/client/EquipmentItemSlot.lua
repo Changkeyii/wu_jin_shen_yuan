@@ -61,7 +61,10 @@ function EquipmentItemSlot.Build(context, item, options)
         end
         if options.onClick then options.onClick(widget, event) end
     end
+    local tutorialHighlight = options.tutorialHighlight == true
     local widget = UI.Panel {
+        -- 构造时写入 id，引导层按 instance.id 查找更稳。
+        id = options.id,
         width = width,
         height = height,
         flexShrink = 0,
@@ -70,8 +73,18 @@ function EquipmentItemSlot.Build(context, item, options)
         backgroundImage = active and context.ASSETS.ui.inventoryItemCardSelected
             or context.ASSETS.ui.inventoryItemCard,
         backgroundFit = "contain",
-        borderWidth = active and 3 or 1,
-        borderColor = active and context.C.focus or context.rarityColor(item.rarity),
+        borderWidth = tutorialHighlight and 5 or (active and 3 or 1),
+        borderColor = tutorialHighlight and (context.C.focus or { 111, 231, 255, 255 })
+            or (active and context.C.focus or context.rarityColor(item.rarity)),
+        boxShadow = tutorialHighlight and {
+            color = {
+                (context.C.focus and context.C.focus[1]) or 111,
+                (context.C.focus and context.C.focus[2]) or 231,
+                (context.C.focus and context.C.focus[3]) or 255,
+                180,
+            },
+            offsetX = 0, offsetY = 0, blurRadius = 18,
+        } or nil,
         onPointerDown = options.onPointerDown,
         onPointerUp = options.onPointerUp,
         onClick = HandleClick,

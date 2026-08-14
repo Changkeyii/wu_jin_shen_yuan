@@ -36,6 +36,7 @@ local operationQueue_ = nil
 local router_ = nil
 local gateway_ = nil
 local repository_ = nil
+---@type table
 local profileService_ = nil
 local idleService_ = nil
 local adminService_ = nil
@@ -283,7 +284,10 @@ local function SendSnapshot(userId, snapshotEvents)
         print("[Server] rejected invalid snapshot events: " .. tostring(eventError))
         networkEvents = {}
     end
-    snapshot.inventoryCapacity = ServerConfig.INVENTORY_CAP
+    snapshot.inventoryCapacity = (function()
+        local Catalog = require("server.domain.Catalog")
+        return Catalog.GetInventoryCapacity(snapshot)
+    end)()
     snapshot.logs = snapshot.logs or {
         "权威存档已同步，所有玩法结算由服务器执行。",
         "已载入12部位装备体系与五套史诗套装。",

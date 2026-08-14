@@ -75,6 +75,8 @@ local KNOWN = {
     monster_damaged = true,
     monster_defeated = true,
     inventory_full = true,
+    inventory_expanded = true,
+    loot_stash_claimed = true,
     offline_accrued = true,
     offline_collected = true,
     permanent_growth = true,
@@ -100,6 +102,8 @@ local KNOWN = {
     wish_character_unlocked = true,
     wish_character_duplicate = true,
     wish_jar_opened = true,
+    tutorial_step = true,
+    tutorial_completed = true,
 }
 
 local REQUIRED = {
@@ -175,11 +179,11 @@ local REQUIRED_MAGNITUDES = {
 local FIELD_RULES = {
     attack_started = {
         hitFrames = {
-            kind = "array", minLength = 1, maxLength = 4,
+            kind = "array", minLength = 1, maxLength = 5,
             items = { kind = "integer", minimum = 1 },
         },
         hitWeights = {
-            kind = "array", minLength = 1, maxLength = 4,
+            kind = "array", minLength = 1, maxLength = 5,
             items = { kind = "number", minimum = 0 },
         },
     },
@@ -332,33 +336,33 @@ function GameEventSchema.IsKnown(eventType) return KNOWN[eventType] == true end
 
 function GameEventSchema.Validate(event, path)
     path = path or "$event"
-    if type(event) ~= "table" then return false, path .. " must be a table" end
+    if type(event) ~= "table" then return false, path .. " 必须是表结构" end
     if type(event.type) ~= "string" or #event.type < 1 or #event.type > 64 then
-        return false, path .. ".type is invalid"
+        return false, path .. ".type 无效"
     end
-    if not KNOWN[event.type] then return false, path .. ".type is unknown" end
+    if not KNOWN[event.type] then return false, path .. ".type 未知事件类型" end
     if event.attemptId ~= nil and (not finite(event.attemptId) or event.attemptId < 0) then
-        return false, path .. ".attemptId is invalid"
+        return false, path .. ".attemptId 无效"
     end
     for _, field in ipairs(REQUIRED[event.type] or {}) do
-        if event[field] == nil then return false, path .. "." .. field .. " is required" end
+        if event[field] == nil then return false, path .. "." .. field .. " 缺少必填字段" end
     end
     for _, alternatives in ipairs(REQUIRED_MAGNITUDES[event.type] or {}) do
         local regularField, bigField = alternatives[1], alternatives[2]
         if event[regularField] == nil and event[bigField] == nil then
-            return false, path .. "." .. regularField .. " or " .. bigField .. " is required"
+            return false, path .. "." .. regularField .. " 或 " .. bigField .. " 至少需要一个"
         end
     end
     for field, rule in pairs(FIELD_RULES[event.type] or {}) do
         if event[field] ~= nil and not fieldMatches(event[field], rule) then
-            return false, path .. "." .. field .. " is invalid"
+            return false, path .. "." .. field .. " 字段值无效"
         end
     end
     if event.lines ~= nil then
-        if type(event.lines) ~= "table" or #event.lines > 32 then return false, path .. ".lines is invalid" end
+        if type(event.lines) ~= "table" or #event.lines > 32 then return false, path .. ".lines 无效" end
         for index, line in ipairs(event.lines) do
             if type(line) ~= "string" or #line > 512 then
-                return false, string.format("%s.lines[%d] is invalid", path, index)
+                return false, string.format("%s.lines[%d] 无效", path, index)
             end
         end
     end
@@ -375,7 +379,7 @@ end
 function GameEventSchema.ValidateList(events, path)
     path = path or "$events"
     if type(events) ~= "table" or #events > GameEventSchema.MAX_EVENTS then
-        return false, path .. " is invalid"
+        return false, path .. " 无效"
     end
     for index, event in ipairs(events) do
         local ok, reason = GameEventSchema.Validate(event, string.format("%s[%d]", path, index))

@@ -10,6 +10,7 @@ local DomainMath = require("server.domain.DomainMath")
 local EquipmentEngine = require("server.domain.EquipmentEngine")
 local CombatEngine = require("server.domain.CombatEngine")
 local QuestEngine = require("server.domain.QuestEngine")
+local TutorialEngine = require("server.domain.TutorialEngine")
 
 local AdventureEngine = {}
 local storyGateEvent
@@ -77,14 +78,19 @@ function AdventureEngine.SetAutoRun(inputState, enabled, now)
         return PlayerTransition.Failure(inputState, now, "INVALID_ARGUMENT", "enabled must be a boolean")
     end
     local working = PlayerTransition.Copy(inputState, now)
+    -- 序章教学战斗：开挂机前强制回到第 1 层，避免老号高楼层被秒。
+    local tutorialFloorEvents = {}
+    if enabled and TutorialEngine and TutorialEngine.IsActive and TutorialEngine.IsActive(working) then
+        TutorialEngine.EnsureTutorialFloor(working, tutorialFloorEvents)
+    end
     if enabled and working.aidPending then
         return PlayerTransition.Failure(inputState, now, "TOWER_AID_PENDING", "claim tower aid before the third attempt", {
             PlayerTransition.Event("tower_aid_pending", { floor = working.floor }),
         })
     end
-    if enabled and #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
+    if enabled and #working.inventory >= Catalog.GetInventoryCapacity(working) and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
         return PlayerTransition.Failure(inputState, now, "INVENTORY_FULL", "inventory is full", {
-            PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+            PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) }),
         })
     end
     if working.autoRun == enabled then
@@ -93,6 +99,9 @@ function AdventureEngine.SetAutoRun(inputState, enabled, now)
     working.autoRun = enabled
     working.pauseReason = nil
     local events = { PlayerTransition.Event("auto_run_changed", { enabled = enabled }) }
+    for _, event in ipairs(tutorialFloorEvents) do
+        events[#events + 1] = event
+    end
     local storyProgress = working.storyProgress or {}
     local automation = working.automationPolicy or {}
     if enabled and not storyProgress.introCompleted then
@@ -202,14 +211,14 @@ function AdventureEngine.EnterEncounter(inputState, request, rng, now)
     then
         return PlayerTransition.Failure(inputState, now, "STALE_ENCOUNTER", "楼层路线已更新，请等待最新配置")
     end
-    if #working.inventory >= Catalog.INVENTORY_CAP
+    if #working.inventory >= Catalog.GetInventoryCapacity(working)
         and working.inventoryPolicy.pauseOnFull
         and not EquipmentEngine.HasAutoDispositionPolicy(working)
     then
         working.autoRun = false
         working.pauseReason = "inventory_full"
         return PlayerTransition.Finalize(inputState, working, now, "inventory_full", {
-            PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+            PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) }),
         }, false, false, true)
     end
     if BigNumber.IsZero(DomainMath.Magnitude(working.hpBig, working.hp, 0)) then

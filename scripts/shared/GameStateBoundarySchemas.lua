@@ -51,6 +51,16 @@ local validateEquipmentCollection = Definitions.ValidateEquipmentCollection
 local validateAppliedGmCommandIds = Definitions.ValidateAppliedGmCommandIds
 local validateReceivedBroadcasts = Definitions.ValidateReceivedBroadcasts
 
+-- 新手剧情引导进度：step 1=首杀(保底掉落) 2=穿戴 3=分解 4=强化 5=通关(完成)
+local TUTORIAL_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    fields = {
+        step = { type = "integer", min = 1, max = 6 },
+        completed = { type = "boolean" },
+    },
+}
+
 local MAIL_ATTACHMENT_SCHEMA = {
     type = "object",
     allowUnknown = true,
@@ -173,8 +183,21 @@ PERSISTED_SCHEMA = {
         nextItemId = { type = "integer", min = 1, max = LargeNumber.MAX_SAFE_INTEGER },
         inventory = {
             type = "array",
-            maxLength = GameStateSchema.INVENTORY_CAP,
+            maxLength = GameStateSchema.INVENTORY_HARD_CAP or GameStateSchema.INVENTORY_CAP,
             items = ITEM_SCHEMA,
+        },
+        inventoryBonusSlots = {
+            type = "integer",
+            min = 0,
+            max = 1000,
+        },
+        inventoryExpand = {
+            type = "object",
+            allowUnknown = false,
+            fields = {
+                adDayKey = { type = "integer", min = 0, max = 1000000000 },
+                adUsed = { type = "integer", min = 0, max = 100 },
+            },
         },
         overflowLoot = {
             type = "array",
@@ -233,6 +256,8 @@ PERSISTED_SCHEMA = {
         quests = QUESTS_SCHEMA,
         activities = ACTIVITIES_SCHEMA,
         wishPool = WISH_POOL_SCHEMA,
+        -- 新手剧情引导进度（每次登录由服务端重置，测试期每次进入都触发）
+        tutorial = TUTORIAL_SCHEMA,
     },
 }
 
@@ -307,6 +332,7 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     quests = QUESTS_SCHEMA,
     activities = ACTIVITIES_SCHEMA,
     wishPool = WISH_POOL_SCHEMA,
+    tutorial = TUTORIAL_SCHEMA,
 }
 
 local SNAPSHOT_ENVELOPE_SCHEMAS = {
@@ -322,7 +348,7 @@ local SNAPSHOT_ENVELOPE_SCHEMAS = {
     inventoryCapacity = {
         type = "integer",
         min = 1,
-        max = GameStateSchema.INVENTORY_CAP,
+        max = GameStateSchema.INVENTORY_HARD_CAP or GameStateSchema.INVENTORY_CAP,
     },
 }
 

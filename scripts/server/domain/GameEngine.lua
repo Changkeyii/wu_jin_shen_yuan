@@ -20,7 +20,10 @@ local CombatEngine = require("server.domain.CombatEngine")
 local AdventureEngine = require("server.domain.AdventureEngine")
 local RewardEngine = require("server.domain.RewardEngine")
 local QuestEngine = require("server.domain.QuestEngine")
+local TutorialEngine = require("server.domain.TutorialEngine")
 
+-- 允许对外导出函数别名（Equip/Decompose 等），避免 LSP 将空表字段判为 unknown。
+---@type table<string, any>
 local GameEngine = {}
 
 local function rewardScale(context)
@@ -49,6 +52,10 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
     local isBoss = encounterKind == "boss" or encounterKind == "chapterBoss"
     local isElite = encounterKind == "elite"
     QuestEngine.Track(state, isBoss and "boss_kill" or (isElite and "elite_kill" or "monster_kill"), 1, now)
+    -- 新手剧情：首杀保底掉落引导装备（仅在线战斗触发，离线结算不推进教程）
+    if not (context and context.offline == true) then
+        TutorialEngine.OnKill(state, events, now, rng)
+    end
     local rate = rewardScale(context)
     local exp = math.floor((state.floor * 5 + 10) * (isBoss and 10 or (isElite and 2.3 or 1)) * rate)
     local gold = LargeNumber.MultiplyScalar(
@@ -166,6 +173,8 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         state.floor = completedFloor + 1
         state.maxFloor = math.max(state.maxFloor, state.floor)
         QuestEngine.Track(state, "floor_advance", 1, now)
+        -- 新手剧情：登塔推进一层即完成教程
+        TutorialEngine.OnFloorClear(state, events, now)
         state.position = 0
         state.floorDefeats = 0
         state.aidPending = false
@@ -301,14 +310,14 @@ local function advanceOnlineCombatWorking(state, rng, now, timeStep, context)
                 }),
             }, false
         end
-        if #state.inventory >= Catalog.INVENTORY_CAP
+        if #state.inventory >= Catalog.GetInventoryCapacity(state)
             and state.inventoryPolicy.pauseOnFull
             and not EquipmentEngine.HasAutoDispositionPolicy(state)
         then
             state.autoRun = false
             state.pauseReason = "inventory_full"
             return state, "inventory_full", {
-                PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+                PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(state) }),
             }, false
         end
         if state.aidPending and not (context and context.offline) then
@@ -454,11 +463,11 @@ local function advanceOneCellWorking(working, rng, now, context)
         working.pauseReason = "story_gate"
         return working, "story_gate", { AdventureEngine.StoryGateEvent(working.pendingStoryGate) }, false
     end
-    if #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
+    if #working.inventory >= Catalog.GetInventoryCapacity(working) and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
         working.autoRun = false
         working.pauseReason = "inventory_full"
         return working, "inventory_full", {
-            PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+            PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) }),
         }, false
     end
 
@@ -512,7 +521,7 @@ local function advanceOneCellWorking(working, rng, now, context)
             before.pauseReason = "inventory_full"
             return before, "inventory_full", {
                 PlayerTransition.Event("inventory_full", {
-                    capacity = Catalog.INVENTORY_CAP,
+                    capacity = Catalog.GetInventoryCapacity(before),
                     rollback = "cell_settlement",
                 }),
             }, false
@@ -520,15 +529,15 @@ local function advanceOneCellWorking(working, rng, now, context)
         working = before
         working.position = math.min(10, working.position + 1)
         return working, "drop_skipped", {
-            PlayerTransition.Event("inventory_drop_skipped", { capacity = Catalog.INVENTORY_CAP }),
+            PlayerTransition.Event("inventory_drop_skipped", { capacity = Catalog.GetInventoryCapacity(working) }),
         }, false
     end
 
     PlayerTransition.RefreshDerived(working)
-    if #working.inventory >= Catalog.INVENTORY_CAP and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
+    if #working.inventory >= Catalog.GetInventoryCapacity(working) and working.inventoryPolicy.pauseOnFull and not EquipmentEngine.HasAutoDispositionPolicy(working) then
         working.autoRun = false
         working.pauseReason = "inventory_full"
-        events[#events + 1] = PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP })
+        events[#events + 1] = PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) })
     end
     return working, "cell_resolved", events, inventoryChanged
 end
@@ -565,6 +574,7 @@ function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
 end
 
 GameEngine.ClaimLootStash = RewardEngine.ClaimLootStash
+GameEngine.ExpandInventoryByAd = RewardEngine.ExpandInventoryByAd
 
 GameEngine.Equip = EquipmentEngine.Equip
 GameEngine.EquipItem = GameEngine.Equip
@@ -718,7 +728,7 @@ function GameEngine.ClaimAid(inputState, rng, now)
         )
         if not added or not item then
             return PlayerTransition.Failure(inputState, now, "INVENTORY_FULL", "clear inventory space before claiming tower aid", {
-                PlayerTransition.Event("inventory_full", { capacity = Catalog.INVENTORY_CAP }),
+                PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) }),
             })
         end
         item.setId = nil
@@ -821,6 +831,75 @@ GameEngine.ClaimOfflineReward = RewardEngine.ClaimOfflineReward
 
 GameEngine.GrantCurrency = RewardEngine.GrantCurrency
 GameEngine.GrantEquipment = RewardEngine.GrantEquipment
+
+--- 序章老号兜底：清空全部装备数据并补发教学装备。
+function GameEngine.ResetTutorialLoadout(inputState, now)
+    if not TutorialEngine.IsActive(inputState) then
+        return PlayerTransition.Failure(
+            inputState,
+            now,
+            "TUTORIAL_INACTIVE",
+            "当前不在序章教学中"
+        )
+    end
+    local working = PlayerTransition.Copy(inputState, now)
+    local events = {}
+    local ok, code, summary = TutorialEngine.ResetLoadoutForTutorial(
+        working,
+        events,
+        now,
+        math.random
+    )
+    if not ok then
+        return PlayerTransition.Failure(
+            inputState,
+            now,
+            code or "TUTORIAL_RESET_FAILED",
+            "清理装备失败"
+        )
+    end
+    return PlayerTransition.Finalize(
+        inputState,
+        working,
+        now,
+        "tutorial_loadout_reset",
+        events,
+        true,
+        true
+    )
+end
+
+--- 功能介绍看完后完成序章，发放保底奖励。
+function GameEngine.CompleteTutorial(inputState, now)
+    if not TutorialEngine.IsActive(inputState) then
+        return PlayerTransition.Failure(
+            inputState,
+            now,
+            "TUTORIAL_INACTIVE",
+            "当前不在序章教学中"
+        )
+    end
+    local working = PlayerTransition.Copy(inputState, now)
+    local events = {}
+    local ok, code = TutorialEngine.Complete(working, events, now)
+    if not ok then
+        return PlayerTransition.Failure(
+            inputState,
+            now,
+            code or "TUTORIAL_COMPLETE_FAILED",
+            code == "TUTORIAL_NOT_READY" and "功能介绍尚未完成" or "序章已完成"
+        )
+    end
+    return PlayerTransition.Finalize(
+        inputState,
+        working,
+        now,
+        "tutorial_completed",
+        events,
+        true,
+        false
+    )
+end
 
 function GameEngine.AdjustProgress(inputState, adjustment, now)
     if type(adjustment) ~= "table" then

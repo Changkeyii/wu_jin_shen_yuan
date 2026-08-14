@@ -45,7 +45,7 @@ MailRules.SENDER_DEFAULT = "无尽深渊"
 
 -- 附件领取失败原因（服务端返回，客户端展示）
 MailRules.CLAIM_ERRORS = {
-    INVENTORY_FULL = "背包空间不足",
+    INVENTORY_FULL = "背包已满，请先分解/出售或看广告解锁格子",
     HOLD_LIMIT = "道具已达持有上限",
     REWARD_INVALID = "奖励配置失效",
     MAIL_EXPIRED = "邮件已过期",

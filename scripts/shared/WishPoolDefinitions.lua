@@ -1,10 +1,25 @@
 local WishPoolDefinitions = {}
 
-WishPoolDefinitions.AD_DAILY_LIMIT = 20
+-- 单抽 / 十连消耗（十连优惠：10 次只扣 8 券）。不再支持广告许愿。
+WishPoolDefinitions.SINGLE_DRAW_COUNT = 1
+WishPoolDefinitions.SINGLE_TICKET_COST = 1
+WishPoolDefinitions.MULTI_DRAW_COUNT = 10
+WishPoolDefinitions.MULTI_TICKET_COST = 8
+-- 兼容旧存档字段；广告许愿已下线，不再参与业务判定。
+WishPoolDefinitions.AD_DAILY_LIMIT = 0
 WishPoolDefinitions.MYTH_HARD_PITY = 120
 WishPoolDefinitions.CHARACTER_HARD_PITY = 400
 WishPoolDefinitions.STARTER_TICKETS = 1
 WishPoolDefinitions.CHARACTER_MARKS_PER_DUPLICATE = 10
+
+-- 解析许愿次数与券消耗：仅允许 1 抽 / 10 抽。
+function WishPoolDefinitions.ResolveDrawPlan(count)
+    count = math.floor(tonumber(count) or WishPoolDefinitions.SINGLE_DRAW_COUNT)
+    if count == WishPoolDefinitions.MULTI_DRAW_COUNT then
+        return WishPoolDefinitions.MULTI_DRAW_COUNT, WishPoolDefinitions.MULTI_TICKET_COST
+    end
+    return WishPoolDefinitions.SINGLE_DRAW_COUNT, WishPoolDefinitions.SINGLE_TICKET_COST
+end
 
 -- 许愿池限定罐品阶（传说及以上）
 WishPoolDefinitions.JAR_RARITIES = { "legendary", "epic", "myth" }

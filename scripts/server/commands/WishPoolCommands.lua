@@ -11,6 +11,16 @@ local EMPTY_SCHEMA = {
     fields = {},
 }
 
+local WISH_SCHEMA = {
+    type = "object",
+    required = {},
+    allowUnknown = false,
+    fields = {
+        -- 1 = 单抽（1 券），10 = 十连（8 券）。缺省按单抽。
+        count = { type = "integer", min = 1, max = 10 },
+    },
+}
+
 local OPEN_JAR_SCHEMA = {
     type = "object",
     required = { "jarId" },
@@ -59,20 +69,26 @@ end
 function WishPoolCommands.Register(router, services)
     router:Register({
         name = "WishPool.WishWithTicket",
-        schema = EMPTY_SCHEMA,
+        schema = WISH_SCHEMA,
         rate = ServerConfig.RATES.Wish,
-        handler = AsyncMutation(services, "wish with ticket", function(state, _, now)
-            return WishPoolEngine.Wish(state, "ticket", now)
+        handler = AsyncMutation(services, "wish with ticket", function(state, payload, now)
+            return WishPoolEngine.Wish(state, "ticket", now, nil, payload and payload.count)
         end),
     })
 
+    -- 广告许愿已下线：保留命令名仅返回明确失败，避免旧客户端静默误用。
     router:Register({
         name = "WishPool.WishWithAd",
         schema = EMPTY_SCHEMA,
         rate = ServerConfig.RATES.Wish,
-        handler = AsyncMutation(services, "wish with rewarded ad", function(state, _, now)
-            return WishPoolEngine.Wish(state, "ad", now)
-        end),
+        handler = function(_, _, done)
+            done(false, {
+                ok = false,
+                code = "WISH_AD_DISABLED",
+                reason = "广告许愿已下线，请使用许愿券",
+            })
+            return true
+        end,
     })
 
     router:Register({

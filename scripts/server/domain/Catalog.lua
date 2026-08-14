@@ -18,8 +18,28 @@ Catalog.OFFLINE_REWARD_RATE = 0.20
 Catalog.OFFLINE_STEP_SECONDS = Catalog.STEP_SECONDS
 Catalog.OFFLINE_MIN_SECONDS = GameStatePolicy.OFFLINE_MIN_SECONDS
 Catalog.OFFLINE_MAX_SECONDS = GameStatePolicy.OFFLINE_MAX_SECONDS
-Catalog.INVENTORY_CAP = 300
+Catalog.INVENTORY_CAP = GameStatePolicy.INVENTORY_CAP
+Catalog.INVENTORY_EXPAND_PER_AD = GameStatePolicy.INVENTORY_EXPAND_PER_AD
+Catalog.INVENTORY_EXPAND_MAX_BONUS = GameStatePolicy.INVENTORY_EXPAND_MAX_BONUS
+Catalog.INVENTORY_EXPAND_AD_PER_DAY = GameStatePolicy.INVENTORY_EXPAND_AD_PER_DAY
 Catalog.MAX_LOG_EVENTS = 40
+
+--- 当前玩家实际背包容量 = 基础 + 广告解锁加成。
+function Catalog.GetInventoryCapacity(state)
+    local bonus = 0
+    if type(state) == "table" then
+        bonus = math.max(0, math.floor(tonumber(state.inventoryBonusSlots) or 0))
+    end
+    bonus = math.min(Catalog.INVENTORY_EXPAND_MAX_BONUS, bonus)
+    return Catalog.INVENTORY_CAP + bonus
+end
+
+function Catalog.GetInventoryFreeSlots(state)
+    state = state or {}
+    local capacity = Catalog.GetInventoryCapacity(state)
+    local used = type(state.inventory) == "table" and #state.inventory or 0
+    return math.max(0, capacity - used), capacity, used
+end
 Catalog.MAX_STAR = 5
 Catalog.MAX_ENHANCE = 1000
 Catalog.MAX_VIP_LEVEL = 10

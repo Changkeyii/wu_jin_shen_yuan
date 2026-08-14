@@ -217,7 +217,9 @@ function CommonPromptDialog.Present(options, finish)
             }
         end
         if showConfirmButton then
-            dialogChildren[#dialogChildren + 1] = UI.Panel {
+            -- 确认按钮 id 必须在构造时写入，引导层按 instance.id 查找。
+            local confirmButton = UI.Panel {
+                id = options.tutorialConfirmId,
                 position = "absolute", left = confirmButtonLeft, top = buttonTop,
                 width = buttonWidth, height = 82, clickable = canConfirm,
                 opacity = canConfirm and 1.0 or 0.35,
@@ -230,6 +232,11 @@ function CommonPromptDialog.Present(options, finish)
                     ),
                 },
             }
+            if options.tutorialConfirmId then
+                confirmButton.id = options.tutorialConfirmId
+                confirmButton.props.id = options.tutorialConfirmId
+            end
+            dialogChildren[#dialogChildren + 1] = confirmButton
         end
         if showCloseButton then
             dialogChildren[#dialogChildren + 1] = UI.Panel {

@@ -284,6 +284,16 @@ function GameCommands.Register(router, services)
     })
 
     router:Register({
+        name = "Game.ExpandInventoryByAd",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "expand inventory by ad", function(state, payload, now)
+            return GameEngine.ExpandInventoryByAd(state, now)
+        end),
+    })
+
+    router:Register({
         name = "Game.Equip",
         schema = {
             type = "object",
@@ -295,6 +305,28 @@ function GameCommands.Register(router, services)
         async = true,
         handler = AsyncMutation(services, "equip item", function(state, payload, now)
             return GameEngine.Equip(state, payload.itemId, now)
+        end),
+    })
+
+    -- 序章老号/测试号：清空全部装备并补发教学装备，避免全身穿戴后分解步骤无目标卡死。
+    router:Register({
+        name = "Game.ResetTutorialLoadout",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "reset tutorial loadout", function(state, payload, now)
+            return GameEngine.ResetTutorialLoadout(state, now)
+        end),
+    })
+
+    -- 功能介绍看完后完成序章（不再依赖通关演示）。
+    router:Register({
+        name = "Game.CompleteTutorial",
+        schema = EMPTY_SCHEMA,
+        rate = ServerConfig.RATES.Equipment,
+        async = true,
+        handler = AsyncMutation(services, "complete tutorial", function(state, payload, now)
+            return GameEngine.CompleteTutorial(state, now)
         end),
     })
 
@@ -319,7 +351,7 @@ function GameCommands.Register(router, services)
                 candidateIds = {
                     type = "array",
                     minLength = 1,
-                    maxLength = ServerConfig.INVENTORY_CAP,
+                    maxLength = ServerConfig.INVENTORY_HARD_CAP or ServerConfig.INVENTORY_CAP,
                     items = { type = "string", minLength = 36, maxLength = 36 },
                 },
             },
@@ -389,7 +421,7 @@ function GameCommands.Register(router, services)
                 candidateIds = {
                     type = "array",
                     minLength = 1,
-                    maxLength = ServerConfig.INVENTORY_CAP,
+                    maxLength = ServerConfig.INVENTORY_HARD_CAP or ServerConfig.INVENTORY_CAP,
                     items = { type = "string", minLength = 36, maxLength = 36 },
                 },
             },
@@ -412,7 +444,7 @@ function GameCommands.Register(router, services)
                 candidateIds = {
                     type = "array",
                     minLength = 1,
-                    maxLength = ServerConfig.INVENTORY_CAP,
+                    maxLength = ServerConfig.INVENTORY_HARD_CAP or ServerConfig.INVENTORY_CAP,
                     items = { type = "string", minLength = 36, maxLength = 36 },
                 },
             },

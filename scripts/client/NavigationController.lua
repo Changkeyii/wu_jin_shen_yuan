@@ -22,12 +22,24 @@ local function CurrentGame()
     return GameStateAdapter.GetViewState()
 end
 
-local function PerformSwitch(pageId)
+local function IsTutorialLocked(game)
+    local tutorial = (game or CurrentGame()).tutorial
+    return type(tutorial) == "table" and tutorial.completed ~= true
+end
+
+local function PerformSwitch(pageId, options)
+    options = options or {}
     local game = CurrentGame()
     if game.page == "play" and pageId ~= "play" then
         PlayPresentation.ClearCombatPresentation(true)
     end
     local function CompleteSwitch()
+        local currentBeforeSwitch = CurrentGame()
+        if IsTutorialLocked(currentBeforeSwitch) and options.tutorial ~= true then
+            print("[TutorialLock] blocked deferred page switch: "
+                .. tostring(currentBeforeSwitch.page) .. " -> " .. tostring(pageId))
+            return
+        end
         GameStateAdapter.SetPage(pageId)
         local current = CurrentGame()
         AudioController.SetPage(current.page)
@@ -45,18 +57,26 @@ function NavigationController.Configure(context)
     context_ = assert(context)
 end
 
-function NavigationController.SwitchPage(pageId)
-    if not context_ then return end
+function NavigationController.SwitchPage(pageId, options)
+    options = options or {}
+    if not context_ then return false end
     local game = CurrentGame()
-    if game.page == pageId then return end
+    -- 序章由 TutorialController 独占导航控制；指针锁之外再封死程序化切页。
+    if IsTutorialLocked(game) and options.tutorial ~= true then
+        print("[TutorialLock] blocked page switch: " .. tostring(game.page)
+            .. " -> " .. tostring(pageId))
+        return false
+    end
+    if game.page == pageId then return true end
     ItemTips.Hide("page-switch")
     if game.page == "play" and game.autoRun and context_.isIdleRewardTracking() then
         context_.showIdleRewardSummary(function()
-            PerformSwitch(pageId)
+            PerformSwitch(pageId, options)
         end)
-        return
+        return true
     end
-    PerformSwitch(pageId)
+    PerformSwitch(pageId, options)
+    return true
 end
 
 function NavigationController.Update(game)
@@ -131,6 +151,8 @@ function NavigationController.Build(game)
             textStroke = { width = 2, color = "#000000" },
         })
         local button = UI.Panel {
+            -- 序章功能介绍：底部导航高亮目标
+            id = "tutorialFeatureNav:" .. tostring(itemId),
             position = "absolute",
             left = x,
             top = 28,

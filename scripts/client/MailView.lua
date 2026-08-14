@@ -340,9 +340,37 @@ local function ActionBar()
                                 if #claimed == 0 or not ShowClaimRewards(claimed) then
                                     Toast("领取完成", "success")
                                 end
+                                -- 若部分附件因背包满失败，给出统一处理入口。
+                                local failedFull = false
+                                for _, mail in ipairs(claimed) do
+                                    for _, attachment in ipairs((mail and mail.attachments) or {}) do
+                                        if attachment and attachment.failReason == "INVENTORY_FULL" then
+                                            failedFull = true
+                                            break
+                                        end
+                                    end
+                                    if failedFull then break end
+                                end
+                                if failedFull then
+                                    local ok, InventoryFullPrompt = pcall(require, "client.InventoryFullPrompt")
+                                    if ok and InventoryFullPrompt and InventoryFullPrompt.Show then
+                                        InventoryFullPrompt.Show({
+                                            reason = "部分邮件附件因背包已满未能入包",
+                                        })
+                                    end
+                                end
                                 MailView.Refresh()
                             else
-                                Toast((response and response.reason) or "领取失败")
+                                local reason = (response and response.reason) or "领取失败"
+                                Toast(reason)
+                                if response and (response.code == "INVENTORY_FULL"
+                                    or (type(reason) == "string" and reason:find("背包", 1, true)))
+                                then
+                                    local ok, InventoryFullPrompt = pcall(require, "client.InventoryFullPrompt")
+                                    if ok and InventoryFullPrompt and InventoryFullPrompt.Show then
+                                        InventoryFullPrompt.Show({ reason = reason })
+                                    end
+                                end
                                 MailView.Refresh()
                             end
                         end)
@@ -708,9 +736,36 @@ function MailView.PresentDetail(mail)
                         if #claimed == 0 or not ShowClaimRewards(claimed) then
                             Toast("领取成功", "success")
                         end
+                        local failedFull = false
+                        for _, entry in ipairs(claimed) do
+                            for _, attachment in ipairs((entry and entry.attachments) or {}) do
+                                if attachment and attachment.failReason == "INVENTORY_FULL" then
+                                    failedFull = true
+                                    break
+                                end
+                            end
+                            if failedFull then break end
+                        end
+                        if failedFull then
+                            local ok, InventoryFullPrompt = pcall(require, "client.InventoryFullPrompt")
+                            if ok and InventoryFullPrompt and InventoryFullPrompt.Show then
+                                InventoryFullPrompt.Show({
+                                    reason = "邮件附件因背包已满未能入包",
+                                })
+                            end
+                        end
                         MailView.ShowDetail(mail.mailId)
                     else
-                        Toast((response and response.reason) or "领取失败")
+                        local reason = (response and response.reason) or "领取失败"
+                        Toast(reason)
+                        if response and (response.code == "INVENTORY_FULL"
+                            or (type(reason) == "string" and reason:find("背包", 1, true)))
+                        then
+                            local ok, InventoryFullPrompt = pcall(require, "client.InventoryFullPrompt")
+                            if ok and InventoryFullPrompt and InventoryFullPrompt.Show then
+                                InventoryFullPrompt.Show({ reason = reason })
+                            end
+                        end
                     end
                 end)
             end,

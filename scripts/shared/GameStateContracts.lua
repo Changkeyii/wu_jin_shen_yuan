@@ -38,6 +38,8 @@ GameStateContracts.PERSISTED_FIELDS = {
     "pauseReason",
     "nextItemId",
     "inventory",
+    "inventoryBonusSlots",
+    "inventoryExpand",
     "overflowLoot",
     "lootStash",
     "equipped",
@@ -68,6 +70,8 @@ GameStateContracts.PERSISTED_FIELDS = {
     "quests",
     "activities",
     "wishPool",
+    -- 序章进度需持久化，避免会话内重连后客户端永远停在 step=1。
+    "tutorial",
 }
 
 GameStateContracts.SNAPSHOT_FIELDS = {
@@ -88,6 +92,8 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "pauseReason",
     "pendingOfflineSeconds",
     "inventory",
+    "inventoryBonusSlots",
+    "inventoryExpand",
     "overflowLoot",
     "lootStash",
     "equipped",
@@ -129,6 +135,7 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "quests",
     "activities",
     "wishPool",
+    "tutorial",
 }
 
 GameStateContracts.DELTA_FIELD_SET = {}

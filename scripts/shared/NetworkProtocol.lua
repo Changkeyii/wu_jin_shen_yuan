@@ -126,7 +126,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
 
     if value == nil then
         if schema.required == true then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Required value is missing", path)
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "缺少必填值", path)
         end
         return true, nil
     end
@@ -151,7 +151,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
         if not typeMatches then
             return false, makeError(
                 ErrorCodes.INVALID_PAYLOAD,
-                "Expected " .. tostring(expectedType) .. ", got " .. actualType,
+                "期望类型 " .. tostring(expectedType) .. "，实际为 " .. actualType,
                 path
             )
         end
@@ -166,28 +166,32 @@ function NetworkProtocol.ValidateValue(value, schema, path)
             end
         end
         if not found then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Value is not in the allowed enum", path)
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "取值不在允许的枚举范围内", path)
         end
     end
 
     if type(value) == "number" then
         if schema.min ~= nil and value < schema.min then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Value is below the minimum", path)
+            print("[NetworkProtocol] validate min failed path=" .. tostring(path)
+                .. " value=" .. tostring(value) .. " min=" .. tostring(schema.min))
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "取值低于最小值", path)
         end
         if schema.max ~= nil and value > schema.max then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Value exceeds the maximum", path)
+            print("[NetworkProtocol] validate max failed path=" .. tostring(path)
+                .. " value=" .. tostring(value) .. " max=" .. tostring(schema.max))
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "取值超过最大值", path)
         end
     end
 
     if type(value) == "string" then
         if schema.minLength ~= nil and #value < schema.minLength then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "String is shorter than the minimum", path)
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "字符串长度不足", path)
         end
         if schema.maxLength ~= nil and #value > schema.maxLength then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "String exceeds the maximum length", path)
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "字符串长度超限", path)
         end
         if schema.pattern ~= nil and string.match(value, schema.pattern) == nil then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "String does not match the required pattern", path)
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, "字符串不符合要求格式", path)
         end
     end
 
@@ -196,10 +200,10 @@ function NetworkProtocol.ValidateValue(value, schema, path)
         if isArray then
             local length = #value
             if schema.minLength ~= nil and length < schema.minLength then
-                return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Array is shorter than the minimum", path)
+                return false, makeError(ErrorCodes.INVALID_PAYLOAD, "数组长度不足", path)
             end
             if schema.maxLength ~= nil and length > schema.maxLength then
-                return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Array exceeds the maximum length", path)
+                return false, makeError(ErrorCodes.INVALID_PAYLOAD, "数组长度超限", path)
             end
             for index, item in ipairs(value) do
                 local ok, err = NetworkProtocol.ValidateValue(item, schema.items, path .. "[" .. index .. "]")
@@ -209,7 +213,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
             end
             for key in pairs(value) do
                 if type(key) ~= "number" or key < 1 or key > length or key ~= math.floor(key) then
-                    return false, makeError(ErrorCodes.INVALID_PAYLOAD, "Array contains a non-sequential key", path)
+                    return false, makeError(ErrorCodes.INVALID_PAYLOAD, "数组包含非连续键", path)
                 end
             end
         else
@@ -226,7 +230,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
                         if value[fieldName] == nil then
                             return false, makeError(
                                 ErrorCodes.INVALID_PAYLOAD,
-                                "Required field is missing",
+                                "缺少必填字段",
                                 path .. "." .. fieldName
                             )
                         end
@@ -245,7 +249,7 @@ function NetworkProtocol.ValidateValue(value, schema, path)
                         if fields[fieldName] == nil then
                             return false, makeError(
                                 ErrorCodes.INVALID_PAYLOAD,
-                                "Unknown field",
+                                "未知字段",
                                 path .. "." .. tostring(fieldName)
                             )
                         end
@@ -258,10 +262,10 @@ function NetworkProtocol.ValidateValue(value, schema, path)
     if schema.validate ~= nil then
         local ok, valid, reason = pcall(schema.validate, value)
         if not ok then
-            return false, makeError(ErrorCodes.INTERNAL_ERROR, "Schema validator failed", path)
+            return false, makeError(ErrorCodes.INTERNAL_ERROR, "自定义校验器执行失败", path)
         end
         if valid == false then
-            return false, makeError(ErrorCodes.INVALID_PAYLOAD, reason or "Custom validation failed", path)
+            return false, makeError(ErrorCodes.INVALID_PAYLOAD, reason or "自定义校验未通过", path)
         end
     end
 

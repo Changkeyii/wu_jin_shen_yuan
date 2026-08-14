@@ -11,6 +11,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 local PowerEvaluator = require("shared.PowerEvaluator")
 local GameStateSchema = require("shared.GameStateSchema")
 local QuestEngine = require("server.domain.QuestEngine")
+local TutorialEngine = require("server.domain.TutorialEngine")
 
 local EquipmentEngine = {}
 
@@ -61,9 +62,11 @@ local function hasAutoDispositionPolicy(state)
 end
 
 local function makeRoomForDrop(state, incoming, events, allowOverflow)
-    if #state.inventory < Catalog.INVENTORY_CAP then return true, false end
+    if #state.inventory < Catalog.GetInventoryCapacity(state) then return true, false end
     local policy = state.inventoryPolicy or {}
-    local mode = autoDispositionEnabled(state, incoming)
+    -- 新手保底掉落绝不可被自动分解/出售吞掉，否则序章后续穿戴/分解会卡死。
+    local protectTutorialDrop = incoming and incoming.source == "tutorial_drop"
+    local mode = (not protectTutorialDrop) and autoDispositionEnabled(state, incoming) or false
     local equipped = PlayerTransition.EquippedIdSet(state)
     local disposalIndex = nil
     if mode then
@@ -79,7 +82,12 @@ local function makeRoomForDrop(state, incoming, events, allowOverflow)
         return false, "consumed"
     end
     for index, item in ipairs(state.inventory) do
-        if not item.locked and not item.aidLocked and not equipped[item.id] and autoDispositionEnabled(state, item) then
+        if not item.locked
+            and not item.aidLocked
+            and not equipped[item.id]
+            and item.source ~= "tutorial_drop"
+            and autoDispositionEnabled(state, item)
+        then
             disposalIndex = index
             break
         end
@@ -93,7 +101,7 @@ local function makeRoomForDrop(state, incoming, events, allowOverflow)
             events[#events + 1] = PlayerTransition.Event("inventory_full", {
                 itemId = incoming.id,
                 equipmentId = incoming.equipmentId,
-                capacity = Catalog.INVENTORY_CAP,
+                capacity = Catalog.GetInventoryCapacity(state),
                 temporaryLootCount = #state.overflowLoot,
             })
             return false, "overflow"
@@ -119,7 +127,7 @@ end
 local function drainOverflowLoot(state, events)
     state.overflowLoot = state.overflowLoot or {}
     local moved = 0
-    while #state.inventory < Catalog.INVENTORY_CAP and #state.overflowLoot > 0 do
+    while #state.inventory < Catalog.GetInventoryCapacity(state) and #state.overflowLoot > 0 do
         local item = table.remove(state.overflowLoot, 1)
         state.inventory[#state.inventory + 1] = item
         InventoryState.AddToLootStash(state, item.id)
@@ -236,6 +244,11 @@ local function considerEquipmentUpgrade(state, item, now, events)
 
     local payload = upgradePayload(item, before, after)
     local tradeabilityChanged = false
+    -- 序章期间禁止“发现更强装备”决策弹窗：静默跳过，不打断强引导。
+    if TutorialEngine.IsActive(state) then
+        state.pendingEquipDecision = nil
+        return false, false
+    end
     if state.automationPolicy and state.automationPolicy.autoEquip then
         state.previousLoadout = {
             equipped = TableUtils.DeepCopy(state.equipped),
@@ -249,6 +262,8 @@ local function considerEquipmentUpgrade(state, item, now, events)
         PlayerTransition.RefreshDerived(state)
         payload.automatic = true
         events[#events + 1] = PlayerTransition.Event("equipment_equipped", payload)
+        -- 自动穿戴同样推进序章，避免老号/自动装配后卡在 step 2。
+        TutorialEngine.OnEquip(state, events, now)
     else
         state.pendingEquipDecision = {
             itemId = item.id,
@@ -356,15 +371,32 @@ function EquipmentEngine.Equip(inputState, itemId, now)
         return PlayerTransition.Failure(inputState, now, "INVALID_ITEM", "item has no valid equipment slot")
     end
     if working.equipped[item.slot] == item.id then
-        return PlayerTransition.NoCommit(inputState, now, "already_equipped")
+        -- 已穿戴时仍推进序章，并回传 equipment_equipped，避免客户端卡在“穿戴成功请稍候”。
+        local events = {
+            PlayerTransition.Event("equipment_equipped", {
+                itemId = item.id,
+                slot = item.slot,
+                alreadyEquipped = true,
+            }),
+        }
+        TutorialEngine.OnEquip(working, events, now)
+        if #events > 1 or (working.tutorial and working.tutorial.step == 3) then
+            return PlayerTransition.Finalize(
+                inputState, working, now, "equipment_changed", events, false, false
+            )
+        end
+        return PlayerTransition.NoCommit(inputState, now, "already_equipped", events)
     end
     working.equipped[item.slot] = item.id
     local tradeabilityChanged = bindEquipmentOnSuccessfulEquip(item)
     InventoryState.RemoveFromLootStash(working, item.id)
     PlayerTransition.RefreshDerived(working)
-    return PlayerTransition.Finalize(inputState, working, now, "equipment_changed", {
+    local events = {
         PlayerTransition.Event("equipment_equipped", { itemId = item.id, slot = item.slot }),
-    }, tradeabilityChanged, true)
+    }
+    -- 新手剧情：穿戴完成
+    TutorialEngine.OnEquip(working, events, now)
+    return PlayerTransition.Finalize(inputState, working, now, "equipment_changed", events, tradeabilityChanged, true)
 end
 
 EquipmentEngine.EquipItem = EquipmentEngine.Equip
@@ -502,6 +534,8 @@ function EquipmentEngine.Decompose(inputState, maximumRank, now, candidateIds)
     local recovered = drainOverflowLoot(working, events)
     PlayerTransition.RefreshDerived(working)
     if recovered > 0 then events[#events + 1] = PlayerTransition.Event("temporary_loot_recovered", { count = recovered }) end
+    -- 新手剧情：分解完成
+    TutorialEngine.OnDecompose(working, events, now)
     return PlayerTransition.Finalize(inputState, working, now, "equipment_decomposed", events, true, false)
 end
 
@@ -790,14 +824,17 @@ function EquipmentEngine.Strengthen(inputState, slotId, now)
         (item.investedFragments or 0) + fragmentCost
     )
     PlayerTransition.RefreshDerived(working)
-    return PlayerTransition.Finalize(inputState, working, now, "equipment_strengthened", {
+    local events = {
         PlayerTransition.Event("equipment_strengthened", {
             itemId = item.id,
             enhance = item.enhance,
             goldCost = goldCost,
             fragmentCost = fragmentCost,
         }),
-    }, true, false)
+    }
+    -- 新手剧情：强化完成
+    TutorialEngine.OnStrengthen(working, events, now)
+    return PlayerTransition.Finalize(inputState, working, now, "equipment_strengthened", events, true, false)
 end
 
 EquipmentEngine.StrengthenSelected = EquipmentEngine.Strengthen

@@ -277,30 +277,51 @@ local function showCover()
     root:AddChild(cover_)
 end
 
-local function showWishReward()
-    local result = pendingResult_
-    if not result then return end
-    local cards = {}
-    if result.rewardKind == "character" then
-        local character = WishPoolDefinitions.CHARACTERS[result.characterId]
+local function addWishRewardCard(cards, entry)
+    if not entry then return end
+    if entry.rewardKind == "character" then
+        local character = WishPoolDefinitions.CHARACTERS[entry.characterId]
         RewardDialogView.AddCard(
             cards,
             character and character.icon or ASSETS.ui.wishCharMark,
             character and character.name or "完整角色",
-            "新角色",
+            "角色",
             "myth")
-    else
-        local jar = WishPoolDefinitions.ResolveJar(result.jarId)
-        RewardDialogView.AddCard(
-            cards,
-            jar and jar.icon or ASSETS.ui.wishJarRandom,
-            jar and jar.name or "装备罐",
-            "",
-            result.rarity or "legendary")
+        return
     end
+    local jar = WishPoolDefinitions.ResolveJar(entry.jarId)
+    RewardDialogView.AddCard(
+        cards,
+        jar and jar.icon or ASSETS.ui.wishJarRandom,
+        jar and jar.name or "装备罐",
+        "",
+        entry.rarity or "legendary")
+end
+
+local function showWishReward()
+    local result = pendingResult_
+    if not result then return end
+    local cards = {}
+    local draws = type(result.draws) == "table" and result.draws or nil
+    if draws and #draws > 0 then
+        for _, draw in ipairs(draws) do
+            addWishRewardCard(cards, draw)
+        end
+    else
+        addWishRewardCard(cards, result)
+    end
+    local drawCount = math.max(1, tonumber(result.count) or (draws and #draws) or 1)
+    local ticketCost = tonumber(result.ticketCost)
+        or (drawCount >= WishPoolDefinitions.MULTI_DRAW_COUNT
+            and WishPoolDefinitions.MULTI_TICKET_COST
+            or WishPoolDefinitions.SINGLE_TICKET_COST)
+    local title = drawCount > 1 and string.format("十连许愿成功 x%d", drawCount) or "许愿成功"
+    local message = drawCount > 1
+        and string.format("消耗 %d 张许愿券，获得 %d 个奖励（已放入背包）", ticketCost, #cards)
+        or "罐子已放入背包，可在背包中开启"
     RewardDialogView.Show {
-        title = "许愿成功",
-        message = "罐子已放入背包，可在背包中开启",
+        title = title,
+        message = message,
         cards = cards,
         confirmText = "确认收取",
         zIndex = REWARD_Z_INDEX,
@@ -418,9 +439,10 @@ end
 local function updateCounters()
     local wishPool = currentGame().wishPool or {}
     setText(refs_.ticketVal, tostring(wishPool.tickets or 0))
-    setText(refs_.adVal, string.format("%d/%d",
-        wishPool.displayAdUsed or wishPool.adUsed or 0,
-        WishPoolDefinitions.AD_DAILY_LIMIT))
+    setText(refs_.multiCostVal, string.format(
+        "%d券/%d抽",
+        WishPoolDefinitions.MULTI_TICKET_COST,
+        WishPoolDefinitions.MULTI_DRAW_COUNT))
     setText(refs_.mythPityVal, string.format("%d/%d",
         wishPool.mythPity or 0, WishPoolDefinitions.MYTH_HARD_PITY))
     setText(refs_.charPityVal, string.format("%d/%d",
@@ -591,9 +613,9 @@ local function buildMainPage()
     refs_ = { cells = {}, cellSelectors = {} }
     local wishPool = currentGame().wishPool or {}
     -- 前端不做按钮屏蔽：重复点击由全屏遮罩 + 服务端冷却拒绝
-    local ticketDisabled = (wishPool.tickets or 0) <= 0
-    local adUsed = wishPool.displayAdUsed or wishPool.adUsed or 0
-    local adDisabled = adUsed >= WishPoolDefinitions.AD_DAILY_LIMIT
+    local tickets = wishPool.tickets or 0
+    local singleDisabled = tickets < WishPoolDefinitions.SINGLE_TICKET_COST
+    local multiDisabled = tickets < WishPoolDefinitions.MULTI_TICKET_COST
 
     local wallNodes, cell, wallWidth, wallHeight = rewardGridLayout()
     -- 服务端停靠格必须出现在奖池墙上（替换墙尾一个格子，避免动画停在错误奖励）
@@ -611,9 +633,12 @@ local function buildMainPage()
     refs_.ticketVal = Kit.CompactTxt("0", 22, C.gold, {
         textStroke = { width = 2, color = "#000000" },
     })
-    refs_.adVal = Kit.CompactTxt("0/20", 22, C.mp, {
-        textStroke = { width = 2, color = "#000000" },
-    })
+    refs_.multiCostVal = Kit.CompactTxt(
+        string.format("%d券/%d抽", WishPoolDefinitions.MULTI_TICKET_COST, WishPoolDefinitions.MULTI_DRAW_COUNT),
+        22,
+        C.mp,
+        { textStroke = { width = 2, color = "#000000" } }
+    )
     refs_.mythPityVal = Kit.CompactTxt("0/120", 22, { 255, 64, 128, 255 }, {
         textStroke = { width = 2, color = "#000000" },
     })
@@ -668,7 +693,7 @@ local function buildMainPage()
         borderColor = SURFACE_BORDER,
         children = {
             statCell(ASSETS.ui.wishTicket, "许愿券", refs_.ticketVal, { left = 13, top = 13 }),
-            statCell(ASSETS.ui.wishJarRandom, "今日广告", refs_.adVal, { left = 2, top = 15 }),
+            statCell(ASSETS.ui.wishJarRandom, "十连优惠", refs_.multiCostVal, { left = 2, top = 15 }),
             statCell(ASSETS.ui.wishJarMyth, "神话保底", refs_.mythPityVal, { left = 9, top = 13 }),
             statCell(ASSETS.ui.wishCharMark, "角色保底", refs_.charPityVal, { left = -13, top = 11 }),
         },
@@ -759,7 +784,7 @@ local function buildMainPage()
                             },
                         },
                     },
-                    -- 操作按钮
+                    -- 操作按钮：单抽 1 券 / 十连 8 券（不再支持广告许愿）
                     UI.Panel {
                         width = "100%",
                         height = 88,
@@ -768,15 +793,17 @@ local function buildMainPage()
                         gap = 16,
                         children = {
                             actionButton(
-                                "许愿券祈愿 x1",
+                                "单次许愿 x1",
                                 ASSETS.ui.inventoryActionBlue,
                                 function() WishPoolController.WishWithTicket() end,
-                                ticketDisabled),
+                                singleDisabled),
                             actionButton(
-                                "观看广告祈愿",
+                                string.format("十连许愿 x%d（%d券）",
+                                    WishPoolDefinitions.MULTI_DRAW_COUNT,
+                                    WishPoolDefinitions.MULTI_TICKET_COST),
                                 ASSETS.ui.inventoryActionGold,
-                                function() WishPoolController.WishWithAd() end,
-                                adDisabled),
+                                function() WishPoolController.WishTen() end,
+                                multiDisabled),
                         },
                     },
                 },

@@ -294,6 +294,7 @@ function DailyVipView.HomeEntry(context)
     local hasClaim = vipLevel < MAX_VIP_LEVEL
         and (dailyVip.signInDay ~= today or dailyVip.adDay ~= today)
     local entry = UI.Panel {
+        id = context.id or "tutorialFeatureVip",
         position = "absolute",
         left = context.left or 696,
         top = context.top or 16,

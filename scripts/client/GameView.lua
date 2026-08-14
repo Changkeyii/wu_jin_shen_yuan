@@ -23,8 +23,10 @@ local QuestView = require("client.QuestView")
 local QuestController = require("client.QuestController")
 local ActivityView = require("client.ActivityView")
 local ActivityController = require("client.ActivityController")
+local StoryBrowserController = require("client.StoryBrowserController")
 local WishPoolView = require("client.WishPoolView")
 local WishPoolController = require("client.WishPoolController")
+local TutorialController = require("client.TutorialController")
 local RewardDialogView = require("client.RewardDialogView")
 local RewardFeedbackController = require("client.RewardFeedbackController")
 local OfflineClaimController = require("client.OfflineClaimController")
@@ -100,6 +102,7 @@ local ACTION_ERROR_MESSAGES = {
     REQUEST_TIMEOUT = "服务器响应超时，请稍后重试",
     MATERIAL_REQUIRED = "请先选择一件升星材料",
     DUPLICATE_REQUIRED = "所选材料不再满足同款、同星级、同品阶条件，请重新选择",
+    auto_equip_unchanged = "当前已是最高战力搭配",
 }
 
 local function ActionResult(response, successMessage)
@@ -107,9 +110,25 @@ local function ActionResult(response, successMessage)
         UI.Toast.Show(successMessage or "操作成功", { duration = 2.4, variant = "success", position = "bottom" })
         return true
     end
-    local message = response and ACTION_ERROR_MESSAGES[response.code]
+    local code = response and response.code
+    local message = response and ACTION_ERROR_MESSAGES[code]
         or (response and response.reason)
         or "服务器未接受本次操作"
+    -- 背包满：统一给出可操作提示，并引导分解/广告扩容。
+    if code == "INVENTORY_FULL" then
+        message = "背包已满，请先分解/出售，或看广告解锁更多格子"
+        local ok, InventoryFullPrompt = pcall(require, "client.InventoryFullPrompt")
+        if ok and InventoryFullPrompt and InventoryFullPrompt.Show then
+            InventoryFullPrompt.Show({ reason = message })
+            return false
+        end
+    elseif code == "INVENTORY_EXPAND_AD_LIMIT" then
+        message = "今日广告扩容次数已用完"
+    elseif code == "INVENTORY_EXPAND_MAX" then
+        message = "背包扩容已达上限"
+    elseif code == "LOOT_STASH_EMPTY" then
+        message = "暂存箱为空或装备已不在背包"
+    end
     UI.Toast.Show(message, { duration = 2.4, variant = "error", position = "bottom" })
     return false
 end
@@ -204,7 +223,15 @@ local function BuildInventoryContext()
             EquipmentRecycleFilter.Show("decompose", { onSaved = onSaved })
         end,
         showDisposition = function(mode, items)
-            EquipmentDispositionDialog.Show(BuildDispositionContext(), { mode = mode, items = items })
+            EquipmentDispositionDialog.Show(BuildDispositionContext(), {
+                mode = mode,
+                items = items,
+                tutorial = TutorialController.IsActive()
+                    and TutorialController.GetStep() == 3,
+                onTutorialSelectionChanged = function(itemId, selected)
+                    TutorialController.SetDispositionSelected(selected)
+                end,
+            })
         end,
         -- 道具使用入口（ItemTips 侧边按钮）：罐子打开 / 许愿券许愿等
         useItem = function(item)
@@ -297,6 +324,7 @@ local function BuildEquipmentPage()
             requestPageRefresh = RequestPageRefresh,
             equipItem = actionFns_.EquipItem,
             unequipSlot = actionFns_.UnequipSlot,
+            autoEquipBest = actionFns_.AutoEquipBest,
             strengthenSelected = actionFns_.StrengthenSelected,
             starSelected = actionFns_.StarSelected,
         },
@@ -647,7 +675,15 @@ local function BuildRoot()
         isEquipped = function(item) return ItemView.IsEquipped(game, item) end,
         requestDecomposePreview = ServerClient.DecomposePreview,
         showDisposition = function(mode, items)
-            EquipmentDispositionDialog.Show(BuildDispositionContext(), { mode = mode, items = items })
+            EquipmentDispositionDialog.Show(BuildDispositionContext(), {
+                mode = mode,
+                items = items,
+                tutorial = TutorialController.IsActive()
+                    and TutorialController.GetStep() == 3,
+                onTutorialSelectionChanged = function(itemId, selected)
+                    TutorialController.SetDispositionSelected(selected)
+                end,
+            })
         end,
         useItem = function(item)
             if not item then return false end
@@ -663,6 +699,8 @@ local function BuildRoot()
     ItemTips.AttachRoot(screenRoot_)
     LeaderboardDetailView.AttachRoot(screenRoot_)
     MailView.AttachRoot(screenRoot_)
+    TutorialController.AttachRoot(screenRoot_)
+    StoryBrowserController.AttachRoot(screenRoot_)
     LoadingController.AttachRoot(uiRoot_)
     if game.page == "play" then
         LoadingController.EnsurePlayAssetsReady(function() PlayPresentation.Update(0) end)
@@ -690,6 +728,8 @@ local function BindServerEvents()
         end
         LoadingController.MarkSnapshotReceived()
         FaceSlapController.Evaluate("snapshot")
+        -- 新手剧情：每次登录触发序章（服务端已重置教程状态）
+        TutorialController.Evaluate()
     end)
     ServerClient.On("snapshotProgress", function(payload)
         LoadingController.MarkSnapshotProgress(payload and payload.received, payload and payload.total)
@@ -773,7 +813,11 @@ local function BindServerEvents()
         end
     end)
     ServerClient.On("error", function(error)
-        UI.Toast.Show(error.reason or "网络数据错误", { duration = 2, variant = "error", position = "bottom" })
+        local message = error.reason or "网络数据错误"
+        if error.path then
+            message = message .. " @" .. tostring(error.path)
+        end
+        UI.Toast.Show(message, { duration = 2, variant = "error", position = "bottom" })
         LoadingController.HandleError(error.reason)
         if not LoadingController.IsActive() then
             game = GameStateAdapter.GetViewState()
@@ -833,6 +877,9 @@ function GameView.Start()
         end,
         isBlocked = function(config)
             if LoadingController.IsActive() then return true end
+            -- 新手剧情进行期间屏蔽所有首页弹窗（离线收益/每日补给/活动等）
+            local tutorialState = GameStateAdapter.GetViewState().tutorial
+            if tutorialState and tutorialState.completed ~= true then return true end
             if config.kind ~= "offline_claim" and OfflineClaimController.IsLoginFlowPending() then
                 return true
             end
@@ -924,6 +971,8 @@ function GameView.Stop()
     ActivityView.Reset()
     WishPoolView.Reset()
     WishPoolController.Reset()
+    TutorialController.Reset()
+    StoryBrowserController.Reset()
     CommonPromptDialog.Reset()
     DialogCoordinator.Clear(false)
     ItemTips.Stop()
@@ -975,6 +1024,8 @@ function GameView.HandleUpdate(eventType, eventData)
         needsPageRefresh_ = false
         RefreshCurrentPage()
     end
+    -- 新手强引导：维护目标重建、布局重试与异步弹窗输入白名单。
+    TutorialController.Update(dt)
 end
 
 return GameView

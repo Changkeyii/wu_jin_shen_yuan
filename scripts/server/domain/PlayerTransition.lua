@@ -19,6 +19,12 @@ local SCALAR_DELTA_FIELDS = {
     "quests",
     "activities",
     "wishPool",
+    -- 序章步骤必须随 delta 下发，否则客户端 view.tutorial 会一直停在快照值，
+    -- 分解/强化教学的 tutorialSelection 与兜底推进都会失效。
+    "tutorial",
+    -- 广告扩容背包格数与当日广告次数。
+    "inventoryBonusSlots",
+    "inventoryExpand",
 }
 
 function PlayerTransition.Now(now)

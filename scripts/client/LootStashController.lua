@@ -156,6 +156,17 @@ function LootStashController.Show(forced, onClosed)
             children = {
                 Kit.ImageButton("全部收取", 300, 72, ASSETS.ui.buttonGreen, function()
                     if claimPending_ then return end
+                    if #claimedItemIds == 0 then
+                        if context_ and context_.actionResult then
+                            context_.actionResult({
+                                ok = false,
+                                code = "LOOT_STASH_EMPTY",
+                                reason = "暂存箱为空或装备已不在背包",
+                            })
+                        end
+                        LootStashController.Close(true)
+                        return
+                    end
                     claimPending_ = true
                     local rewardReservation = DialogCoordinator.ReserveNext()
                     ServerClient.ClaimLootStash(function(response)

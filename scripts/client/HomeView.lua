@@ -8,6 +8,7 @@ local LeaderboardController = require("client.LeaderboardController")
 local MailController = require("client.MailController")
 local QuestController = require("client.QuestController")
 local ActivityController = require("client.ActivityController")
+local StoryBrowserController = require("client.StoryBrowserController")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
@@ -73,8 +74,9 @@ local function ShowFeaturePreview(name)
     })
 end
 
-local function HomeActionButton(text, left, top, onClick, badge)
+local function HomeActionButton(text, left, top, onClick, badge, buttonId)
     local button = UI.Panel {
+        id = buttonId,
         position = "absolute",
         left = left,
         top = top,
@@ -110,6 +112,52 @@ local function HomeActionButton(text, left, top, onClick, badge)
     return button
 end
 
+-- 剧情入口（首页顶部右上角，与邮件入口对称）：独立图标 + 「剧情」文字。
+local function StoryEntry(left, top)
+    local iconSize = 132
+    local labelHeight = 44
+    local width = iconSize
+    local height = iconSize + labelHeight
+    return UI.Panel {
+        id = "tutorialFeatureStory",
+        position = "absolute",
+        left = left,
+        top = top,
+        width = width,
+        height = height,
+        clickable = true,
+        alignItems = "center",
+        justifyContent = "center",
+        onClick = function()
+            StoryBrowserController.Show()
+        end,
+        children = {
+            -- 记忆书籍图标
+            UI.Panel {
+                position = "absolute",
+                left = 0,
+                top = 0,
+                width = iconSize,
+                height = iconSize,
+                backgroundImage = ASSETS.ui.storyMemoryIcon,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            },
+            -- 正下方「剧情」文字
+            Kit.Txt("剧情", 32, C.gold, {
+                position = "absolute",
+                left = 0,
+                top = iconSize - 4,
+                width = width,
+                height = labelHeight,
+                textAlign = "center",
+                textStroke = { width = 2, color = "#000000" },
+                pointerEvents = "none",
+            }),
+        },
+    }
+end
+
 -- 邮件入口（首页左上区域最顶端）：信封图标 + 正下方「邮件」文字。
 -- 单击打开邮件；长按 5 秒进 GM（仅管理员，服务端校验）。带未读红点。
 local function MailEntry(left, top, game)
@@ -122,6 +170,7 @@ local function MailEntry(left, top, game)
     local width = iconSize
     local height = iconSize + labelHeight
     return UI.Panel {
+        id = "tutorialFeatureMail",
         position = "absolute",
         left = left,
         top = top,
@@ -188,8 +237,9 @@ local function MailEntry(left, top, game)
     }
 end
 
-local function GameplayEntry(title, subtitle, accent, onClick)
+local function GameplayEntry(title, subtitle, accent, onClick, entryId)
     return UI.Panel {
+        id = entryId,
         width = 480,
         height = 128,
         flexShrink = 0,
@@ -255,6 +305,7 @@ function HomeView.Build(context)
                 game = game,
                 left = 696,
                 top = 16,
+                id = "tutorialFeatureVip",
                 onOpen = context.onOpenDailyVip,
             },
             Kit.Txt("登塔", 34, C.text, {
@@ -277,13 +328,13 @@ function HomeView.Build(context)
                 QuestController.Open()
             end, QuestController.CountClaimable(game, "newbie")
                 + QuestController.CountClaimable(game, "daily")
-                + QuestController.CountClaimable(game, "achievement")),
+                + QuestController.CountClaimable(game, "achievement"), "tutorialFeatureQuest"),
             HomeActionButton("活动", 596, 378, function()
                 ActivityController.Open()
-            end, ActivityController.HasRedDot(game) and 1 or nil),
+            end, ActivityController.HasRedDot(game) and 1 or nil, "tutorialFeatureActivity"),
             HomeActionButton("排行榜", 596, 440, function()
                 LeaderboardController.Open()
-            end),
+            end, nil, "tutorialFeatureLeaderboard"),
         },
     }
 
@@ -310,14 +361,16 @@ function HomeView.Build(context)
         flexDirection = "row",
         justifyContent = "space-between",
         children = {
-            GameplayEntry("许愿池", "广告或稀有许愿券 · 传说起步", C.focus, function()
+            GameplayEntry("许愿池", "许愿券抽取 · 十连8券", C.focus, function()
                 require("client.NavigationController").SwitchPage("wish")
-            end),
+            end, "tutorialFeatureWish"),
             GameplayEntry("深渊远征", "4人数据团本 · 即将开放", C.mp, function()
                 ShowFeaturePreview("深渊远征")
-            end),
+            end, "tutorialFeatureExpedition"),
         },
     }
+
+    -- 剧情入口（万灵记忆）改为首页顶部独立图标入口，见 StoryEntry()
 
     -- 邮件入口固定在首页左上（ScrollView 之外），避免短屏滚动时被 ScrollView 的
     -- pan 手势取消长按状态（UI.CancelPointer 会中断按压）。
@@ -340,6 +393,8 @@ function HomeView.Build(context)
                 },
             },
             MailEntry(16, 10, game),
+            -- 剧情入口：右上角独立图标（万灵记忆）
+            StoryEntry(1080 - 16 - 132, 10),
         },
     }
 end

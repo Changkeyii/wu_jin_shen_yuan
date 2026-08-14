@@ -174,6 +174,15 @@ local ASSETS = {
         wishSetProphecy = "image/wishpool_set_prophecy_20260813020046.png",
         -- 活动系统素材（BrawlForge 风格）
         strikeBg = "image/strike_bg_v2_20260807072726.png",
+        -- 热门活动入口图标
+        activityExpedition = "image/activity_expedition_20260813095959.png",
+        activityPvp = "image/activity_pvp_20260813100000.png",
+        -- 剧情系统：塔灵立绘（新手序章对话）
+        towerSpirit = "image/tower_spirit_portrait_20260813123852.png",
+        -- 剧情系统：守塔人立绘（章节剧情）
+        towerKeeper = "image/tower_keeper_portrait_20260813124052.png",
+        -- 剧情入口图标（首页顶部「万灵记忆」）
+        storyMemoryIcon = "image/story_memory_icon_20260813125314.png",
     },
     enemies = {
         slime = "image/punk_mech_enemy_grunt_alt_20260718113945.png",

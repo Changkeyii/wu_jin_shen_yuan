@@ -78,6 +78,8 @@ function StateFactory.Create(now)
         permanentBonus = 0,
         nextItemId = #inventory + 1,
         inventory = inventory,
+        inventoryBonusSlots = 0,
+        inventoryExpand = { adDayKey = 0, adUsed = 0 },
         equipped = equipped,
         consumables = { healthPotion = 0 },
         appliedGmCommandIds = {},
@@ -97,6 +99,7 @@ function StateFactory.Create(now)
             ownedCharacters = { ember_blade = true },
             characterMarks = {},
         },
+        tutorial = { step = 1, completed = false },
     }, now)
 end
 

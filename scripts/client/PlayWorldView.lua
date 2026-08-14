@@ -3,6 +3,7 @@ local PlayWorldView = {}
 local ports_ = nil
 local refs_ = {}
 local currentPlayerImage_ = nil
+local lastMetrics_ = nil
 
 local ATTACK_ANIMATION_SPEED_MULTIPLIER = 1.2
 
@@ -49,6 +50,7 @@ end
 function PlayWorldView.Build(metrics)
     local UI = ports_.UI
     local assets = ports_.assets
+    lastMetrics_ = metrics
     refs_ = {bgTiles = {}, objects = {}}
     currentPlayerImage_ = nil
     refs_.bgTiles[1] = UI.Panel {
@@ -96,6 +98,22 @@ function PlayWorldView.Build(metrics)
     nodes[#nodes + 1] = refs_.playerShadow
     nodes[#nodes + 1] = refs_.player
     return nodes
+end
+
+-- 暴露角色节点（终结技发光/残影特效用）
+function PlayWorldView.GetPlayerNode()
+    return refs_.player
+end
+
+-- 角色当前位置与尺寸（终结技残影定位用）
+function PlayWorldView.GetPlayerMetrics()
+    local metrics = lastMetrics_ or {}
+    return {
+        left = metrics.playerScreenX,
+        top = metrics.platformPlayerY,
+        width = ports_.runW,
+        height = ports_.runH,
+    }
 end
 
 function PlayWorldView.Update(state)

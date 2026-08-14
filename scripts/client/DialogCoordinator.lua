@@ -17,6 +17,43 @@ local reservations_ = {}
 local presenter_ = nil
 local dismisser_ = nil
 
+-- 全局弹窗屏蔽（新手引导强引导期间使用）：屏蔽开启时仅放行白名单前缀的弹窗
+local blocked_ = false
+local allowPrefixes_ = {}
+
+--- 开启/关闭全局弹窗屏蔽。新手剧情进行期间屏蔽签到/VIP 等一切非必要弹窗。
+function DialogCoordinator.SetBlocked(blocked)
+    blocked_ = blocked == true
+end
+
+--- 清空并替换当前放行前缀，避免重复进入序章时累积旧白名单。
+function DialogCoordinator.SetAllowedPrefixes(prefixes)
+    allowPrefixes_ = {}
+    for _, prefix in ipairs(prefixes or {}) do
+        if type(prefix) == "string" and prefix ~= "" then
+            allowPrefixes_[#allowPrefixes_ + 1] = prefix
+        end
+    end
+end
+
+--- 放行指定 queueKey 前缀的弹窗（新手引导必要弹窗）。
+function DialogCoordinator.AddAllowedPrefix(prefix)
+    if type(prefix) == "string" and prefix ~= "" then
+        allowPrefixes_[#allowPrefixes_ + 1] = prefix
+    end
+end
+
+local function IsAllowed(options)
+    if not blocked_ then return true end
+    local key = options.queueKey or options.key
+    if type(key) == "string" then
+        for _, prefix in ipairs(allowPrefixes_) do
+            if key:sub(1, #prefix) == prefix then return true end
+        end
+    end
+    return false
+end
+
 local function PriorityOf(options)
     if type(options.priority) == "number" then return options.priority end
     return PRIORITIES[options.kind or options.dialogType or "confirm"] or PRIORITIES.confirm
@@ -55,6 +92,10 @@ local function LowestPendingReservation()
 end
 
 local function Append(options, nextReservation)
+    -- 新手引导强引导期间：非必要弹窗一律拦截（不入队不显示）
+    if not IsAllowed(options) then
+        return false, "blocked"
+    end
     local key = options.queueKey or options.key
     if HasKey(key) then return false, "duplicate" end
 
@@ -211,6 +252,8 @@ function DialogCoordinator._ResetForTests()
     sequence_ = 0
     reservationSequence_ = 0
     reservations_ = {}
+    blocked_ = false
+    allowPrefixes_ = {}
     presenter_ = nil
     dismisser_ = nil
 end
