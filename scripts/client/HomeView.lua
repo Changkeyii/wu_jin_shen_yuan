@@ -112,12 +112,12 @@ local function HomeActionButton(text, left, top, onClick, badge, buttonId)
     return button
 end
 
--- 左侧入口栏单项：图标 + 底部文字。后续邮件下方会做成可滚动入口栏。
+-- 左侧入口栏单项：图标 + 底部文字，底板由整条入口栏统一提供。
 local function SideEntryItem(options)
-    local iconSize = options.iconSize or 110
-    local labelHeight = options.labelHeight or 36
-    local width = options.width or iconSize
-    local height = options.height or (iconSize + labelHeight)
+    local iconSize = options.iconSize or 68
+    local labelHeight = options.labelHeight or 24
+    local width = options.width or 80
+    local height = options.height or 90
     return UI.Panel {
         id = options.id,
         width = width,
@@ -141,7 +141,7 @@ local function SideEntryItem(options)
                 backgroundFit = "contain",
                 pointerEvents = "none",
             },
-            Kit.Txt(options.label or "", options.labelSize or 28, options.labelColor or C.text, {
+            Kit.Txt(options.label or "", options.labelSize or 20, options.labelColor or C.text, {
                 position = "absolute",
                 left = 0,
                 top = iconSize - 2,
@@ -187,10 +187,10 @@ local function MailEntry(game)
         badge = unread > 0 and UI.Panel {
             -- 未读红点（固定正圆，数字几何居中；超过 99 显示 99+）
             position = "absolute",
-            right = 0,
-            top = 4,
-            width = 46,
-            height = 46,
+            right = -2,
+            top = 2,
+            width = 36,
+            height = 36,
             alignItems = "center",
             justifyContent = "center",
             shape = "circle",
@@ -199,9 +199,9 @@ local function MailEntry(game)
             borderWidth = 2,
             borderColor = { 0, 0, 0, 120 },
             children = {
-                Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 22, C.text, {
+                Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 18, C.text, {
                     width = "100%",
-                    height = 46,
+                    height = 36,
                     textAlign = "center",
                     textStroke = { width = 1, color = "#000000" },
                     pointerEvents = "none",
@@ -344,26 +344,57 @@ function HomeView.Build(context)
         },
     }
 
-    -- 左侧入口栏：邮件在上、剧情在下，后续入口继续往下加，超出后可滚动。
-    -- 入口栏放在主 ScrollView 之外，避免邮件长按进 GM 被页面滚动打断。
-    local sideEntryBar = UI.ScrollView {
+    -- 左侧入口栏是覆盖层：不参与中间首页板布局，首页板始终居中。
+    -- 外框位置/高度以 Inspector 视觉对齐结果为准，内部入口按高度自适应。
+    local sideEntries = {
+        MailEntry(game),
+        StoryEntry(),
+    }
+    local sideEntryBarW = 88
+    local sideEntryBarH = 506
+    local sideEntryBarTop = 58
+    local sideEntryPadY = 8
+    local sideEntryGap = 4
+    local innerH = math.max(1, sideEntryBarH - sideEntryPadY * 2 - math.max(0, #sideEntries - 1) * sideEntryGap)
+    local sideEntryItemH = math.floor(innerH / math.max(1, #sideEntries))
+    for _, entry in ipairs(sideEntries) do
+        if entry then
+            entry.props = entry.props or {}
+            entry.props.height = sideEntryItemH
+        end
+    end
+    local sideEntryBar = UI.Panel {
         position = "absolute",
-        left = 8,
-        top = 8,
-        width = 132,
-        height = 520,
-        scrollX = false,
-        scrollY = true,
-        showScrollbar = false,
+        left = 0,
+        top = sideEntryBarTop,
+        width = sideEntryBarW,
+        height = sideEntryBarH,
+        backgroundColor = { 6, 16, 38, 150 },
+        borderWidth = 2,
+        borderColor = { 80, 190, 255, 140 },
+        borderRadius = 22,
+        boxShadow = {
+            color = { 50, 170, 255, 80 },
+            offsetX = 0, offsetY = 0, blurRadius = 12,
+        },
+        overflow = "hidden",
         children = {
-            UI.Panel {
-                width = 132,
-                flexShrink = 0,
-                alignItems = "center",
-                gap = 8,
+            UI.ScrollView {
+                width = "100%",
+                height = "100%",
+                scrollX = false,
+                scrollY = true,
+                showScrollbar = false,
                 children = {
-                    MailEntry(game),
-                    StoryEntry(),
+                    UI.Panel {
+                        width = "100%",
+                        flexShrink = 0,
+                        paddingTop = sideEntryPadY,
+                        paddingBottom = sideEntryPadY,
+                        alignItems = "center",
+                        gap = sideEntryGap,
+                        children = sideEntries,
+                    },
                 },
             },
         },
@@ -377,7 +408,8 @@ function HomeView.Build(context)
                 scrollX = false, scrollY = true, showScrollbar = false,
                 children = {
                     UI.Panel {
-                        width = "100%", flexShrink = 0,
+                        width = "100%",
+                        flexShrink = 0,
                         alignItems = "center",
                         children = {
                             heroPanel,

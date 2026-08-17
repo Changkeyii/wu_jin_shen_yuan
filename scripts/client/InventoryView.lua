@@ -804,17 +804,13 @@ local function CreateInventoryPage()
                                 }
                             ),
                             UI.Panel {
-                                width = 236,
-                                height = 64,
+                                width = 58,
+                                height = 28,
                                 flexShrink = 0,
-                                marginLeft = "auto",
-                                marginBottom = -10,
                                 clickable = not readOnly and canExpand,
                                 opacity = (readOnly or not canExpand) and 0.45 or 1.0,
                                 alignItems = "center",
                                 justifyContent = "center",
-                                backgroundImage = ASSETS.ui.inventoryActionGold,
-                                backgroundFit = "contain",
                                 onClick = function()
                                     if readOnly or not canExpand then return end
                                     InventoryFullPrompt.ExpandByAd(function(ok)
@@ -822,10 +818,10 @@ local function CreateInventoryPage()
                                     end)
                                 end,
                                 children = {
-                                    CompactTxt("+" .. tostring(perAd) .. "容量", 24, C.text, {
+                                    CompactTxt("+" .. tostring(perAd), 18, C.gold, {
                                         width = "100%",
-                                        height = 64,
-                                        textAlign = "center",
+                                        height = 28,
+                                        textAlign = "left",
                                         whiteSpace = "nowrap",
                                         overflow = "visible",
                                         textStroke = { width = 1, color = "#000000" },

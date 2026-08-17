@@ -720,11 +720,9 @@ ShowGuideSubStep = function()
     local lock = subStep.lockInput == true
     local informOnly = subStep.informOnly == true
     local needsTarget = (subStep.targetId ~= nil or subStep.targetPrefix ~= nil) and not lock
-    local nextButtonText = subStep.completeTutorial and "完成序章"
-        or (informOnly and "下一步")
-        or "已完成，下一步"
-    -- 功能介绍：即使目标暂未布局，也必须显示「下一步/完成序章」，避免卡死。
-    local showNextAlways = informOnly or subStep.completeTutorial == true
+    local nextButtonText = subStep.completeTutorial and "完成序章" or "下一步"
+    -- 所有引导步骤都显示「下一步」，避免目标点不到时卡死。
+    local showNextAlways = true
 
     -- 目标控件尚未挂载（切页/异步弹窗）或 Yoga 未布局：持续重试，禁止永久全屏锁死。
     if needsTarget and (not target or not bounds) then
@@ -783,12 +781,77 @@ ShowGuideSubStep = function()
     end
 end
 
+-- 第二步兜底：未穿戴时自动穿上教学武器（优先 tutorial_drop，其次任意可穿戴）。
+local autoEquipPending_ = false
+local function FindTutorialEquipCandidate(game)
+    game = game or GameStateAdapter.GetViewState()
+    local fallback = nil
+    for _, item in ipairs(game.inventory or {}) do
+        if item and item.id and item.equipmentId and not IsEquippedItem(game, item) then
+            if item.source == "tutorial_drop" and item.slot == "weapon" then
+                return item
+            end
+            if not fallback and item.slot == "weapon" then
+                fallback = item
+            elseif not fallback then
+                fallback = item
+            end
+        end
+    end
+    return fallback
+end
+
+local function AutoEquipForTutorial(onDone)
+    if autoEquipPending_ then return false end
+    local game = GameStateAdapter.GetViewState()
+    if HasAnyEquippedItem(game) then
+        if onDone then onDone(true) end
+        return true
+    end
+    local item = FindTutorialEquipCandidate(game)
+    if not (item and item.id) then
+        if UI.Toast and UI.Toast.Show then
+            UI.Toast.Show("没有可穿戴的教学装备", {
+                duration = 2.0,
+                variant = "warning",
+                position = "bottom",
+            })
+        end
+        if onDone then onDone(false) end
+        return false
+    end
+    autoEquipPending_ = true
+    ServerClient.Equip(item.id, function(response)
+        autoEquipPending_ = false
+        if not (response and response.ok) then
+            if UI.Toast and UI.Toast.Show then
+                UI.Toast.Show((response and (response.reason or response.code)) or "自动穿戴失败", {
+                    duration = 2.0,
+                    variant = "warning",
+                    position = "bottom",
+                })
+            end
+            if onDone then onDone(false) end
+            return
+        end
+        if not TryCompleteEquipGuide() and onDone then
+            onDone(true)
+        end
+    end)
+    return true
+end
+
 -- 推进到下一个子步骤（或完成功能介绍）。
 -- 面板重建延迟到下一帧：保证本次点击的 pointer-up 仍能命中目标控件。
 local completingTutorial_ = false
 AdvanceGuideSubStep = function()
     local subSteps = GUIDE_SUBSTEPS[step_] or {}
     local current = subSteps[guideIndex_]
+    -- 穿戴步骤：点「下一步」时若还没穿上，自动帮玩家穿上。
+    if step_ == 2 and not HasAnyEquippedItem() then
+        AutoEquipForTutorial()
+        return
+    end
     if current and current.completeTutorial then
         if completingTutorial_ then return end
         completingTutorial_ = true
@@ -883,8 +946,8 @@ ShowGuide = function(text, showNext, buttonText)
     if showNext then
         nextButton = UI.Panel {
             id = "tutorialGuideNext",
-            width = 200,
-            height = 64,
+            width = 240,
+            height = 56,
             clickable = true,
             alignItems = "center",
             justifyContent = "center",
@@ -895,9 +958,9 @@ ShowGuide = function(text, showNext, buttonText)
                 AdvanceGuideSubStep()
             end,
             children = {
-                Kit.CompactTxt(nextLabel, 20, C.text, {
+                Kit.CompactTxt(nextLabel, 22, C.text, {
                     width = "100%",
-                    height = 64,
+                    height = 56,
                     textAlign = "center",
                     textStroke = { width = 2, color = "#000000" },
                     pointerEvents = "none",
@@ -908,13 +971,15 @@ ShowGuide = function(text, showNext, buttonText)
     guideHint_ = UI.Panel {
         id = "tutorialGuideHint",
         position = "absolute",
-        left = 40, top = 40, right = 40,
-        height = 176,
+        left = 40, top = 24, right = 40,
+        height = 236,
         zIndex = LAYER_Z + 60,
         clickable = true,
         alignItems = "center",
-        flexDirection = "row",
-        gap = 16,
+        flexDirection = "column",
+        gap = 10,
+        paddingTop = 16,
+        paddingBottom = 14,
         paddingLeft = 24,
         paddingRight = 24,
         backgroundImage = ASSETS.ui.panelLarge,
@@ -928,20 +993,24 @@ ShowGuide = function(text, showNext, buttonText)
         },
         children = {
             UI.Panel {
-                width = 88, height = 88, flexShrink = 0,
-                backgroundImage = PORTRAIT,
-                backgroundFit = "contain",
-            },
-            UI.Panel { flexGrow = 1, flexBasis = 0, gap = 6, children = {
-                Kit.Txt("新手剧情 · 序章", 24, C.gold, { width = "100%", height = 34, textAlign = "left", textStroke = { width = 2, color = "#000000" } }),
-                Kit.MultiTxt(text or "", 20, C.text, { width = "100%", height = 110, textAlign = "left", maxLines = 5, textStroke = { width = 1, color = "#000000" } }),
-            } },
-            showNext and UI.Panel {
-                width = 220, height = 110, flexShrink = 0,
+                width = "100%",
+                flexGrow = 1,
+                flexDirection = "row",
                 alignItems = "center",
-                justifyContent = "center",
-                children = { nextButton },
-            } or nil,
+                gap = 16,
+                children = {
+                    UI.Panel {
+                        width = 88, height = 88, flexShrink = 0,
+                        backgroundImage = PORTRAIT,
+                        backgroundFit = "contain",
+                    },
+                    UI.Panel { flexGrow = 1, flexBasis = 0, gap = 6, children = {
+                        Kit.Txt("新手剧情 · 序章", 24, C.gold, { width = "100%", height = 34, textAlign = "left", textStroke = { width = 2, color = "#000000" } }),
+                        Kit.MultiTxt(text or "", 20, C.text, { width = "100%", height = 86, textAlign = "left", maxLines = 4, textStroke = { width = 1, color = "#000000" } }),
+                    } },
+                },
+            },
+            showNext and nextButton or nil,
         },
     }
     layer_:AddChild(guideHint_)

@@ -90,7 +90,7 @@ local ASSETS = {
         itemTipsCompareFrame = "image/ui/itemtips/compare_frame.png",
         itemTipsCompareButton = "image/ui/itemtips/compare_button.png",
         itemTipsCloseButton = "image/ui/itemtips/close_button.png",
-        mailIcon = "image/mail_entry_icon_20260817040906.png",
+        mailIcon = "image/mail_entry_icon_bright_20260817092958.png",
         dialogFrame = "image/ui/dialog/dialog_frame.png",
         dialogClose = "image/ui/dialog/close_button.png",
         dialogConfirm = "image/ui/dialog/confirm_button.png",
@@ -182,7 +182,7 @@ local ASSETS = {
         -- 剧情系统：守塔人立绘（章节剧情）
         towerKeeper = "image/tower_keeper_portrait_20260813124052.png",
         -- 剧情入口图标（首页左侧入口栏）
-        storyMemoryIcon = "image/story_entry_icon_20260817035613.png",
+        storyMemoryIcon = "image/story_entry_icon_bright_20260817092957.png",
     },
     enemies = {
         slime = "image/punk_mech_enemy_grunt_alt_20260718113945.png",
