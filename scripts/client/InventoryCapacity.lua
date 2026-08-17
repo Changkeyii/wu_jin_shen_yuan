@@ -79,7 +79,11 @@ function InventoryCapacity.TodayAdRemaining(game)
 end
 
 function InventoryCapacity.SummaryText(game)
-    return string.format("装备 %d / %d", InventoryCapacity.Used(game), InventoryCapacity.Capacity(game))
+    return string.format(
+        "背包容量 %d/%d",
+        InventoryCapacity.Used(game),
+        InventoryCapacity.Capacity(game)
+    )
 end
 
 return InventoryCapacity

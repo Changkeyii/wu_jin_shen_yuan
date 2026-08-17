@@ -305,6 +305,7 @@ local function BuildEquipmentPage()
             shortenText = Kit.ShortenText,
             compactTxt = Kit.CompactTxt,
             txt = Kit.Txt,
+            formatInt = Kit.FormatInt,
             imageButton = Kit.ImageButton,
         },
         state = {

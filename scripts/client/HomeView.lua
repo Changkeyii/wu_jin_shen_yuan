@@ -112,73 +112,71 @@ local function HomeActionButton(text, left, top, onClick, badge, buttonId)
     return button
 end
 
--- 剧情入口（首页顶部右上角，与邮件入口对称）：独立图标 + 「剧情」文字。
-local function StoryEntry(left, top)
-    local iconSize = 132
-    local labelHeight = 44
-    local width = iconSize
-    local height = iconSize + labelHeight
+-- 左侧入口栏单项：图标 + 底部文字。后续邮件下方会做成可滚动入口栏。
+local function SideEntryItem(options)
+    local iconSize = options.iconSize or 110
+    local labelHeight = options.labelHeight or 36
+    local width = options.width or iconSize
+    local height = options.height or (iconSize + labelHeight)
     return UI.Panel {
-        id = "tutorialFeatureStory",
-        position = "absolute",
-        left = left,
-        top = top,
+        id = options.id,
         width = width,
         height = height,
+        flexShrink = 0,
         clickable = true,
         alignItems = "center",
         justifyContent = "center",
-        onClick = function()
-            StoryBrowserController.Show()
-        end,
+        onPointerDown = options.onPointerDown,
+        onPointerUp = options.onPointerUp,
+        onPointerCancel = options.onPointerCancel,
+        onClick = options.onClick,
         children = {
-            -- 记忆书籍图标
             UI.Panel {
                 position = "absolute",
-                left = 0,
+                left = math.floor((width - iconSize) * 0.5),
                 top = 0,
                 width = iconSize,
                 height = iconSize,
-                backgroundImage = ASSETS.ui.storyMemoryIcon,
+                backgroundImage = options.icon,
                 backgroundFit = "contain",
                 pointerEvents = "none",
             },
-            -- 正下方「剧情」文字
-            Kit.Txt("剧情", 32, C.gold, {
+            Kit.Txt(options.label or "", options.labelSize or 28, options.labelColor or C.text, {
                 position = "absolute",
                 left = 0,
-                top = iconSize - 4,
+                top = iconSize - 2,
                 width = width,
                 height = labelHeight,
                 textAlign = "center",
                 textStroke = { width = 2, color = "#000000" },
                 pointerEvents = "none",
             }),
+            options.badge,
         },
     }
 end
 
--- 邮件入口（首页左上区域最顶端）：信封图标 + 正下方「邮件」文字。
--- 单击打开邮件；长按 5 秒进 GM（仅管理员，服务端校验）。带未读红点。
-local function MailEntry(left, top, game)
+-- 剧情入口：放在邮件下方的左侧入口栏中。
+local function StoryEntry()
+    return SideEntryItem {
+        id = "tutorialFeatureStory",
+        icon = ASSETS.ui.storyMemoryIcon,
+        label = "剧情",
+        labelColor = C.gold,
+        onClick = function()
+            StoryBrowserController.Show()
+        end,
+    }
+end
+
+-- 邮件入口：左侧入口栏第一项。单击打开邮件；长按 5 秒进 GM（仅管理员，服务端校验）。
+local function MailEntry(game)
     local summary = (game and game.mailSummary) or {}
     local unread = math.max(0, math.floor(tonumber(summary.unread) or 0))
-    -- 放大后的邮件入口：信封图标放大 + 「邮件」文字在图标正下方。
-    -- 总高度控制在角色立绘上方，避免遮挡下方角色面板。
-    local iconSize = 132
-    local labelHeight = 44
-    local width = iconSize
-    local height = iconSize + labelHeight
-    return UI.Panel {
+    return SideEntryItem {
         id = "tutorialFeatureMail",
-        position = "absolute",
-        left = left,
-        top = top,
-        width = width,
-        height = height,
-        clickable = true,
-        alignItems = "center",
-        justifyContent = "center",
+        icon = ASSETS.ui.mailIcon,
+        label = "邮件",
         onPointerDown = function() MailController.SetPressing(true) end,
         onPointerUp = function() MailController.SetPressing(false) end,
         onPointerCancel = function() MailController.SetPressing(false) end,
@@ -186,54 +184,30 @@ local function MailEntry(left, top, game)
             MailController.SetPressing(false)
             MailController.Open()
         end,
-        children = {
-            -- 信封图标本体（透明背景，非方形卡片）
-            UI.Panel {
-                position = "absolute",
-                left = 0,
-                top = 0,
-                width = iconSize,
-                height = iconSize,
-                backgroundImage = ASSETS.ui.mailIcon,
-                backgroundFit = "contain",
-                pointerEvents = "none",
-            },
-            -- 正下方「邮件」文字
-            Kit.Txt("邮件", 32, C.text, {
-                position = "absolute",
-                left = 0,
-                top = iconSize - 4,
-                width = width,
-                height = labelHeight,
-                textAlign = "center",
-                textStroke = { width = 2, color = "#000000" },
-                pointerEvents = "none",
-            }),
+        badge = unread > 0 and UI.Panel {
             -- 未读红点（固定正圆，数字几何居中；超过 99 显示 99+）
-            unread > 0 and UI.Panel {
-                position = "absolute",
-                right = 4,
-                top = 6,
-                width = 52,
-                height = 52,
-                alignItems = "center",
-                justifyContent = "center",
-                shape = "circle",
-                overflow = "hidden",
-                backgroundColor = C.error,
-                borderWidth = 2,
-                borderColor = { 0, 0, 0, 120 },
-                children = {
-                    Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 26, C.text, {
-                        width = "100%",
-                        height = 52,
-                        textAlign = "center",
-                        textStroke = { width = 1, color = "#000000" },
-                        pointerEvents = "none",
-                    }),
-                },
-            } or nil,
-        },
+            position = "absolute",
+            right = 0,
+            top = 4,
+            width = 46,
+            height = 46,
+            alignItems = "center",
+            justifyContent = "center",
+            shape = "circle",
+            overflow = "hidden",
+            backgroundColor = C.error,
+            borderWidth = 2,
+            borderColor = { 0, 0, 0, 120 },
+            children = {
+                Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 22, C.text, {
+                    width = "100%",
+                    height = 46,
+                    textAlign = "center",
+                    textStroke = { width = 1, color = "#000000" },
+                    pointerEvents = "none",
+                }),
+            },
+        } or nil,
     }
 end
 
@@ -370,10 +344,31 @@ function HomeView.Build(context)
         },
     }
 
-    -- 剧情入口（万灵记忆）改为首页顶部独立图标入口，见 StoryEntry()
+    -- 左侧入口栏：邮件在上、剧情在下，后续入口继续往下加，超出后可滚动。
+    -- 入口栏放在主 ScrollView 之外，避免邮件长按进 GM 被页面滚动打断。
+    local sideEntryBar = UI.ScrollView {
+        position = "absolute",
+        left = 8,
+        top = 8,
+        width = 132,
+        height = 520,
+        scrollX = false,
+        scrollY = true,
+        showScrollbar = false,
+        children = {
+            UI.Panel {
+                width = 132,
+                flexShrink = 0,
+                alignItems = "center",
+                gap = 8,
+                children = {
+                    MailEntry(game),
+                    StoryEntry(),
+                },
+            },
+        },
+    }
 
-    -- 邮件入口固定在首页左上（ScrollView 之外），避免短屏滚动时被 ScrollView 的
-    -- pan 手势取消长按状态（UI.CancelPointer 会中断按压）。
     return UI.Panel {
         width = "100%", height = "100%", position = "relative",
         children = {
@@ -392,9 +387,7 @@ function HomeView.Build(context)
                     },
                 },
             },
-            MailEntry(16, 10, game),
-            -- 剧情入口：右上角独立图标（万灵记忆）
-            StoryEntry(1080 - 16 - 132, 10),
+            sideEntryBar,
         },
     }
 end

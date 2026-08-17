@@ -61,6 +61,7 @@ function EquipmentLoadoutView.Build(context)
     local ShortenText = view.shortenText
     local CompactTxt = view.compactTxt
     local Txt = view.txt
+    local FormatInt = view.formatInt
     local ImageButton = view.imageButton
     local GetItemById = state.getItemById
     local ShowItemTips = tips.show
@@ -898,10 +899,35 @@ function EquipmentLoadoutView.Build(context)
         backgroundFit = "sliced",
         backgroundSlice = { 12, 12, 12, 12 },
         children = {
-            Txt(playerNickname, 27, C.text, { position = "absolute", left = 280, top = 20, width = 300, height = 36, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
+            Txt(playerNickname, 27, C.text, {
+                position = "absolute",
+                left = 180,
+                top = 8,
+                width = 500,
+                height = 54,
+                textAlign = "center",
+                whiteSpace = "nowrap",
+                overflow = "visible",
+                textStroke = { width = 2, color = "#000000" },
+            }),
             UI.Panel { position = "absolute", left = 292, top = 98, width = 276, height = 430, backgroundImage = characterPortrait, backgroundFit = "contain", pointerEvents = "none", opacity = 0.98 },
             UI.Panel { position = "absolute", left = 278, top = 84, width = 304, height = 458, borderWidth = 2, borderColor = { 50, 196, 255, 120 }, backgroundColor = { 12, 42, 82, 55 }, pointerEvents = "none" },
-            CompactTxt("当前节点：" .. SlotName(selectedSlot), 19, C.focus, { position = "absolute", left = 280, top = 616, width = 300, height = 26, textAlign = "center", textStroke = { width = 1, color = "#000000" } }),
+            CompactTxt((function()
+                local powerValue = game.displayedPower or (game.stats and game.stats.power) or nil
+                if powerValue == nil then return "战力 待评估" end
+                return "战力 " .. (FormatInt and FormatInt(powerValue) or tostring(powerValue))
+            end)(), 22, C.gold, {
+                position = "absolute",
+                left = 130,
+                top = 608,
+                width = 600,
+                height = 36,
+                textAlign = "center",
+                whiteSpace = "nowrap",
+                overflow = "visible",
+                textStroke = { width = 1, color = "#000000" },
+                pointerEvents = "none",
+            }),
         },
     }
     dragHint = CompactTxt("", 17, C.focus, { position = "absolute", left = 180, top = 660, width = 500, height = 24, textAlign = "center", textStroke = { width = 1, color = "#000000" }, pointerEvents = "none" })

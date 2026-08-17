@@ -763,13 +763,78 @@ local function CreateInventoryPage()
             backgroundImage = ASSETS.ui.inventoryTitle,
             backgroundFit = "contain",
             children = {
-                Txt("深渊背包", 32, C.text, { position = "absolute", left = 94, top = 28, width = 300, height = 48, textAlign = "center", textStroke = { width = 3, color = "#000000" } }),
                 (function()
                     local InventoryCapacity = require("client.InventoryCapacity")
-                    return Txt(InventoryCapacity.SummaryText(game), 20, C.textSecondary, {
-                        position = "absolute", left = 450, top = 34, width = 370, height = 34,
-                        textAlign = "center", textStroke = { width = 1, color = "#000000" },
-                    })
+                    local InventoryFullPrompt = require("client.InventoryFullPrompt")
+                    local remain = InventoryCapacity.TodayAdRemaining(game)
+                    local canExpand = InventoryCapacity.CanExpand(game) and remain > 0
+                    local perAd = InventoryCapacity.PerAd()
+                    return UI.Panel {
+                        position = "absolute",
+                        left = 28,
+                        top = 16,
+                        width = 930,
+                        height = 64,
+                        flexDirection = "row",
+                        alignItems = "flex-end",
+                        justifyContent = "flex-start",
+                        gap = 12,
+                        children = {
+                            Txt("深渊背包", 32, C.text, {
+                                height = 42,
+                                flexShrink = 0,
+                                textAlign = "left",
+                                whiteSpace = "nowrap",
+                                overflow = "visible",
+                                textStroke = { width = 3, color = "#000000" },
+                                pointerEvents = "none",
+                            }),
+                            CompactTxt(
+                                string.format("%d/%d", InventoryCapacity.Used(game), InventoryCapacity.Capacity(game)),
+                                18,
+                                C.textSecondary,
+                                {
+                                    height = 28,
+                                    flexShrink = 0,
+                                    textAlign = "left",
+                                    whiteSpace = "nowrap",
+                                    overflow = "visible",
+                                    textStroke = { width = 1, color = "#000000" },
+                                    pointerEvents = "none",
+                                }
+                            ),
+                            UI.Panel {
+                                width = 236,
+                                height = 64,
+                                flexShrink = 0,
+                                marginLeft = "auto",
+                                marginBottom = -10,
+                                clickable = not readOnly and canExpand,
+                                opacity = (readOnly or not canExpand) and 0.45 or 1.0,
+                                alignItems = "center",
+                                justifyContent = "center",
+                                backgroundImage = ASSETS.ui.inventoryActionGold,
+                                backgroundFit = "contain",
+                                onClick = function()
+                                    if readOnly or not canExpand then return end
+                                    InventoryFullPrompt.ExpandByAd(function(ok)
+                                        if ok then RequestPageRefresh() end
+                                    end)
+                                end,
+                                children = {
+                                    CompactTxt("+" .. tostring(perAd) .. "容量", 24, C.text, {
+                                        width = "100%",
+                                        height = 64,
+                                        textAlign = "center",
+                                        whiteSpace = "nowrap",
+                                        overflow = "visible",
+                                        textStroke = { width = 1, color = "#000000" },
+                                        pointerEvents = "none",
+                                    }),
+                                },
+                            },
+                        },
+                    }
                 end)(),
                 UI.Panel { position = "absolute", left = 28, top = 86, width = 930, height = 122, alignItems = "center", children = { CreateInventoryTabs() } },
             },
@@ -784,35 +849,6 @@ local function CreateInventoryPage()
             gap = 18,
             overflow = "hidden",
             children = {
-                (function()
-                    local InventoryCapacity = require("client.InventoryCapacity")
-                    local InventoryFullPrompt = require("client.InventoryFullPrompt")
-                    local remain = InventoryCapacity.TodayAdRemaining(game)
-                    local canExpand = InventoryCapacity.CanExpand(game) and remain > 0
-                    local expandButton = UI.Panel {
-                        width = 260,
-                        height = 58,
-                        flexShrink = 0,
-                        clickable = not readOnly and canExpand,
-                        opacity = (readOnly or not canExpand) and 0.45 or 1.0,
-                        backgroundImage = ASSETS.ui.inventoryActionGold,
-                        backgroundFit = "contain",
-                        onClick = function()
-                            if readOnly or not canExpand then return end
-                            InventoryFullPrompt.ExpandByAd(function(ok)
-                                if ok then RequestPageRefresh() end
-                            end)
-                        end,
-                        children = {
-                            Txt(canExpand and ("看广告+" .. tostring(InventoryCapacity.PerAd())) or "扩容已满", 20, C.text, {
-                                width = "100%", height = 58, textAlign = "center",
-                                textStroke = { width = 1, color = "#000000" },
-                                pointerEvents = "none",
-                            }),
-                        },
-                    }
-                    return expandButton
-                end)(),
                 (function()
                     local TutorialController = require("client.TutorialController")
                     local tutorialDecomposeStep = TutorialController.IsActive
