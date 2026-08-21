@@ -1,7 +1,6 @@
 local Protocol = require("shared.NetworkProtocol")
 local ErrorCodes = require("shared.ErrorCodes")
 local GameStateSchema = require("shared.GameStateSchema")
-local GameEventSchema = require("shared.GameEventSchema")
 local FloorRoute = require("shared.FloorRoute")
 local ServerConfig = require("server.ServerConfig")
 local PlayerRegistry = require("server.core.PlayerRegistry")
@@ -18,11 +17,15 @@ local GameCommands = require("server.commands.GameCommands")
 local QuestCommands = require("server.commands.QuestCommands")
 local ActivityCommands = require("server.commands.ActivityCommands")
 local WishPoolCommands = require("server.commands.WishPoolCommands")
+local AbyssCommands = require("server.commands.AbyssCommands")
+local RewardClaimCommands = require("server.commands.RewardClaimCommands")
 local AdminCommands = require("server.commands.AdminCommands")
 local MarketCommands = require("server.commands.MarketCommands")
 local MailCommands = require("server.commands.MailCommands")
 local MarketService = require("server.services.MarketService")
 local LeaderboardService = require("server.services.LeaderboardService")
+local ScoreLeaderboardService = require("server.services.ScoreLeaderboardService")
+local ChallengeCommands = require("server.commands.ChallengeCommands")
 local MailService = require("server.services.MailService")
 local MailEngine = require("server.domain.MailEngine")
 local GameEngine = require("server.domain.GameEngine")
@@ -42,6 +45,8 @@ local idleService_ = nil
 local adminService_ = nil
 local marketService_ = nil
 local leaderboardService_ = nil
+local damageLeaderboardService_ = nil
+local bossLeaderboardService_ = nil
 local mailService_ = nil
 local adminPolicy_ = nil
 local snapshotTransferId_ = 0
@@ -159,58 +164,7 @@ local function CurrentEntry(userId)
 end
 
 local function CanonicalizeGameEvents(events)
-    local result = {}
-    for _, source in ipairs(type(events) == "table" and events or {}) do
-        if type(source) ~= "table" then
-            return nil, "game event must be a table"
-        end
-        local value = GameStateSchema.DeepCopy(source)
-        local eventType = value.type or value.kind
-        if type(eventType) ~= "string" or eventType == "" then
-            return nil, "game event is missing its type"
-        end
-        value.type = eventType
-        value.kind = value.kind or eventType
-
-        -- Domain V3 events used explicit player/monster prefixes. Preserve
-        -- those fields and add the V5 scalar/big aliases at the network edge.
-        if eventType == "player_damaged" or eventType == "player_healed" then
-            value.amount = value.amount or value.damage
-            value.amountBig = value.amountBig or value.damageBig
-            value.hp = value.hp or value.playerHp
-            value.maxHp = value.maxHp or value.playerMaxHp
-            value.hpBig = value.hpBig or value.playerHpBig
-            value.maxHpBig = value.maxHpBig or value.playerMaxHpBig
-        elseif eventType == "player_attack_hit" then
-            value.amount = value.amount or value.damage
-            value.amountBig = value.amountBig or value.damageBig
-            value.hitIndex = value.hitIndex or value.sequenceHitIndex
-        elseif eventType == "battle_started" then
-            if type(value.monster) == "string" and value.name == nil then
-                value.name = value.monster
-            end
-            if type(value.monster) ~= "table" then value.monster = nil end
-        elseif eventType == "monster_spawned" then
-            local monster = type(value.monster) == "table" and value.monster or {}
-            value.floor = value.floor or monster.floor
-            value.room = value.room or monster.room
-            value.kind = value.encounterKind or monster.encounterKind or monster.kind or "normal"
-            value.hp = value.hp or value.monsterHp or monster.hp
-            value.maxHp = value.maxHp or value.monsterMaxHp or monster.maxHp
-            value.hpBig = value.hpBig or value.monsterHpBig or monster.hpBig
-            value.maxHpBig = value.maxHpBig or value.monsterMaxHpBig or monster.maxHpBig
-            if type(value.monster) ~= "table" then value.monster = nil end
-        elseif eventType == "loot_dropped" then
-            value.rarity = value.rarity or "common"
-            value.icon = value.icon or value.iconPath or value.itemIcon or ""
-        elseif eventType == "loot_settled" then
-            value.outcome = value.outcome or value.destination
-        end
-        result[#result + 1] = value
-    end
-    local valid, reason = GameEventSchema.ValidateList(result, "$events")
-    if not valid then return nil, reason end
-    return result
+    return GameStateSchema.CanonicalizeGameEvents(events)
 end
 
 local function AddPowerSnapshotFields(changes, state)
@@ -672,6 +626,22 @@ local function InitializeServices()
         clock = os.time,
         log = function(message) print(message) end,
     })
+    damageLeaderboardService_ = ScoreLeaderboardService.New({
+        gateway = gateway_,
+        clock = os.time,
+        boardId = "damage",
+        keyScore = "lb_dmg",
+        keyNick = "lb_dmg_nick",
+        log = function(message) print(message) end,
+    })
+    bossLeaderboardService_ = ScoreLeaderboardService.New({
+        gateway = gateway_,
+        clock = os.time,
+        boardId = "boss",
+        keyScore = "lb_boss",
+        keyNick = "lb_boss_nick",
+        log = function(message) print(message) end,
+    })
 
     mailService_ = MailService.New({
         profileService = profileService_,
@@ -694,13 +664,43 @@ local function InitializeServices()
         )
     end
 
+    local function RefreshDamageLeaderboard(userId)
+        if not damageLeaderboardService_ then return end
+        local state = profileService_:GetState(userId)
+        if not state then return end
+        local entry = CurrentEntry(userId)
+        local challenges = state.challenges or {}
+        damageLeaderboardService_:Upsert(
+            userId,
+            entry and entry.nickname or "",
+            challenges.bestStrikeDamage or 0
+        )
+    end
+
+    local function RefreshBossLeaderboard(userId)
+        if not bossLeaderboardService_ then return end
+        local state = profileService_:GetState(userId)
+        if not state then return end
+        local entry = CurrentEntry(userId)
+        local challenges = state.challenges or {}
+        bossLeaderboardService_:Upsert(
+            userId,
+            entry and entry.nickname or "",
+            challenges.bestBossDamage or 0
+        )
+    end
+
     local commandServices = {
         profileService = profileService_,
         idleService = idleService_,
         marketService = marketService_,
         leaderboardService = leaderboardService_,
+        damageLeaderboardService = damageLeaderboardService_,
+        bossLeaderboardService = bossLeaderboardService_,
         mailService = mailService_,
         refreshLeaderboard = RefreshLeaderboardEntry,
+        refreshDamageLeaderboard = RefreshDamageLeaderboard,
+        refreshBossLeaderboard = RefreshBossLeaderboard,
         sendSnapshot = SendSnapshot,
         sendDelta = SendDelta,
     }
@@ -708,6 +708,9 @@ local function InitializeServices()
     QuestCommands.Register(router_, commandServices)
     ActivityCommands.Register(router_, commandServices)
     WishPoolCommands.Register(router_, commandServices)
+    AbyssCommands.Register(router_, commandServices)
+    ChallengeCommands.Register(router_, commandServices)
+    RewardClaimCommands.Register(router_, commandServices)
     AdminCommands.Register(router_, adminService_, commandServices)
     MarketCommands.Register(router_, commandServices)
     MailCommands.Register(router_, commandServices)
@@ -721,6 +724,8 @@ function Start()
     Protocol.RegisterServerEvents()
     InitializeServices()
     if leaderboardService_ then leaderboardService_:Load() end
+    if damageLeaderboardService_ then damageLeaderboardService_:Load() end
+    if bossLeaderboardService_ then bossLeaderboardService_:Load() end
 
     SubscribeToEvent("ClientConnected", HandleClientConnected)
     SubscribeToEvent("ClientIdentity", HandleClientIdentity)

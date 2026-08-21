@@ -4,6 +4,7 @@ local BigNumber = require("shared.BigNumber")
 local PlayEffects = require("client.PlayEffects")
 local PlayHud = require("client.PlayHud")
 local PlayWorldView = require("client.PlayWorldView")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
 
 local context_ = nil
 local refs_ = {}
@@ -153,6 +154,12 @@ local function ApplyFloorRoute(route, position, currentMonster)
                 kind = "enemy",
                 eventType = encounter.eventType,
                 image = EnemyImageForStep(encounter.room, encounter.eventType),
+                abyssGradeId = currentMonster
+                    and encounter.room == firstRoom
+                    and currentMonster.abyssGradeId or nil,
+                abyssRunId = currentMonster
+                    and encounter.room == firstRoom
+                    and currentMonster.abyssRunId or nil,
             }
         end
     end
@@ -175,6 +182,15 @@ local function AlignCurrentRoadEvent(eventType)
     current.kind = "enemy"
     current.eventType = eventType
     current.image = EnemyImageForStep(current.room or 1, eventType)
+end
+
+local function AlignCurrentAbyss(gradeId, runId)
+    if not AbyssDefinitions.IsKnownGrade(gradeId) then return end
+    EnsureRoadEvents()
+    local current = roadEvents_[1]
+    if not current then return end
+    current.abyssGradeId = gradeId
+    current.abyssRunId = runId
 end
 
 local function AdvanceRoadEvent()
@@ -898,6 +914,13 @@ function PlayPresentation.HandleDelta(payload)
         if kind == "cell_entered" then
             lastEventType_ = NormalizedEventType(value)
             AlignCurrentRoadEvent(lastEventType_)
+        elseif kind == "abyss_random_spawned" then
+            AlignCurrentAbyss(value.gradeId, value.runId)
+            local grade = AbyssDefinitions.Get(value.gradeId)
+            context_.UI.Toast.Show(
+                (grade and grade.name or "随机深渊") .. "出现！免费挑战",
+                { duration = 2.6, variant = "info", position = "top" }
+            )
         elseif kind == "auto_run_changed" then
             requestedAutoRun_ = nil
             pendingAutoRun_ = nil
@@ -908,6 +931,7 @@ function PlayPresentation.HandleDelta(payload)
             local eventType = NormalizedEventType(value)
             lastEventType_ = eventType
             AlignCurrentRoadEvent(eventType)
+            AlignCurrentAbyss(value.abyssGradeId, value.abyssRunId)
             currentEventLocked_ = true
             currentMonsterHp_ = value.monsterHpBig or value.hpBig
                 or (value.monster and value.monster.hpBig)
@@ -1106,6 +1130,7 @@ function PlayPresentation.HandleSnapshot()
         AlignCurrentRoadEvent(
             NormalizedEventType(monster)
         )
+        AlignCurrentAbyss(monster.abyssGradeId, monster.abyssRunId)
         currentEventLocked_ = true
         currentMonsterHp_ = monster.hpBig or monster.hp or 0
         currentMonsterMaxHp_ =

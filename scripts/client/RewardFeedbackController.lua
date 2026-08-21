@@ -9,6 +9,8 @@ local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ItemView = require("client.ItemView")
 local CommonPromptDialog = require("client.CommonPromptDialog")
+local RewardClaimController = require("client.RewardClaimController")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -166,7 +168,7 @@ end
 local function EventKey(value, index)
     return table.concat({
         tostring(value.kind or value.type or "event"),
-        tostring(value.itemId or value.equipmentId or ""),
+        tostring(value.runId or value.itemId or value.equipmentId or ""),
         tostring(value.floor or ""),
         tostring(value.position or ""),
         tostring(index or ""),
@@ -176,8 +178,12 @@ end
 local function ShowDeltaFeedback(payload)
     local events = (payload and payload.events) or {}
     local hasOfflineReward = false
+    local hasActivityAbyss = false
     for _, value in ipairs(events) do
         local kind = value.kind or value.type
+        if kind == "abyss_completed" and (value.source == "activity" or value.source == "boss") then
+            hasActivityAbyss = true
+        end
         if kind == "offline_collected" then
             hasOfflineReward = true
         elseif kind == "level_up" then
@@ -195,12 +201,16 @@ local function ShowDeltaFeedback(payload)
     local gold = BigNumber.FromNumber(0) ---@type table
     local exp = BigNumber.FromNumber(0) ---@type table
     local fragments = BigNumber.FromNumber(0) ---@type table
+    local abyssTickets = 0
     local hasReward = false
 
     for index, value in ipairs(events) do
         local kind = value.kind or value.type
         queueParts[#queueParts + 1] = EventKey(value, index)
-        if tracking_ and IdleRewardAccumulator.IsRewardEvent(kind) then
+        if tracking_
+            and not hasActivityAbyss
+            and IdleRewardAccumulator.IsRewardEvent(kind)
+        then
             -- 在线挂机奖励按会话累计，切页或退出挂机时统一展示。
         elseif kind == "equipment_drop" or kind == "equipment_granted" or kind == "tower_aid_equipment" then
             local itemId = tostring(value.itemId or value.equipmentId or index)
@@ -244,6 +254,30 @@ local function ShowDeltaFeedback(payload)
             title = "深渊回响"
             message = "深渊碎片已收取"
             hasReward = true
+        elseif kind == "abyss_completed" then
+            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            abyssTickets = abyssTickets + math.max(
+                0,
+                math.floor(tonumber(value.abyssTickets) or 0)
+            )
+            local grade = ({
+                rift = "裂隙",
+                mutated = "异变",
+                calamity = "灾厄",
+            })[value.gradeId] or "未知"
+            title = value.source == "random" and "免费随机深渊"
+                or (value.source == "boss" and "深渊 Boss 击杀" or "深渊结算")
+            message = grade .. "深渊完成 · "
+                .. (value.equipmentDropped
+                    and (value.guaranteed and "保底装备已掉落" or "装备已掉落")
+                    or ("未掉装备，保底进度 "
+                        .. tostring(value.dryStreak or 0) .. "/5"))
+            hasReward = true
+        elseif kind == "abyss_boss_failed" then
+            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            title = "深渊 Boss 未击杀"
+            message = "时限结束，已发放少量碎片，本次伤害已计入 Boss 榜"
+            hasReward = true
         elseif kind == "aid_granted" or kind == "tower_aid_claimed" then
             title = "塔灵援助"
             message = "援助奖励已发放"
@@ -265,8 +299,56 @@ local function ShowDeltaFeedback(payload)
             if reward.gold then gold = BigNumber.Add(gold, reward.gold) end
             if reward.fragments then fragments = BigNumber.Add(fragments, reward.fragments) end
             if reward.exp then exp = BigNumber.Add(exp, reward.exp) end
+            abyssTickets = abyssTickets + math.max(
+                0,
+                math.floor(tonumber(reward.abyssTickets) or 0)
+            )
             title = "活动奖励"
             message = "活动奖励已发放"
+            hasReward = true
+        elseif kind == "reward_ad_extra_claimed"
+            or kind == "ad_exclusive_reward_claimed"
+        then
+            local reward = value.reward or {}
+            if reward.gold then
+                gold = BigNumber.Add(gold, reward.gold)
+            end
+            if reward.fragments then
+                fragments = BigNumber.Add(
+                    fragments,
+                    reward.fragments
+                )
+            end
+            if reward.exp then
+                exp = BigNumber.Add(exp, reward.exp)
+            end
+            abyssTickets = abyssTickets + math.max(
+                0,
+                math.floor(tonumber(reward.abyssTickets) or 0)
+            )
+            title = kind == "reward_ad_extra_claimed"
+                and "五倍激励奖励"
+                or "广告专属豪礼"
+            message = kind == "reward_ad_extra_claimed"
+                and "额外 4 倍资源已发放，金币/经验/碎片/深渊票达到 5 倍"
+                or "高价值激励豪礼已发放"
+            hasReward = true
+        elseif kind == "level_milestone_reward"
+            or kind == "floor_milestone_reward"
+        then
+            local reward = value.reward or {}
+            fragments = BigNumber.Add(
+                fragments,
+                reward.fragments or 0
+            )
+            abyssTickets = abyssTickets + math.max(
+                0,
+                math.floor(tonumber(reward.abyssTickets) or 0)
+            )
+            title = kind == "level_milestone_reward"
+                and "等级里程碑"
+                or "章节突破奖励"
+            message = "成长奖励已发放"
             hasReward = true
         elseif kind == "battle_lost" then
             UI.Toast.Show("挑战失败，已返回本层第1场重新整备", { duration = 2.8, variant = "error", position = "top" })
@@ -290,6 +372,15 @@ local function ShowDeltaFeedback(payload)
     if not BigNumber.IsZero(fragments) then
         RewardDialogView.AddCard(cards, ASSETS.items.crystal, "碎片", "+" .. Kit.FormatInt(fragments), "rare")
     end
+    if abyssTickets > 0 then
+        RewardDialogView.AddCard(
+            cards,
+            AbyssDefinitions.ICON,
+            "深渊票",
+            "+" .. tostring(abyssTickets),
+            "epic"
+        )
+    end
     if not hasReward or #cards == 0 then return end
 
     RewardDialogView.Show {
@@ -302,6 +393,7 @@ local function ShowDeltaFeedback(payload)
 end
 
 function RewardFeedbackController.SyncSnapshot()
+    RewardClaimController.ShowPending()
     local game = GameStateAdapter.GetViewState()
     if game.autoRun then
         StartTracking()
@@ -314,11 +406,20 @@ end
 function RewardFeedbackController.AccumulateDelta(payload)
     local game = GameStateAdapter.GetViewState()
     if game.autoRun then StartTracking() end
-    Accumulate(payload and payload.events)
+    local events = (payload and payload.events) or {}
+    for _, value in ipairs(events) do
+        if (value.kind or value.type) == "abyss_completed"
+            and value.source == "activity"
+        then
+            return
+        end
+    end
+    Accumulate(events)
 end
 
 function RewardFeedbackController.PresentDelta(payload)
     ShowDeltaFeedback(payload)
+    RewardClaimController.HandleDelta(payload)
 end
 
 function RewardFeedbackController.ShowIdleSummary(onConfirm)
@@ -351,7 +452,11 @@ function RewardFeedbackController.ShowIdleSummary(onConfirm)
         title = "获得挂机奖励",
         message = "本次挂机收益已汇总",
         lines = {
-            "完成战斗 " .. tostring(summary.battles or 0) .. " 场，奖励已同步到当前角色。",
+            "完成战斗 " .. tostring(summary.battles or 0) .. " 场"
+                .. ((summary.abyssRuns or 0) > 0
+                    and ("，触发免费深渊 " .. tostring(summary.abyssRuns) .. " 次")
+                    or "")
+                .. "，奖励已同步到当前角色。",
         },
         confirmText = "确认并离开",
         cancelText = "继续登塔",
@@ -378,6 +483,7 @@ function RewardFeedbackController.IsTracking()
 end
 
 function RewardFeedbackController.Reset()
+    RewardClaimController.Reset()
     tracking_ = false
     actionPending_ = false
     ResetSummary()

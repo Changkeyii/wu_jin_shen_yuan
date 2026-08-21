@@ -33,6 +33,64 @@ local function currentTime(now)
     if type(os.time) == "function" then return math.max(0, math.floor(os.time())) end
     return 0
 end
+
+---@param events table|nil
+---@return table|nil
+---@return string|nil
+local function canonicalizeGameEvents(events)
+    local result = {}
+    for _, source in ipairs(type(events) == "table" and events or {}) do
+        if type(source) ~= "table" then
+            return nil, "game event must be a table"
+        end
+        local value = deepCopy(source)
+        local eventType = value.type or value.kind
+        if type(eventType) ~= "string" or eventType == "" then
+            return nil, "game event is missing its type"
+        end
+        value.type = eventType
+        value.kind = value.kind or eventType
+
+        -- 兼容领域事件旧字段，并在网络边界补齐当前协议字段。
+        if eventType == "player_damaged" or eventType == "player_healed" then
+            value.amount = value.amount or value.damage
+            value.amountBig = value.amountBig or value.damageBig
+            value.hp = value.hp or value.playerHp
+            value.maxHp = value.maxHp or value.playerMaxHp
+            value.hpBig = value.hpBig or value.playerHpBig
+            value.maxHpBig = value.maxHpBig or value.playerMaxHpBig
+        elseif eventType == "player_attack_hit" then
+            value.amount = value.amount or value.damage
+            value.amountBig = value.amountBig or value.damageBig
+            value.hitIndex = value.hitIndex or value.sequenceHitIndex
+        elseif eventType == "battle_started" then
+            if type(value.monster) == "string" and value.name == nil then
+                value.name = value.monster
+            end
+            if type(value.monster) ~= "table" then value.monster = nil end
+        elseif eventType == "monster_spawned" then
+            local monster = type(value.monster) == "table" and value.monster or {}
+            value.floor = value.floor or monster.floor
+            value.room = value.room or monster.room
+            value.kind = value.encounterKind or monster.encounterKind or monster.kind or "normal"
+            value.hp = value.hp or value.monsterHp or monster.hp
+            value.maxHp = value.maxHp or value.monsterMaxHp or monster.maxHp
+            value.hpBig = value.hpBig or value.monsterHpBig or monster.hpBig
+            value.maxHpBig = value.maxHpBig or value.monsterMaxHpBig or monster.maxHpBig
+            if type(value.monster) ~= "table" then value.monster = nil end
+        elseif eventType == "loot_dropped" then
+            value.rarity = value.rarity or "common"
+            value.icon = value.icon or value.iconPath or value.itemIcon or ""
+        elseif eventType == "loot_settled" then
+            value.outcome = value.outcome or value.destination
+        end
+        result[#result + 1] = value
+    end
+    local valid, reason = GameEventSchema.ValidateList(result, "$events")
+    if not valid then return nil, reason end
+    return result, nil
+end
+
 local function stateError(reason, path)
     return ErrorCodes.Make(ErrorCodes.INVALID_STATE, reason, path and { path = path } or nil)
 end
@@ -432,6 +490,7 @@ local Wire = {
     BuildSnapshot = GameStateSchema.BuildSnapshot,
     BuildSnapshotEvents = GameStateSchema.BuildSnapshotEvents,
     BuildDelta = GameStateSchema.BuildDelta,
+    CanonicalizeGameEvents = canonicalizeGameEvents,
     ValidateSnapshot = GameStateSchema.ValidateSnapshot,
     ValidateDelta = GameStateSchema.ValidateDelta,
 }

@@ -37,6 +37,9 @@ local PENDING_EQUIP_SCHEMA = Definitions.PENDING_EQUIP_SCHEMA
 local QUESTS_SCHEMA = Definitions.QUESTS_SCHEMA
 local ACTIVITIES_SCHEMA = Definitions.ACTIVITIES_SCHEMA
 local WISH_POOL_SCHEMA = Definitions.WISH_POOL_SCHEMA
+local ABYSS_SCHEMA = Definitions.ABYSS_SCHEMA
+local REWARD_CLAIMS_SCHEMA = Definitions.REWARD_CLAIMS_SCHEMA
+local CHALLENGES_SCHEMA = Definitions.CHALLENGES_SCHEMA
 local LOADOUT_BACKUP_SCHEMA = Definitions.LOADOUT_BACKUP_SCHEMA
 local SET_PROGRESS_SCHEMA = Definitions.SET_PROGRESS_SCHEMA
 local STATS_SCHEMA = Definitions.STATS_SCHEMA
@@ -152,6 +155,9 @@ PERSISTED_SCHEMA = {
         "quests",
         "activities",
         "wishPool",
+        "abyss",
+        "rewardClaims",
+        "challenges",
     },
     fields = {
         schemaVersion = { type = "integer", enum = { GameStateSchema.VERSION } },
@@ -256,6 +262,9 @@ PERSISTED_SCHEMA = {
         quests = QUESTS_SCHEMA,
         activities = ACTIVITIES_SCHEMA,
         wishPool = WISH_POOL_SCHEMA,
+        abyss = ABYSS_SCHEMA,
+        rewardClaims = REWARD_CLAIMS_SCHEMA,
+        challenges = CHALLENGES_SCHEMA,
         -- 新手剧情引导进度（每次登录由服务端重置，测试期每次进入都触发）
         tutorial = TUTORIAL_SCHEMA,
     },
@@ -332,6 +341,9 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     quests = QUESTS_SCHEMA,
     activities = ACTIVITIES_SCHEMA,
     wishPool = WISH_POOL_SCHEMA,
+    abyss = ABYSS_SCHEMA,
+    rewardClaims = REWARD_CLAIMS_SCHEMA,
+    challenges = CHALLENGES_SCHEMA,
     tutorial = TUTORIAL_SCHEMA,
 }
 
@@ -385,7 +397,7 @@ local SNAPSHOT_REQUIRED_FIELDS = {
     "logs", "currentEvent", "recentDamage", "stats", "nextExp",
     "displayedPower", "recommendedPower", "nextChapterRecommendedPower",
     "powerRatio", "headroomFloors", "difficultyLabel", "bossScore", "eliteScore",
-    "estimatedEasyFloor", "wishPool",
+    "estimatedEasyFloor", "wishPool", "abyss", "rewardClaims", "challenges",
 }
 
 

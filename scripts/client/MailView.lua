@@ -12,6 +12,7 @@ local CommonPromptDialog = require("client.CommonPromptDialog")
 local RewardDialogView = require("client.RewardDialogView")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -107,6 +108,7 @@ local function AttachmentIcon(attachment)
     if attachment.kind == "item" then
         local itemId = attachment.itemId or ""
         if itemId == "wish_ticket" then return WishPoolDefinitions.ICONS.ticket end
+        if itemId == "abyss_ticket" then return AbyssDefinitions.ICON end
         if itemId:match("^jar%.") then
             local jar = WishPoolDefinitions.ResolveJar(itemId)
             if jar and jar.icon then return jar.icon end
@@ -128,6 +130,7 @@ local function AttachmentName(attachment)
     if attachment.kind == "item" then
         local itemId = attachment.itemId or ""
         if itemId == "wish_ticket" then return "许愿券" end
+        if itemId == "abyss_ticket" then return "深渊票" end
         local jar = WishPoolDefinitions.ResolveJar(itemId)
         if jar and jar.name then return jar.name end
         return "道具"

@@ -272,6 +272,9 @@ local CURRENT_MONSTER_SCHEMA = {
         enraged = { type = "boolean" },
         nextMonsterAttackSeconds = { type = "number", min = 0, max = 60 },
         isChapterBoss = { type = "boolean" },
+        abyssRunId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+        abyssGradeId = { type = "string", enum = { "rift", "mutated", "calamity" } },
+        abyssSource = { type = "string", enum = { "random" } },
     },
 }
 
@@ -665,6 +668,155 @@ local ACTIVITIES_SCHEMA = {
     fields = {},
 }
 
+local ABYSS_CURRENT_RANDOM_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "runId", "gradeId", "source", "floor", "createdAt" },
+    fields = {
+        runId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+        gradeId = { type = "string", enum = { "rift", "mutated", "calamity" } },
+        source = { type = "string", enum = { "random" } },
+        floor = { type = "integer", min = 1, max = 1000000000 },
+        createdAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+    },
+}
+
+local ABYSS_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = {
+        "tickets", "dryStreak", "activeRuns", "randomRuns",
+        "equipmentDrops", "highestGrade", "randomCooldownBattles",
+    },
+    fields = {
+        tickets = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        dryStreak = { type = "integer", min = 0, max = 5 },
+        activeRuns = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        randomRuns = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        equipmentDrops = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        highestGrade = { type = "string", enum = { "rift", "mutated", "calamity" } },
+        randomCooldownBattles = { type = "integer", min = 0, max = 1000000 },
+        currentRandom = ABYSS_CURRENT_RANDOM_SCHEMA,
+    },
+}
+
+local CHALLENGE_BOSS_SESSION_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = {
+        "runId", "gradeId", "ticketCost", "startedAt",
+        "lastHitAt", "damage", "hp", "maxHp", "finished",
+    },
+    fields = {
+        runId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+        gradeId = { type = "string", enum = { "rift", "mutated", "calamity" } },
+        ticketCost = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        startedAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        lastHitAt = { type = "number", min = 0 },
+        damage = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
+        hp = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
+        maxHp = { type = "integer", min = 1, max = LargeNumber.MAX_CLOUD_INTEGER },
+        finished = { type = "boolean" },
+    },
+}
+
+local CHALLENGES_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = {
+        "bestStrikeDamage", "lastStrikeDamage", "lastStrikeAt",
+        "bestBossDamage", "lastBossDamage", "lastBossAt",
+        "lastBossGrade", "lastBossKilled", "bossRuns", "bossKills",
+    },
+    fields = {
+        bestStrikeDamage = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
+        lastStrikeDamage = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
+        lastStrikeAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        bestBossDamage = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
+        lastBossDamage = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
+        lastBossAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        lastBossGrade = { type = "string", enum = { "rift", "mutated", "calamity" } },
+        lastBossKilled = { type = "boolean" },
+        bossRuns = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        bossKills = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        bossSession = CHALLENGE_BOSS_SESSION_SCHEMA,
+    },
+}
+
+local REWARD_RESOURCE_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "gold", "exp", "fragments", "abyssTickets" },
+    fields = {
+        gold = CURRENCY_SCHEMA,
+        exp = { type = "integer", min = 0, max = 1000000000000 },
+        fragments = { type = "integer", min = 0, max = 1000000000000 },
+        abyssTickets = { type = "integer", min = 0, max = 1000000000000 },
+    },
+}
+
+local REWARD_CLAIMS_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "nextId", "pending", "exclusive" },
+    fields = {
+        nextId = { type = "integer", min = 1, max = LargeNumber.MAX_SAFE_INTEGER },
+        pending = {
+            type = "array",
+            maxLength = 50,
+            items = {
+                type = "object",
+                allowUnknown = false,
+                required = {
+                    "id", "source", "sourceKey", "createdAt", "expiresAt",
+                    "baseReward", "extraReward", "meta",
+                },
+                fields = {
+                    id = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+                    source = { type = "string", enum = {
+                        "signin", "level_milestone", "floor_milestone",
+                        "abyss_settlement", "task",
+                    } },
+                    sourceKey = { type = "string", minLength = 1, maxLength = 128, pattern = "^[%w%._:%-]+$" },
+                    createdAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                    expiresAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                    baseReward = REWARD_RESOURCE_SCHEMA,
+                    extraReward = REWARD_RESOURCE_SCHEMA,
+                    meta = {
+                        type = "object",
+                        allowUnknown = false,
+                        fields = {
+                            activityId = { type = "string", maxLength = 96 },
+                            day = { type = "integer", min = 1, max = 1000000 },
+                            level = { type = "integer", min = 1, max = 1000000 },
+                            floor = { type = "integer", min = 1, max = 1000000000 },
+                            runId = { type = "string", maxLength = 96 },
+                            gradeId = { type = "string", enum = { "rift", "mutated", "calamity" } },
+                            abyssSource = { type = "string", enum = { "activity", "random", "boss" } },
+                            processedSeconds = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                        },
+                    },
+                },
+            },
+        },
+        exclusive = {
+            type = "object",
+            allowUnknown = false,
+            required = {
+                "dailyDayKey", "dailyClaimed", "weeklyWeekKey",
+                "weeklyClaimed", "levelClaimed",
+            },
+            fields = {
+                dailyDayKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                dailyClaimed = { type = "integer", min = 0, max = 3 },
+                weeklyWeekKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                weeklyClaimed = { type = "boolean" },
+                levelClaimed = { type = "object", allowUnknown = true },
+            },
+        },
+    },
+}
+
 local WISH_POOL_SCHEMA = {
     type = "object",
     allowUnknown = false,
@@ -720,6 +872,7 @@ local QUESTS_SCHEMA = {
                         decompose = QUEST_COUNTER_SCHEMA,
                         sell = QUEST_COUNTER_SCHEMA,
                         floor_advance = QUEST_COUNTER_SCHEMA,
+                        abyss_run = QUEST_COUNTER_SCHEMA,
                     },
                 },
                 claimed = { type = "object", allowUnknown = true },
@@ -745,6 +898,7 @@ local QUESTS_SCHEMA = {
                 decompose = QUEST_COUNTER_SCHEMA,
                 sell = QUEST_COUNTER_SCHEMA,
                 floor_advance = QUEST_COUNTER_SCHEMA,
+                abyss_run = QUEST_COUNTER_SCHEMA,
             },
         },
     },
@@ -773,6 +927,9 @@ local Definitions = {
     QUESTS_SCHEMA = QUESTS_SCHEMA,
     ACTIVITIES_SCHEMA = ACTIVITIES_SCHEMA,
     WISH_POOL_SCHEMA = WISH_POOL_SCHEMA,
+    ABYSS_SCHEMA = ABYSS_SCHEMA,
+    REWARD_CLAIMS_SCHEMA = REWARD_CLAIMS_SCHEMA,
+    CHALLENGES_SCHEMA = CHALLENGES_SCHEMA,
     LOADOUT_BACKUP_SCHEMA = LOADOUT_BACKUP_SCHEMA,
     SET_PROGRESS_SCHEMA = SET_PROGRESS_SCHEMA,
     STATS_SCHEMA = STATS_SCHEMA,

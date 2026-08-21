@@ -195,6 +195,12 @@ function CombatEngine.BeginBattle(state, eventType, rng, events)
         enraged = false,
         nextMonsterAttackSeconds = Catalog.ENEMY_ATTACK_SECONDS,
     }
+    local currentRandom = state.abyss and state.abyss.currentRandom
+    if type(currentRandom) == "table" then
+        monster.abyssRunId = currentRandom.runId
+        monster.abyssGradeId = currentRandom.gradeId
+        monster.abyssSource = currentRandom.source
+    end
     state.currentMonster = monster
     state.currentEvent = encounter.eventType
     local attack = randomAttack(state, monster, rng)
@@ -206,6 +212,9 @@ function CombatEngine.BeginBattle(state, eventType, rng, events)
         floor = encounter.floor,
         name = monster.name,
         isChapterBoss = encounter.isChapterBoss,
+        abyssRunId = monster.abyssRunId,
+        abyssGradeId = monster.abyssGradeId,
+        abyssSource = monster.abyssSource,
     }
     DomainMath.AddMagnitudeFields(battleStarted, "monsterHp", "monsterHpBig", monster.hpBig)
     DomainMath.AddMagnitudeFields(battleStarted, "monsterMaxHp", "monsterMaxHpBig", monster.maxHpBig)
@@ -218,6 +227,9 @@ function CombatEngine.BeginBattle(state, eventType, rng, events)
         encounterKind = monster.encounter,
         name = monster.name,
         isChapterBoss = monster.isChapterBoss,
+        abyssRunId = monster.abyssRunId,
+        abyssGradeId = monster.abyssGradeId,
+        abyssSource = monster.abyssSource,
     }
     DomainMath.AddMagnitudeFields(spawned, "hp", "hpBig", monster.hpBig)
     DomainMath.AddMagnitudeFields(spawned, "maxHp", "maxHpBig", monster.maxHpBig)
@@ -326,7 +338,14 @@ local function resolveMonsterAttack(state, monster, events, context, callbacks)
     return false
 end
 
+local function restoreState(state, snapshot)
+    for key in pairs(state) do state[key] = nil end
+    for key, value in pairs(snapshot) do state[key] = value end
+end
+
 local function finishVictory(state, monster, rng, now, events, context, callbacks)
+    local checkpoint = TableUtils.DeepCopy(state)
+    local eventCount = #events
     events[#events + 1] = PlayerTransition.Event("battle_won", {
         monsterId = monster.id,
         eventType = monster.eventType,
@@ -345,7 +364,12 @@ local function finishVictory(state, monster, rng, now, events, context, callback
     local completed, inventoryChanged = callbacks.settleVictory(
         state, monster, rng, now, events, context
     )
-    if completed and not (context and context.offline) then
+    if not completed then
+        restoreState(state, checkpoint)
+        while #events > eventCount do table.remove(events) end
+        return false, false
+    end
+    if not (context and context.offline) then
         -- 在线移动由服务端下发的楼层路线配置驱动，战斗结算后不再用服务端计时器模拟走路。
         state.transitionRemaining = 0
     end
@@ -408,6 +432,10 @@ function CombatEngine.AdvanceActiveCombat(state, rng, now, timeStep, events, con
                     if not completed then
                         state.autoRun = false
                         state.pauseReason = "inventory_full"
+                        events[#events + 1] = PlayerTransition.Event(
+                            "inventory_full",
+                            { capacity = Catalog.GetInventoryCapacity(state), rollback = "battle_settlement" }
+                        )
                         return "inventory_full", inventoryChanged
                     end
                 else

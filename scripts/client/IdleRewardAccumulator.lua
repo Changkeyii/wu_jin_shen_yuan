@@ -18,6 +18,7 @@ function IdleRewardAccumulator.New()
         equipmentItems = {},
         equipmentById = {},
         battles = 0,
+        abyssRuns = 0,
     }
 end
 
@@ -38,6 +39,7 @@ function IdleRewardAccumulator.IsRewardEvent(kind)
         or kind == "merchant_trade"
         or kind == "wish_pool"
         or kind == "abyss_echo"
+        or kind == "abyss_completed"
         or kind == "equipment_auto_disposed"
 end
 
@@ -54,6 +56,9 @@ function IdleRewardAccumulator.Accumulate(summary, events, options)
             summary.fragments = BigNumber.Add(summary.fragments, value.fragments or 0)
         elseif kind == "merchant_trade" or kind == "abyss_echo" then
             summary.fragments = BigNumber.Add(summary.fragments, value.fragments or 0)
+        elseif kind == "abyss_completed" then
+            summary.fragments = BigNumber.Add(summary.fragments, value.fragments or 0)
+            summary.abyssRuns = (summary.abyssRuns or 0) + 1
         elseif kind == "wish_pool" then
             summary.gold = BigNumber.Add(summary.gold, value.gold or 0)
         elseif kind == "equipment_auto_disposed" then
@@ -89,6 +94,7 @@ function IdleRewardAccumulator.Merge(target, source)
     target.exp = BigNumber.Add(target.exp, source.exp)
     target.fragments = BigNumber.Add(target.fragments, source.fragments)
     target.battles = (target.battles or 0) + (source.battles or 0)
+    target.abyssRuns = (target.abyssRuns or 0) + (source.abyssRuns or 0)
     for _, value in ipairs(source.equipmentItems or {}) do
         local itemId = tostring(value.itemId or "")
         if itemId == "" or not target.equipmentById[itemId] then

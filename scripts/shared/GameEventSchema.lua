@@ -8,6 +8,18 @@ GameEventSchema.MAX_EVENTS = 128
 
 local KNOWN = {
     abyss_echo = true,
+    abyss_started = true,
+    abyss_random_spawned = true,
+    abyss_completed = true,
+    abyss_boss_begin = true,
+    abyss_boss_hit = true,
+    abyss_boss_failed = true,
+    abyss_boss_finished = true,
+    ad_exclusive_reward_claimed = true,
+    level_milestone_reward = true,
+    floor_milestone_reward = true,
+    reward_ad_extra_claimed = true,
+    reward_offer_pending = true,
     active_touched = true,
     activity_ad_unlocked = true,
     activity_claimed = true,
@@ -107,6 +119,21 @@ local KNOWN = {
 }
 
 local REQUIRED = {
+    ad_exclusive_reward_claimed = { "giftId", "reward" },
+    level_milestone_reward = { "level", "reward" },
+    floor_milestone_reward = { "floor", "reward" },
+    reward_ad_extra_claimed = { "rewardId", "source", "multiplier", "reward" },
+    reward_offer_pending = { "rewardId", "source", "baseReward", "extraReward" },
+    abyss_started = { "runId", "source", "gradeId", "ticketCost", "dropChance" },
+    abyss_boss_begin = { "runId", "gradeId", "ticketCost", "maxHp", "remaining" },
+    abyss_boss_hit = { "runId", "gradeId", "damage", "total", "hp", "maxHp" },
+    abyss_boss_failed = { "runId", "gradeId", "ticketCost", "damage", "maxHp", "fragments" },
+    abyss_boss_finished = { "runId", "gradeId", "ticketCost", "damage", "maxHp", "killed", "ranked", "bestDamage" },
+    abyss_random_spawned = { "runId", "gradeId", "floor" },
+    abyss_completed = {
+        "runId", "source", "gradeId", "ticketCost", "fragments",
+        "abyssTickets", "equipmentDropped", "dryStreak",
+    },
     equipment_upgrade_available = { "itemId" },
     inventory_policy_changed = { "inventoryPolicy" },
     player_attack_hit = { "hitIndex" },
@@ -177,6 +204,101 @@ local REQUIRED_MAGNITUDES = {
 }
 
 local FIELD_RULES = {
+    ad_exclusive_reward_claimed = {
+        giftId = { kind = "enum", values = {
+            daily = true,
+        } },
+        reward = { kind = "object" },
+    },
+    level_milestone_reward = {
+        level = { kind = "integer", minimum = 1 },
+        reward = { kind = "object" },
+    },
+    floor_milestone_reward = {
+        floor = { kind = "integer", minimum = 1 },
+        reward = { kind = "object" },
+    },
+    reward_ad_extra_claimed = {
+        rewardId = { kind = "string", minLength = 1, maxLength = 96 },
+        source = { kind = "enum", values = {
+            signin = true, level_milestone = true, floor_milestone = true,
+            abyss_settlement = true, task = true,
+        } },
+        multiplier = { kind = "integer", minimum = 5, maximum = 5 },
+        reward = { kind = "object" },
+    },
+    reward_offer_pending = {
+        rewardId = { kind = "string", minLength = 1, maxLength = 96 },
+        source = { kind = "enum", values = {
+            signin = true, level_milestone = true, floor_milestone = true,
+            abyss_settlement = true, task = true,
+        } },
+        baseReward = { kind = "object" },
+        extraReward = { kind = "object" },
+    },
+    abyss_started = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        source = { kind = "enum", values = { activity = true, random = true, boss = true } },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        ticketCost = { kind = "integer", minimum = 0 },
+        dropChance = { kind = "number", minimum = 0, maximum = 1 },
+    },
+    abyss_boss_begin = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        ticketCost = { kind = "integer", minimum = 0 },
+        maxHp = { kind = "integer", minimum = 1 },
+        remaining = { kind = "number", minimum = 0 },
+    },
+    abyss_boss_hit = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        damage = { kind = "integer", minimum = 0 },
+        critical = { kind = "boolean" },
+        lucky = { kind = "boolean" },
+        total = { kind = "integer", minimum = 0 },
+        hp = { kind = "integer", minimum = 0 },
+        maxHp = { kind = "integer", minimum = 0 },
+    },
+    abyss_boss_failed = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        ticketCost = { kind = "integer", minimum = 0 },
+        damage = { kind = "integer", minimum = 0 },
+        maxHp = { kind = "integer", minimum = 0 },
+        fragments = { kind = "integer", minimum = 0 },
+    },
+    abyss_boss_finished = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        ticketCost = { kind = "integer", minimum = 0 },
+        damage = { kind = "integer", minimum = 0 },
+        maxHp = { kind = "integer", minimum = 0 },
+        killed = { kind = "boolean" },
+        ranked = { kind = "boolean" },
+        bestDamage = { kind = "integer", minimum = 0 },
+    },
+    abyss_random_spawned = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        floor = { kind = "integer", minimum = 1 },
+    },
+    abyss_completed = {
+        runId = { kind = "string", minLength = 1, maxLength = 96 },
+        source = { kind = "enum", values = { activity = true, random = true, boss = true } },
+        gradeId = { kind = "enum", values = { rift = true, mutated = true, calamity = true } },
+        ticketCost = { kind = "integer", minimum = 0 },
+        fragments = { kind = "integer", minimum = 0 },
+        abyssTickets = { kind = "integer", minimum = 0 },
+        equipmentDropped = { kind = "boolean" },
+        itemId = { kind = "string", minLength = 1, maxLength = 64 },
+        rarity = { kind = "enum", values = {
+            common = true, advanced = true, rare = true, artifact = true,
+            legendary = true, epic = true, myth = true,
+        } },
+        guaranteed = { kind = "boolean" },
+        dryStreak = { kind = "integer", minimum = 0, maximum = 5 },
+    },
     attack_started = {
         hitFrames = {
             kind = "array", minLength = 1, maxLength = 5,

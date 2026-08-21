@@ -50,6 +50,7 @@ function QuestDefinitions.RewardPreview(reward, referenceFloor)
             or LargeNumber.Zero(),
         fragments = math.max(0, math.floor(reward.fragments or 0)),
         exp = expScenes > 0 and (expScenes * QuestDefinitions.BattleExp(referenceFloor)) or 0,
+        abyssTickets = math.max(0, math.floor(reward.abyssTickets or 0)),
     }
 end
 
@@ -99,6 +100,18 @@ local T = {
     },
 
     -- 每日任务（东八区 0 点重置）
+    daily_battle_3_abyss_ticket = {
+        id = "daily_battle_3_abyss_ticket", type = "daily",
+        title = "深渊预备", desc = "今日完成 3 场战斗",
+        metric = "monster_kill", target = 3,
+        reward = { abyssTickets = 10 },
+    },
+    daily_abyss_1 = {
+        id = "daily_abyss_1", type = "daily",
+        title = "裂隙追猎", desc = "今日完成 1 次深渊",
+        metric = "abyss_run", target = 1,
+        reward = { abyssTickets = 10 },
+    },
     daily_kill_20 = {
         id = "daily_kill_20", type = "daily",
         title = "清扫守层怪", desc = "今日击败 20 只怪物",
@@ -228,6 +241,7 @@ QuestDefinitions.COUNTER_METRICS = {
     decompose = true,
     sell = true,
     floor_advance = true,
+    abyss_run = true,
 }
 
 -- 只读进度判定（服务端权威 QuestEngine 与客户端展示共用，保证两端一致）。

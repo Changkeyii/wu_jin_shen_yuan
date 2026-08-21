@@ -31,6 +31,7 @@ function QuestEngine.NewQuests()
             decompose = 0,
             sell = 0,
             floor_advance = 0,
+            abyss_run = 0,
         },
     }
 end
@@ -116,6 +117,16 @@ function QuestEngine.AddExperience(state, amount, events)
             nextExp = state.nextExp,
             expGained = gained,
         })
+        local RewardClaimEngine = require(
+            "server.domain.RewardClaimEngine"
+        )
+        RewardClaimEngine.GrantLevelMilestones(
+            state,
+            previousLevel,
+            state.level,
+            PlayerTransition.Now(),
+            events
+        )
     end
     return levelUps > 0
 end
@@ -134,12 +145,51 @@ function QuestEngine.GrantReward(state, def, now, events)
     if preview.exp > 0 then
         QuestEngine.AddExperience(state, preview.exp, events)
     end
+    if preview.abyssTickets > 0 then
+        local AbyssEngine = require("server.domain.AbyssEngine")
+        AbyssEngine.GrantTickets(state, preview.abyssTickets)
+    end
     return {
         gold = preview.gold,
         fragments = preview.fragments,
         exp = preview.exp,
+        abyssTickets = preview.abyssTickets,
         level = state.level,
     }
+end
+
+local function CreateRewardOffer(state, def, reward, now, events)
+    local RewardClaimEngine = require(
+        "server.domain.RewardClaimEngine"
+    )
+    local sourceKey = "quest:" .. tostring(def.id)
+    if def.type == "daily" then
+        sourceKey = sourceKey .. ":" .. tostring(serverDayKey(now))
+    end
+    local offer, offerError = RewardClaimEngine.CreateAdOffer(
+        state,
+        {
+            source = "task",
+            sourceKey = sourceKey,
+            baseReward = reward,
+            meta = {},
+        },
+        now
+    )
+    if not offer and offerError == "REWARD_OFFER_CAPACITY" then
+        return nil, offerError
+    end
+    if offer then
+        events[#events + 1] = PlayerTransition.Event(
+            "reward_offer_pending",
+            {
+                rewardId = offer.id,
+                source = offer.source,
+                baseReward = offer.baseReward,
+                extraReward = offer.extraReward,
+            }
+        )
+    end
 end
 
 -- 单领一个任务奖励。
@@ -159,6 +209,21 @@ function QuestEngine.Claim(inputState, questId, now)
     end
     local events = {}
     local reward = QuestEngine.GrantReward(working, def, now, events)
+    local _, offerError = CreateRewardOffer(
+        working,
+        def,
+        reward,
+        now,
+        events
+    )
+    if offerError then
+        return PlayerTransition.Failure(
+            inputState,
+            now,
+            offerError,
+            "激励奖励待领取数量已满，请先处理旧奖励"
+        )
+    end
     MarkClaimed(working, def)
     events[#events + 1] = PlayerTransition.Event("quest_claimed", {
         questId = def.id,
@@ -183,6 +248,21 @@ function QuestEngine.ClaimAll(inputState, now)
                 and not QuestEngine.IsClaimed(working, def)
             then
                 local reward = QuestEngine.GrantReward(working, def, now, events)
+                local _, offerError = CreateRewardOffer(
+                    working,
+                    def,
+                    reward,
+                    now,
+                    events
+                )
+                if offerError then
+                    return PlayerTransition.Failure(
+                        inputState,
+                        now,
+                        offerError,
+                        "激励奖励待领取数量已满，请先处理旧奖励"
+                    )
+                end
                 MarkClaimed(working, def)
                 count = count + 1
                 events[#events + 1] = PlayerTransition.Event("quest_claimed", {

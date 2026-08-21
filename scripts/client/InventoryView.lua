@@ -400,7 +400,7 @@ end
 -- 罐子/许愿券等非装备道具详情：只有「使用」按钮，无出售/分解/穿戴/锁定。
 local function CreateItemUseDetail(item)
     local isJar = item.category == "wishjar" and item.jarId ~= nil
-    local isTicket = item.id == "wish_ticket"
+    local isWishTicket = item.id == "wish_ticket"
     local WishPoolController = require("client.WishPoolController")
 
     local detailRows = {
@@ -438,7 +438,7 @@ local function CreateItemUseDetail(item)
     end
 
     local onUse = nil
-    if isTicket then
+    if isWishTicket then
         onUse = function()
             WishPoolController.WishWithTicket()
         end

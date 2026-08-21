@@ -11,6 +11,8 @@ local EquipmentEngine = require("server.domain.EquipmentEngine")
 local CombatEngine = require("server.domain.CombatEngine")
 local QuestEngine = require("server.domain.QuestEngine")
 local TutorialEngine = require("server.domain.TutorialEngine")
+local AbyssEngine = require("server.domain.AbyssEngine")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
 
 local AdventureEngine = {}
 local storyGateEvent
@@ -176,6 +178,61 @@ local function pendingEventPayload(pending)
     }
 end
 
+local function maybeStartRandomAbyss(state, encounter, rng, now, events)
+    state.abyss = type(state.abyss) == "table"
+        and state.abyss or AbyssDefinitions.NewState()
+    -- 没有进行中的战斗时，遗留的随机深渊上下文不可继续复用。
+    state.abyss.currentRandom = nil
+    if encounter.kind ~= "normal"
+        or TutorialEngine.IsActive(state)
+        or (state.abyss.randomCooldownBattles or 0) > 0
+        or DomainMath.RandomFloat(rng) >= AbyssDefinitions.RANDOM_TRIGGER_CHANCE
+    then
+        return false
+    end
+
+    local gradeId = AbyssEngine.RollRandomGrade(state.level, rng)
+    local grade = AbyssDefinitions.Get(gradeId)
+    local runId = AbyssEngine.MakeRunId(state, "random", now)
+    state.abyss.currentRandom = {
+        runId = runId,
+        gradeId = gradeId,
+        source = "random",
+        floor = state.floor,
+        createdAt = PlayerTransition.Now(now),
+    }
+    state.abyss.randomCooldownBattles =
+        AbyssDefinitions.RANDOM_COOLDOWN_BATTLES
+    events[#events + 1] = PlayerTransition.Event(
+        "abyss_random_spawned",
+        {
+            runId = runId,
+            gradeId = gradeId,
+            floor = state.floor,
+            source = "random",
+            dropChance = grade.dropChance,
+        }
+    )
+    events[#events + 1] = PlayerTransition.Event(
+        "abyss_started",
+        {
+            runId = runId,
+            source = "random",
+            gradeId = gradeId,
+            ticketCost = 0,
+            dropChance = grade.dropChance,
+        }
+    )
+    print(string.format(
+        "[Abyss] random spawned run=%s grade=%s floor=%d cooldown=%d",
+        runId,
+        gradeId,
+        state.floor,
+        state.abyss.randomCooldownBattles
+    ))
+    return true
+end
+
 function AdventureEngine.EnterEncounter(inputState, request, rng, now)
     request = type(request) == "table" and request or {}
     local working = PlayerTransition.Copy(inputState, now)
@@ -259,6 +316,7 @@ function AdventureEngine.EnterEncounter(inputState, request, rng, now)
         return PlayerTransition.Finalize(inputState, working, now, "event_pending", events, false, false, true)
     end
 
+    maybeStartRandomAbyss(working, expected, rng, now, events)
     CombatEngine.BeginBattle(working, expected.eventType, rng, events)
     return PlayerTransition.Finalize(inputState, working, now, "battle_started", events, false, false, true)
 end

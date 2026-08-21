@@ -59,6 +59,22 @@ function ActivityController.UnlockExtraStrike(activityId, onDone)
     Send("Activity.UnlockExtraStrike", { activityId = activityId }, onDone, true)
 end
 
+function ActivityController.EnterAbyss(gradeId, onDone)
+    Send("Activity.EnterAbyss", { gradeId = gradeId }, onDone, true)
+end
+
+function ActivityController.BeginAbyssBoss(gradeId, onDone)
+    Send("Activity.BeginAbyssBoss", { gradeId = gradeId }, onDone, true)
+end
+
+function ActivityController.StrikeAbyssBoss(onDone)
+    Send("Activity.StrikeAbyssBoss", {}, onDone, false)
+end
+
+function ActivityController.FinishAbyssBoss(onDone)
+    Send("Activity.FinishAbyssBoss", {}, onDone, true)
+end
+
 function ActivityController.HasRedDot(game)
     local view = game and game.activitiesView
     return view ~= nil and view.redDot > 0

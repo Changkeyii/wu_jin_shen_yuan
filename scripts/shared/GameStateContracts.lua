@@ -2,7 +2,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 
 local GameStateContracts = {}
 
-GameStateContracts.VERSION = 7
+GameStateContracts.VERSION = 10
 GameStateContracts.SLOTS = {
     "weapon", "shoulder", "coat", "pants", "belt", "shoes",
     "bracelet", "necklace", "ring", "support", "magicstone", "earring",
@@ -70,6 +70,9 @@ GameStateContracts.PERSISTED_FIELDS = {
     "quests",
     "activities",
     "wishPool",
+    "abyss",
+    "rewardClaims",
+    "challenges",
     -- 序章进度需持久化，避免会话内重连后客户端永远停在 step=1。
     "tutorial",
 }
@@ -135,6 +138,9 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "quests",
     "activities",
     "wishPool",
+    "abyss",
+    "rewardClaims",
+    "challenges",
     "tutorial",
 }
 

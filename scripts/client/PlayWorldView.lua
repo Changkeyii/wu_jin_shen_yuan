@@ -1,4 +1,6 @@
 local PlayWorldView = {}
+local AbyssPresentation = require("client.AbyssPresentation")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
 
 local ports_ = nil
 local refs_ = {}
@@ -51,7 +53,7 @@ function PlayWorldView.Build(metrics)
     local UI = ports_.UI
     local assets = ports_.assets
     lastMetrics_ = metrics
-    refs_ = {bgTiles = {}, objects = {}}
+    refs_ = {bgTiles = {}, objects = {}, abyssPillars = {}}
     currentPlayerImage_ = nil
     refs_.bgTiles[1] = UI.Panel {
         position = "absolute", left = 0, top = ports_.bgTileTop,
@@ -86,6 +88,20 @@ function PlayWorldView.Build(metrics)
         backgroundFit = "contain",
     }
     for index = 1, ports_.eventViewCount do
+        refs_.abyssPillars[index] = {}
+        for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
+            local pillar = AbyssPresentation.BuildPillar(
+                gradeId,
+                { width = 112, height = 210, fontSize = 14 }
+            )
+            pillar:SetStyle({
+                position = "absolute",
+                left = 0,
+                top = 0,
+                visible = false,
+            })
+            refs_.abyssPillars[index][gradeId] = pillar
+        end
         refs_.objects[index] = UI.Panel {
             position = "absolute", left = 0, top = 0,
             width = ports_.enemySize, height = ports_.enemySize,
@@ -94,6 +110,11 @@ function PlayWorldView.Build(metrics)
         }
     end
     local nodes = {refs_.bgTiles[1], refs_.bgTiles[2], refs_.bgTiles[3]}
+    for _, pillars in ipairs(refs_.abyssPillars) do
+        for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
+            nodes[#nodes + 1] = pillars[gradeId]
+        end
+    end
     for _, node in ipairs(refs_.objects) do nodes[#nodes + 1] = node end
     nodes[#nodes + 1] = refs_.playerShadow
     nodes[#nodes + 1] = refs_.player
@@ -173,6 +194,7 @@ function PlayWorldView.Update(state)
 
     for index, node in ipairs(refs_.objects) do
         local event = state.roadEvents[index]
+        local pillars = refs_.abyssPillars[index] or {}
         if event then
             local x = event.x - state.presentationX
             local size = event.kind == "enemy" and ports_.enemySize or ports_.lootSize
@@ -181,8 +203,25 @@ function PlayWorldView.Update(state)
                 or (state.roadY - ports_.lootSize + ports_.lootFootOffset)
             local active = index == 1 and (state.isAttacking or state.isPicking)
             local pulse = active and math.sin(state.animationTime * 18) * 5 or 0
+            local onScreen = x > -180 and x < 1180
+            for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
+                local pillar = pillars[gradeId]
+                if pillar then
+                    local visible = onScreen
+                        and event.kind == "enemy"
+                        and event.abyssGradeId == gradeId
+                    pillar:SetStyle({
+                        visible = visible,
+                        left = x + math.floor((size - 112) * 0.5),
+                        top = state.roadY - 206
+                            + math.sin(state.animationTime * 3.5) * 3,
+                        opacity = active and 0.92 or 1,
+                        scale = active and 1.04 or 1,
+                    })
+                end
+            end
             node:SetStyle({
-                visible = x > -180 and x < 1180,
+                visible = onScreen,
                 left = x, top = top + pulse,
                 width = size, height = size,
                 backgroundImage = event.image,
@@ -191,6 +230,10 @@ function PlayWorldView.Update(state)
             })
         else
             node:SetStyle({visible = false})
+            for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
+                local pillar = pillars[gradeId]
+                if pillar then pillar:SetStyle({visible = false}) end
+            end
         end
     end
 end

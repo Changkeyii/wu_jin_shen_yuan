@@ -1,11 +1,12 @@
 -- LeaderboardView.lua
--- 排行榜弹窗：顶部页签（战力榜生效，其余待续）+ Top 100 列表（排名 + 昵称 + 战力）。
+-- 排行榜弹窗：顶部页签（战力榜 / 伤害榜 / Boss榜）+ Top 100 列表。
 
 local UI = require("urhox-libs/UI")
 local GameTheme = require("client.Theme")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local CommonPromptDialog = require("client.CommonPromptDialog")
+local DialogCoordinator = require("client.DialogCoordinator")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -13,10 +14,16 @@ local ASSETS = ViewAssets.ASSETS
 local LeaderboardView = {}
 
 local TABS = {
-    { id = "power", name = "战力榜" },
-    { id = "endless", name = "无尽榜", coming = true },
-    { id = "boss", name = "Boss榜", coming = true },
-    { id = "season", name = "赛季榜", coming = true },
+    { id = "power", name = "战力榜", scoreLabel = "战力" },
+    { id = "damage", name = "伤害榜", scoreLabel = "15秒伤害" },
+    { id = "boss", name = "Boss榜", scoreLabel = "Boss伤害" },
+    { id = "season", name = "赛季榜", coming = true, scoreLabel = "赛季" },
+}
+
+local BOARD_META = {
+    power = { scoreLabel = "战力", empty = "暂无玩家上榜" },
+    damage = { scoreLabel = "15秒伤害", empty = "暂无打桩成绩，去每日补给打桩即可上榜" },
+    boss = { scoreLabel = "Boss伤害", empty = "暂无 Boss 成绩，去热门活动挑战深渊 Boss" },
 }
 
 -- 排名数字：用清晰文本替代 VIP 艺术字素材（艺术字难辨认）
@@ -40,10 +47,10 @@ local function RankText(rank)
     })
 end
 
-local function TabRow()
+local function TabRow(activeBoard, onSelectTab)
     local children = {}
-    for index, tab in ipairs(TABS) do
-        local active = tab.id == "power"
+    for _, tab in ipairs(TABS) do
+        local active = tab.id == activeBoard
         children[#children + 1] = UI.Panel {
             width = 188,
             height = 64,
@@ -56,7 +63,9 @@ local function TabRow()
             onClick = function()
                 if tab.coming then
                     UI.Toast.Show(tab.name .. "敬请期待", { duration = 1.5, variant = "info", position = "bottom" })
+                    return
                 end
+                if onSelectTab then onSelectTab(tab.id) end
             end,
             children = {
                 Kit.Txt(tab.name, 23, active and C.text or C.textDim, {
@@ -121,7 +130,7 @@ local function BuildRow(entry, selfRank, onSelectPlayer)
                     }),
                 },
             },
-            Kit.Txt(Kit.FormatInt(entry.power or 0), 26, C.gold, {
+            Kit.Txt(Kit.FormatInt(entry.score or entry.power or 0), 26, C.gold, {
                 width = 170, height = 40, textAlign = "right",
                 textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
             }),
@@ -157,10 +166,14 @@ local function BuildRow(entry, selfRank, onSelectPlayer)
     }
 end
 
-function LeaderboardView.Show(list, selfRank, total, onSelectPlayer)
+function LeaderboardView.Show(list, selfRank, total, onSelectPlayer, options)
+    options = type(options) == "table" and options or {}
+    local board = options.board == "damage" and "damage"
+        or (options.board == "boss" and "boss" or "power")
+    local meta = BOARD_META[board] or BOARD_META.power
     list = type(list) == "table" and list or {}
     local rows = {}
-    for index, entry in ipairs(list) do
+    for _, entry in ipairs(list) do
         rows[#rows + 1] = BuildRow(entry, selfRank, onSelectPlayer)
     end
     if #rows == 0 then
@@ -170,8 +183,8 @@ function LeaderboardView.Show(list, selfRank, total, onSelectPlayer)
             alignItems = "center",
             justifyContent = "center",
             children = {
-                Kit.Txt("暂无玩家上榜", 28, C.textSecondary, {
-                    width = "100%", height = 44, textAlign = "center",
+                Kit.Txt(meta.empty, 24, C.textSecondary, {
+                    width = "100%", height = 80, textAlign = "center",
                     textStroke = { width = 2, color = "#000000" },
                 }),
             },
@@ -193,14 +206,15 @@ function LeaderboardView.Show(list, selfRank, total, onSelectPlayer)
         children = {
             Kit.Txt("排名", 20, C.textDim, { width = 92, height = 40, textAlign = "center", pointerEvents = "none" }),
             Kit.Txt("玩家", 20, C.textDim, { flexGrow = 1, flexBasis = 0, height = 40, textAlign = "left", pointerEvents = "none" }),
-            Kit.Txt("战力", 20, C.textDim, { width = 170, height = 40, textAlign = "right", pointerEvents = "none" }),
+            Kit.Txt(meta.scoreLabel, 20, C.textDim, { width = 170, height = 40, textAlign = "right", pointerEvents = "none" }),
             Kit.Txt("操作", 20, C.textDim, { width = 150, height = 40, textAlign = "center", pointerEvents = "none" }),
         },
     }
 
+    DialogCoordinator.CancelByKey("leaderboard")
     return CommonPromptDialog.Show {
         kind = "confirm",
-        queueKey = "leaderboard:power",
+        queueKey = "leaderboard",
         title = "排行榜",
         dialogWidth = 980,
         dialogHeight = 1220,
@@ -217,7 +231,7 @@ function LeaderboardView.Show(list, selfRank, total, onSelectPlayer)
                 gap = 12,
                 alignItems = "center",
                 children = {
-                    TabRow(),
+                    TabRow(board, options.onSelectTab),
                     header,
                     UI.ScrollView {
                         width = 860,

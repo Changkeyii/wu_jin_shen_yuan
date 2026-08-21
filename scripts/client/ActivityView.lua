@@ -9,6 +9,8 @@ local GameTheme = require("client.Theme")
 local GameStateAdapter = require("client.GameStateAdapter")
 local ServerClock = require("client.ServerClock")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 local CombatSequence = require("shared.CombatSequence")
 local ViewAssets = require("client.ViewAssets")
@@ -16,6 +18,10 @@ local Kit = require("client.ViewKit")
 local ActivityController = require("client.ActivityController")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local ServerClient = require("client.ServerClient")
+local AbyssPresentation = require("client.AbyssPresentation")
+local RewardClaimController = require("client.RewardClaimController")
+local BigNumber = require("shared.BigNumber")
+local RarityCatalog = require("shared.RarityCatalog")
 
 local ActivityView = {}
 
@@ -53,10 +59,16 @@ local strikeEndFrame_ = 1
 local strikeSequenceIndex_ = 0
 -- 当前攻击是否已触发命中（每次攻击仅触发一次伤害+飘字）
 local strikeHitTriggered_ = false
+-- 深渊 Boss 挑战（复用打桩场景动画，目标换成 Boss）
+local bossActive_ = false
+local bossRemaining_ = 0
+local bossLastHp_ = 0
+local sceneMode_ = "strike"
 
 -- ===== 页签状态 =====
 -- tab 固定顺序：新手签到 → 轮回签到 → 每日补给 → 热门活动（许愿池/深渊远征/PVP）
 local activityTab_ = "act_signin_newbie_7"
+local selectedAbyssGrade_ = "rift"
 local ACTIVITY_TABS = {
     { id = "act_signin_newbie_7", label = "新手签到", kind = "signin" },
     { id = "act_signin_loop_30", label = "轮回签到", kind = "signin" },
@@ -124,6 +136,9 @@ local function RewardText(reward)
     if (reward.exp or 0) > 0 then
         parts[#parts + 1] = "经验 " .. tostring(reward.exp)
     end
+    if (reward.abyssTickets or 0) > 0 then
+        parts[#parts + 1] = "深渊票 " .. tostring(reward.abyssTickets)
+    end
     return #parts > 0 and table.concat(parts, " ") or "奖励待定"
 end
 
@@ -145,6 +160,13 @@ local function RewardIcons(reward)
     end
     if (reward.exp or 0) > 0 then
         list[#list + 1] = { icon = ASSETS.items.crystal, amount = "+" .. Kit.FormatInt(reward.exp), size = 112 }
+    end
+    if (reward.abyssTickets or 0) > 0 then
+        list[#list + 1] = {
+            icon = AbyssDefinitions.ICON,
+            amount = "+" .. tostring(reward.abyssTickets),
+            size = 112,
+        }
     end
     return list
 end
@@ -303,6 +325,8 @@ local function StrikeCard(item)
     local function StartStrikeAction()
         ActivityController.BeginStrike(item.id, function(response)
             if response and response.ok then
+                sceneMode_ = "strike"
+                bossActive_ = false
                 strikeId_ = item.id
                 strikeRemaining_ = item.duration or 15
                 strikeTimer_ = 0
@@ -357,6 +381,12 @@ local function StrikeCard(item)
                         Kit.Txt(item.title, 28, C.text, { width = "100%", height = 40, textAlign = "left", textStroke = { width = 2, color = "#000000" } }),
                         Kit.CompactTxt(item.desc, 16, C.textSecondary, { width = "100%", height = 26, textAlign = "left" }),
                         Kit.CompactTxt("今日 " .. tostring(item.todayCount or 0) .. " / " .. tostring(item.limit or 0) .. " 次", 18, (remaining or 0) > 0 and C.success or C.textDim, { width = "100%", height = 30, textAlign = "left", textStroke = { width = 1, color = "#000000" } }),
+                        Kit.CompactTxt(
+                            "最佳伤害 " .. tostring((GameStateAdapter.GetViewState().challengesView or {}).bestStrikeDamage or 0),
+                            16,
+                            C.gold,
+                            { width = "100%", height = 26, textAlign = "left" }
+                        ),
                     } },
                     UI.Panel {
                         width = 160, height = 160, flexShrink = 0,
@@ -382,6 +412,306 @@ local function StrikeCard(item)
                 width = "100%", flexShrink = 0,
                 flexDirection = "row", flexWrap = "wrap", gap = 10,
                 children = tierBadges,
+            },
+        },
+    }
+end
+
+local function PlayerPower(game)
+    local stats = game and game.stats or {}
+    if stats.displayedPower ~= nil then return stats.displayedPower end
+    return stats.power or 0
+end
+
+local function TicketCostRow(cost, color, width)
+    return UI.Panel {
+        width = width or "100%",
+        height = 30,
+        flexShrink = 0,
+        flexDirection = "row",
+        justifyContent = "center",
+        alignItems = "center",
+        gap = 6,
+        children = {
+            UI.Panel {
+                width = 24,
+                height = 24,
+                flexShrink = 0,
+                backgroundImage = AbyssDefinitions.ICON,
+                backgroundFit = "contain",
+                pointerEvents = "none",
+            },
+            Kit.CompactTxt("×" .. tostring(cost), 16, color or C.gold, {
+                width = 72, height = 26, textAlign = "left",
+            }),
+        },
+    }
+end
+
+local function ShowAbyssRules(view, game)
+    view = view or {}
+    local poolMin = view.equipmentPoolMin or 1
+    local poolMax = view.equipmentPoolMax or 10
+    local dropFloor = AbyssDefinitions.DropPoolFloor(game)
+    local rarity = RarityCatalog.HighestUnlocked(dropFloor)
+    local lines = {
+        "深渊票是入场消耗，主动挑战先扣票再开战。",
+        "限时挑战深渊 Boss，击杀才结算装备与返还票；未击杀只给少量碎片。",
+        "装备等级池每 10 级更新一次，当前为 Lv."
+            .. tostring(poolMin) .. "-" .. tostring(poolMax) .. "。",
+        "品质池按当前等级与最高通关层取高，当前最高品质："
+            .. (rarity and rarity.name or "普通") .. "。",
+        "连续 5 次未掉装备，第 6 次必出；主动、随机、Boss 共用保底。",
+        "每日广告补给最多 3 次，每次发放当前灾厄票价的 80%。",
+        "激励广告只翻倍金币、经验、碎片和深渊票，装备不翻倍。",
+        "挂机途中有概率遇到免费随机深渊，颜色与活动档位一致。",
+    }
+    for _, item in ipairs(view.grades or {}) do
+        lines[#lines + 1] = item.name
+            .. "：消耗 " .. tostring(item.ticketCost)
+            .. " 票，推荐战力 " .. Kit.FormatInt(item.recommendedPower)
+            .. "，掉率 " .. tostring(math.floor(item.dropChance * 100)) .. "%"
+            .. (item.unlocked and "" or ("，Lv." .. tostring(item.minLevel) .. " 解锁"))
+    end
+    CommonPromptDialog.Show {
+        kind = "confirm",
+        priority = 1280,
+        queueKey = "abyss_rules",
+        title = "深渊规则",
+        message = "档位、票价、装备池与保底说明",
+        lines = lines,
+        closeOnOverlay = true,
+        showClose = true,
+        confirmText = "知道了",
+    }
+end
+
+-- ===== 深渊模式活动卡片 =====
+local function AbyssActivityCard()
+    local game = GameStateAdapter.GetViewState()
+    local view = game.abyssView or AbyssDefinitions.BuildView(game)
+    local selected = AbyssDefinitions.Get(selectedAbyssGrade_)
+    if not selected or not AbyssDefinitions.IsUnlocked(selectedAbyssGrade_, game.level) then
+        selectedAbyssGrade_ = "rift"
+        selected = AbyssDefinitions.Get(selectedAbyssGrade_)
+    end
+
+    local selectedView = nil
+    local gradeCards = {}
+    for _, item in ipairs(view.grades or {}) do
+        if item.id == selectedAbyssGrade_ then selectedView = item end
+        local gradeId = item.id
+        local active = gradeId == selectedAbyssGrade_
+        local recommended = item.recommendedPower or AbyssDefinitions.RecommendedPower(game.level, gradeId)
+        local powerOk = BigNumber.Compare(PlayerPower(game), recommended) >= 0
+        gradeCards[#gradeCards + 1] = UI.Panel {
+            width = 280,
+            height = 338,
+            flexShrink = 0,
+            padding = 14,
+            gap = 6,
+            clickable = item.unlocked == true,
+            opacity = item.unlocked and 1.0 or 0.48,
+            backgroundColor = SURFACE_DARK,
+            borderWidth = active and 4 or 2,
+            borderColor = active and item.color or C.border,
+            boxShadow = active and {
+                color = { item.color[1], item.color[2], item.color[3], 100 },
+                offsetX = 6,
+                offsetY = 6,
+                blurRadius = 0,
+            } or nil,
+            onClick = function()
+                if item.unlocked then
+                    selectedAbyssGrade_ = gradeId
+                    ActivityController.Refresh()
+                end
+            end,
+            children = {
+                UI.Panel {
+                    width = "100%",
+                    height = 132,
+                    flexShrink = 0,
+                    alignItems = "center",
+                    children = {
+                        AbyssPresentation.BuildPillar(gradeId, { width = 92, height = 132, fontSize = 13 }),
+                    },
+                },
+                Kit.Txt(item.name, 20, item.color, {
+                    width = "100%", height = 30, textAlign = "center",
+                    textStroke = { width = 2, color = "#000000" },
+                }),
+                TicketCostRow(item.ticketCost, C.gold),
+                Kit.CompactTxt(
+                    "推荐战力 " .. Kit.FormatInt(recommended),
+                    15,
+                    powerOk and C.success or C.error,
+                    { width = "100%", height = 24, textAlign = "center" }
+                ),
+                Kit.CompactTxt("装备掉率 " .. tostring(math.floor(item.dropChance * 100)) .. "%", 14, C.textSecondary, {
+                    width = "100%", height = 22, textAlign = "center",
+                }),
+                Kit.CompactTxt(
+                    item.unlocked and ("×" .. tostring(item.multiplier) .. " 已解锁")
+                        or ("Lv." .. tostring(item.minLevel) .. " 解锁"),
+                    14,
+                    item.unlocked and C.success or C.textDim,
+                    { width = "100%", height = 22, textAlign = "center" }
+                ),
+            },
+        }
+    end
+    selectedView = selectedView or view.grades[1]
+    local canAfford = selectedView and view.tickets >= selectedView.ticketCost
+    local canEnter = selectedView and selectedView.unlocked and canAfford
+
+    local function EnterAbyssBoss()
+        if not selectedView then return end
+        if not canAfford then
+            Toast("深渊票不足，需要 " .. tostring(selectedView.ticketCost) .. " 张", "warning")
+            return
+        end
+        ActivityController.BeginAbyssBoss(selectedView.id, function(response)
+            if response and response.ok then
+                sceneMode_ = "boss"
+                bossActive_ = true
+                bossRemaining_ = ChallengeDefinitions.BOSS.DURATION
+                strikeAttackTime_ = 0
+                strikeLastDamage_ = 0
+                currentStrikeAttackFrames_ = nil
+                strikeWindup_ = 0
+                strikeRecovery_ = 0
+                strikeHitFrame_ = 1
+                strikeEndFrame_ = 1
+                strikeSequenceIndex_ = 0
+                damageLabels_ = {}
+                strikeRefs_ = {}
+                ActivityController.Refresh()
+            else
+                Toast((response and response.reason) or "深渊 Boss 开启失败", "warning")
+            end
+        end)
+    end
+
+    local exclusive = game.rewardClaims and game.rewardClaims.exclusive or {}
+    local dayKey = math.floor((ServerClock.Now() + 8 * 60 * 60) / (24 * 60 * 60))
+    local dailyUsed = exclusive.dailyDayKey == dayKey
+        and math.max(0, math.floor(tonumber(exclusive.dailyClaimed) or 0))
+        or 0
+    local dailyLimit = view.dailyAdLimit or AbyssDefinitions.DAILY_AD_TICKET_LIMIT
+    local dailyTickets = view.dailyAdTickets or AbyssDefinitions.DailyAdTickets(game.level)
+    local dailyFull = dailyUsed >= dailyLimit
+
+    return UI.Panel {
+        width = "100%",
+        flexShrink = 0,
+        padding = 22,
+        gap = 16,
+        backgroundImage = ASSETS.ui.panelLarge,
+        backgroundFit = "sliced",
+        backgroundSlice = { 12, 12, 12, 12 },
+        backgroundColor = SURFACE,
+        borderWidth = 3,
+        borderColor = selectedView and selectedView.color or C.focus,
+        children = {
+            UI.Panel {
+                width = "100%", flexShrink = 0, flexDirection = "row", alignItems = "center",
+                children = {
+                    UI.Panel { flexGrow = 1, flexBasis = 0, gap = 4, children = {
+                        UI.Panel {
+                            width = "100%", height = 42, flexShrink = 0,
+                            flexDirection = "row", alignItems = "center",
+                            children = {
+                                Kit.Txt("深渊模式", 30, C.text, {
+                                    flexGrow = 1, flexBasis = 0, height = 42, textAlign = "left",
+                                    textStroke = { width = 3, color = "#000000" },
+                                }),
+                                UI.Panel {
+                                    width = 42, height = 42, flexShrink = 0,
+                                    clickable = true,
+                                    alignItems = "center", justifyContent = "center",
+                                    backgroundColor = { 8, 24, 56, 220 },
+                                    borderWidth = 2, borderColor = C.focus, borderRadius = 21,
+                                    onClick = function() ShowAbyssRules(view, game) end,
+                                    children = {
+                                        Kit.Txt("?", 26, C.focus, {
+                                            width = 42, height = 42, textAlign = "center",
+                                            textStroke = { width = 2, color = "#000000" },
+                                            pointerEvents = "none",
+                                        }),
+                                    },
+                                },
+                            },
+                        },
+                        UI.Panel {
+                            width = "100%", height = 30, flexShrink = 0,
+                            flexDirection = "row", alignItems = "center", gap = 8,
+                            children = {
+                                UI.Panel {
+                                    width = 28, height = 28, flexShrink = 0,
+                                    backgroundImage = AbyssDefinitions.ICON,
+                                    backgroundFit = "contain",
+                                    pointerEvents = "none",
+                                },
+                                Kit.CompactTxt(
+                                    tostring(view.tickets)
+                                        .. "    保底 " .. tostring(view.dryStreak) .. "/"
+                                        .. tostring(math.max(1, view.guaranteeAt - 1)),
+                                    18,
+                                    C.gold,
+                                    { flexGrow = 1, flexBasis = 0, height = 30, textAlign = "left" }
+                                ),
+                            },
+                        },
+                    } },
+                },
+            },
+            UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                flexDirection = "row",
+                justifyContent = "center",
+                gap = 16,
+                children = gradeCards,
+            },
+            UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                flexDirection = "row",
+                justifyContent = "space-between",
+                alignItems = "center",
+                gap = 12,
+                children = {
+                    Kit.ImageButton(
+                        dailyFull
+                            and ("补给已满 " .. tostring(dailyUsed) .. "/" .. tostring(dailyLimit))
+                            or ("看广告补给 +" .. tostring(dailyTickets)
+                                .. "  " .. tostring(dailyUsed) .. "/" .. tostring(dailyLimit)),
+                        360,
+                        64,
+                        dailyFull and ASSETS.ui.buttonBlueWide or ASSETS.ui.inventoryActionGold,
+                        function()
+                            RewardClaimController.ClaimExclusiveGift("daily")
+                        end,
+                        dailyFull
+                    ),
+                    UI.Panel {
+                        flexGrow = 1, flexBasis = 0, height = 64,
+                        flexDirection = "row", justifyContent = "flex-end",
+                        alignItems = "center", gap = 10,
+                        children = {
+                            TicketCostRow(selectedView.ticketCost, selectedView.color, 110),
+                            Kit.ImageButton(
+                                "挑战 Boss",
+                                220,
+                                64,
+                                canEnter and ASSETS.ui.inventoryActionGold or ASSETS.ui.buttonBlueWide,
+                                EnterAbyssBoss,
+                                not canEnter
+                            ),
+                        },
+                    },
+                },
             },
         },
     }
@@ -452,14 +782,7 @@ local function HotActivityCards()
             require("client.NavigationController").SwitchPage("wish")
         end,
     }
-    -- 深渊远征：4人数据团本，待开放
-    cards[#cards + 1] = HotActivityCard {
-        title = "深渊远征",
-        desc = "4人数据团本 · 高爆率掉落",
-        opened = false,
-        icon = ASSETS.ui.activityExpedition,
-        onClick = function() Toast("深渊远征筹备中，敬请期待", "info") end,
-    }
+    cards[#cards + 1] = AbyssActivityCard()
     -- PVP 竞技场：玩家对战，待后续开放
     cards[#cards + 1] = HotActivityCard {
         title = "PVP 竞技场",
@@ -503,14 +826,16 @@ local function UpdateDamageTexts(dt)
     end
 end
 
--- ===== 打桩场景（固定站位，玩家自动攻击木桩） =====
-local function BuildStrikeScene(item)
+-- ===== 打桩 / Boss 场景（固定站位，玩家自动攻击） =====
+local function BuildStrikeScene(item, mode)
+    mode = mode or "strike"
+    local isBoss = mode == "boss"
     local width, height = 1080, 1560
     -- 角色与木桩整体居中：木桩在画面中央，角色在其左侧面向木桩
     local playerX, playerY = 170, 900
     local stumpX, stumpY = 390, 880
-    local stumpSize = 300
-    local stumpImage = StumpImage(item.rewardKind)
+    local stumpSize = isBoss and 360 or 300
+    local stumpImage = isBoss and ASSETS.enemies.boss or StumpImage(item.rewardKind)
 
     ---@type table[]
     local sceneChildren = {
@@ -541,28 +866,41 @@ local function BuildStrikeScene(item)
     }
     sceneChildren[#sceneChildren + 1] = slash
 
-    local countdown = Kit.CompactTxt(string.format("剩余 %d 秒", math.max(1, math.ceil(strikeRemaining_))), 32, C.focus, {
+    local remaining = isBoss and bossRemaining_ or strikeRemaining_
+    local countdown = Kit.CompactTxt(string.format("剩余 %d 秒", math.max(1, math.ceil(remaining))), 32, C.focus, {
         position = "absolute", left = 0, top = 48, width = width, height = 48, textAlign = "center",
         textStroke = { width = 3, color = "#000000" },
     })
-    local damageLabel = Kit.CompactTxt("累计伤害 " .. tostring(item.sessionDamage or 0), 26, C.gold, {
+    local damageText = isBoss
+        and ("Boss 血量 " .. tostring(item.sessionHp or item.sessionMaxHp or 0)
+            .. " / " .. tostring(item.sessionMaxHp or 0))
+        or ("累计伤害 " .. tostring(item.sessionDamage or 0))
+    local damageLabel = Kit.CompactTxt(damageText, 26, C.gold, {
         position = "absolute", left = 0, top = 104, width = width, height = 42, textAlign = "center",
         textStroke = { width = 2, color = "#000000" },
     })
-    local targetDamage = 2400
-    local ratio = math.max(0, math.min(1, (item.sessionDamage or 0) / targetDamage))
+    local targetDamage = isBoss and math.max(1, item.sessionMaxHp or 1) or 2400
+    local currentValue = isBoss
+        and math.max(0, (item.sessionMaxHp or 0) - (item.sessionHp or 0))
+        or (item.sessionDamage or 0)
+    local ratio = math.max(0, math.min(1, currentValue / targetDamage))
     local damageFill = UI.Panel {
         position = "absolute", left = 0, top = 0, width = math.floor(796 * ratio), height = 22,
-        backgroundColor = C.gold, pointerEvents = "none",
+        backgroundColor = isBoss and { 255, 90, 100, 255 } or C.gold, pointerEvents = "none",
     }
     local damageTrack = UI.Panel {
         position = "absolute", left = 142, top = 156, width = 796, height = 26,
         backgroundColor = { 8, 20, 40, 255 }, borderWidth = 2, borderColor = { 10, 16, 32, 255 },
         overflow = "hidden", children = { damageFill },
     }
-    local tip = Kit.CompactTxt("限时攻击木桩，伤害越高奖励越高", 18, C.textSecondary, {
-        position = "absolute", left = 0, top = 196, width = width, height = 32, textAlign = "center",
-    })
+    local tip = Kit.CompactTxt(
+        isBoss and "限时击杀深渊 Boss，伤害计入 Boss 榜" or "限时攻击木桩，伤害越高奖励越高，并计入伤害榜",
+        18,
+        C.textSecondary,
+        {
+            position = "absolute", left = 0, top = 196, width = width, height = 32, textAlign = "center",
+        }
+    )
     sceneChildren[#sceneChildren + 1] = countdown
     sceneChildren[#sceneChildren + 1] = damageLabel
     sceneChildren[#sceneChildren + 1] = damageTrack
@@ -658,7 +996,11 @@ local function UpdateAttack(dt)
         -- 命中帧：触发一次伤害（服务端按玩家属性计算，飘字随权威结算显示）
         if not strikeHitTriggered_ and t >= windup then
             strikeHitTriggered_ = true
-            if strikeId_ then ActivityController.Strike(strikeId_) end
+            if sceneMode_ == "boss" then
+                ActivityController.StrikeAbyssBoss()
+            elseif strikeId_ then
+                ActivityController.Strike(strikeId_)
+            end
         end
         if t >= windup + recovery then
             -- 动画播完：保持收招帧短暂停留，避免切换闪帧
@@ -676,8 +1018,63 @@ local function UpdateAttack(dt)
     end
 end
 
+local function ResetScene()
+    strikeId_ = nil
+    strikeRemaining_ = 0
+    strikeTimer_ = 0
+    strikeAttackTime_ = 0
+    currentStrikeAttackFrames_ = nil
+    damageLabels_ = {}
+    strikeRefs_ = {}
+    bossActive_ = false
+    bossRemaining_ = 0
+    bossLastHp_ = 0
+    sceneMode_ = "strike"
+end
+
+local function FinishBossScene()
+    if not bossActive_ then return end
+    ResetScene()
+    ActivityController.FinishAbyssBoss(function()
+        require("client.ServerClient").RequestSnapshot()
+    end)
+end
+
 -- ===== 每帧更新：自动攻击 + 伤害检测 + 倒计时 + 动画 =====
 function ActivityView.Update(dt)
+    if bossActive_ then
+        local game = GameStateAdapter.GetViewState()
+        local challenge = game.challengesView or ChallengeDefinitions.BuildView(game)
+        if not challenge.sessionActive then
+            ResetScene()
+            return
+        end
+        UpdateAttack(dt)
+        local hp = challenge.sessionHp or 0
+        local maxHp = math.max(1, challenge.sessionMaxHp or 1)
+        local damage = challenge.sessionDamage or 0
+        if hp < bossLastHp_ or damage > strikeLastDamage_ then
+            bossLastHp_ = hp
+            strikeLastDamage_ = damage
+            if strikeRefs_.damageLabel then
+                strikeRefs_.damageLabel:SetText("Boss 血量 " .. tostring(hp) .. " / " .. tostring(maxHp))
+            end
+            if strikeRefs_.damageFill then
+                local ratio = math.max(0, math.min(1, (maxHp - hp) / maxHp))
+                strikeRefs_.damageFill:SetStyle({ width = math.floor(796 * ratio) })
+            end
+        end
+        UpdateDamageTexts(dt)
+        bossRemaining_ = math.max(0, bossRemaining_ - (dt or 0))
+        if strikeRefs_.countdown then
+            strikeRefs_.countdown:SetText(string.format("剩余 %d 秒", math.max(1, math.ceil(bossRemaining_))))
+        end
+        if hp <= 0 or bossRemaining_ <= 0 then
+            FinishBossScene()
+        end
+        return
+    end
+
     if not strikeId_ then return end
     local game = GameStateAdapter.GetViewState()
     local view = game.activitiesView
@@ -708,13 +1105,7 @@ function ActivityView.Update(dt)
     end
     if strikeRemaining_ <= 0 then
         local id = strikeId_
-        strikeId_ = nil
-        strikeRemaining_ = 0
-        strikeTimer_ = 0
-        strikeAttackTime_ = 0
-        currentStrikeAttackFrames_ = nil
-        damageLabels_ = {}
-        strikeRefs_ = {}
+        ResetScene()
         ActivityController.FinishStrike(id, function()
             -- 打桩结束后强制同步活动状态（次数/会话），确保按钮态正确
             require("client.ServerClient").RequestSnapshot()
@@ -751,6 +1142,52 @@ end
 
 function ActivityView.BuildPage()
     local view = CurrentView()
+    if not bossActive_ then
+        local game = GameStateAdapter.GetViewState()
+        local leftover = game.challengesView or ChallengeDefinitions.BuildView(game)
+        if leftover.sessionActive then
+            sceneMode_ = "boss"
+            bossActive_ = true
+            bossRemaining_ = leftover.remaining or leftover.duration or ChallengeDefinitions.BOSS.DURATION
+        end
+    end
+
+    if bossActive_ then
+        local game = GameStateAdapter.GetViewState()
+        local challenge = game.challengesView or ChallengeDefinitions.BuildView(game)
+        if not challenge.sessionActive then
+            ResetScene()
+        else
+            bossLastHp_ = challenge.sessionHp or challenge.sessionMaxHp or 0
+            return UI.Panel {
+                width = "100%", height = "100%", flexShrink = 0, position = "relative",
+                children = {
+                    BuildStrikeScene(challenge, "boss"),
+                    Kit.BackButton {
+                        left = 20, top = 20, width = 110, height = 64, fontSize = 24,
+                        onClick = function()
+                            CommonPromptDialog.Show {
+                                kind = "confirm",
+                                priority = 1250,
+                                queueKey = "boss_exit_confirm",
+                                title = "退出深渊 Boss",
+                                message = "退出后本次深渊票不返还，确定退出？",
+                                lines = { "未击杀只发放少量碎片，已造成伤害仍会计入 Boss 榜。" },
+                                closeOnOverlay = false,
+                                showClose = false,
+                                confirmText = "确认退出",
+                                cancelText = "继续挑战",
+                                onConfirm = function()
+                                    FinishBossScene()
+                                    ActivityController.Refresh()
+                                end,
+                            }
+                        end,
+                    },
+                },
+            }
+        end
+    end
 
     if strikeId_ then
         local active = nil
@@ -761,7 +1198,7 @@ function ActivityView.BuildPage()
             return UI.Panel {
                 width = "100%", height = "100%", flexShrink = 0, position = "relative",
                 children = {
-                    BuildStrikeScene(active),
+                    BuildStrikeScene(active, "strike"),
                     Kit.BackButton {
                         left = 20, top = 20, width = 110, height = 64, fontSize = 24,
                         onClick = function()
@@ -771,20 +1208,15 @@ function ActivityView.BuildPage()
                                 queueKey = "strike_exit_confirm",
                                 title = "退出打桩",
                                 message = "退出后本次打桩次数不返还，确定退出？",
-                                lines = { "本次已造成的伤害会按实际结算，次数不会返还。" },
+                                lines = { "本次已造成的伤害会按实际结算，并计入伤害榜。" },
                                 closeOnOverlay = false,
                                 showClose = false,
                                 confirmText = "确认退出",
                                 cancelText = "继续打桩",
                                 onConfirm = function()
-                                    strikeId_ = nil
-                                    strikeRemaining_ = 0
-                                    strikeTimer_ = 0
-                                    strikeAttackTime_ = 0
-                                    currentStrikeAttackFrames_ = nil
-                                    damageLabels_ = {}
-                                    strikeRefs_ = {}
-                                    ActivityController.FinishStrike(active.id, function()
+                                    local id = active.id
+                                    ResetScene()
+                                    ActivityController.FinishStrike(id, function()
                                         require("client.ServerClient").RequestSnapshot()
                                     end)
                                     ActivityController.Refresh()

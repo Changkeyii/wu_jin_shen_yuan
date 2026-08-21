@@ -678,16 +678,36 @@ function GameCommands.Register(router, services)
 
     router:Register({
         name = "Leaderboard.GetTop",
-        schema = EMPTY_SCHEMA,
+        schema = {
+            type = "object",
+            allowUnknown = false,
+            fields = {
+                board = { type = "string", enum = { "power", "damage", "boss" } },
+            },
+        },
         rate = ServerConfig.RATES.Leaderboard,
         serialized = false,
-        handler = function(context)
-            local service = services.leaderboardService
+        handler = function(context, payload)
+            payload = payload or {}
+            local board = payload.board or "power"
+            local service
+            if board == "damage" then
+                service = services.damageLeaderboardService
+            elseif board == "boss" then
+                service = services.bossLeaderboardService
+            else
+                service = services.leaderboardService
+            end
             if not service then
                 return false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" }
             end
             local list, selfRank = service:GetTop(context.uid)
-            return { list = list, selfRank = selfRank, total = service:Count() }
+            return {
+                list = list,
+                selfRank = selfRank,
+                total = service:Count(),
+                board = board,
+            }
         end,
     })
 

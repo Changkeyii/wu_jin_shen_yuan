@@ -31,7 +31,14 @@ local function BuildLoopDays()
             fragments = fragments * 2
             expScenes = expScenes * 2
         end
-        days[i] = { day = i, reward = { goldScenes = goldScenes, fragments = fragments, expScenes = expScenes } }
+        days[i] = { day = i, reward = {
+            goldScenes = goldScenes,
+            fragments = fragments,
+            expScenes = expScenes,
+            abyssTickets = 20
+                + (i % 7 == 0 and 20 or 0)
+                + (i == 30 and 60 or 0),
+        } }
     end
     return days
 end
@@ -42,13 +49,13 @@ local T = {
         title = "新手七日签到", desc = "每日签到领好礼，累计 7 天",
         loopDays = 7, once = true,
         days = {
-            { day = 1, reward = { goldScenes = 10, fragments = 20, expScenes = 5 } },
-            { day = 2, reward = { goldScenes = 15, fragments = 25, expScenes = 6 } },
-            { day = 3, reward = { goldScenes = 20, fragments = 30, expScenes = 8 } },
-            { day = 4, reward = { goldScenes = 25, fragments = 40, expScenes = 10 } },
-            { day = 5, reward = { goldScenes = 30, fragments = 50, expScenes = 12 } },
-            { day = 6, reward = { goldScenes = 40, fragments = 60, expScenes = 15 } },
-            { day = 7, reward = { goldScenes = 60, fragments = 100, expScenes = 30 } },
+            { day = 1, reward = { goldScenes = 10, fragments = 20, expScenes = 5, abyssTickets = 40 } },
+            { day = 2, reward = { goldScenes = 15, fragments = 25, expScenes = 6, abyssTickets = 20 } },
+            { day = 3, reward = { goldScenes = 20, fragments = 30, expScenes = 8, abyssTickets = 20 } },
+            { day = 4, reward = { goldScenes = 25, fragments = 40, expScenes = 10, abyssTickets = 40 } },
+            { day = 5, reward = { goldScenes = 30, fragments = 50, expScenes = 12, abyssTickets = 20 } },
+            { day = 6, reward = { goldScenes = 40, fragments = 60, expScenes = 15, abyssTickets = 20 } },
+            { day = 7, reward = { goldScenes = 60, fragments = 100, expScenes = 30, abyssTickets = 80 } },
         },
     },
     act_signin_loop_30 = {

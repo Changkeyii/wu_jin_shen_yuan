@@ -9,6 +9,9 @@ local RarityCatalog = require("shared.RarityCatalog")
 local StoryCatalog = require("shared.StoryCatalog")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
+local RewardClaimDefinitions = require("shared.RewardClaimDefinitions")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 
 local StateNormalizer = {}
 
@@ -444,6 +447,7 @@ end
 local QUEST_COUNTER_METRICS = {
     "monster_kill", "elite_kill", "boss_kill",
     "item_pickup", "chest_open", "decompose", "sell", "floor_advance",
+    "abyss_run",
 }
 
 local function sanitizeQuestCounters(value)
@@ -554,6 +558,183 @@ local function sanitizeWishPool(value)
         ownedCharacters = ownedCharacters,
         characterMarks = characterMarks,
         lastWishAt = math.max(0, TableUtils.ToInteger(value.lastWishAt, 0)),
+    }
+end
+
+local function sanitizeAbyss(value)
+    local supplied = type(value) == "table"
+    value = supplied and value or {}
+    local highestGrade = AbyssDefinitions.IsKnownGrade(value.highestGrade)
+        and value.highestGrade or "rift"
+    local currentRandom = nil
+    local rawCurrent = type(value.currentRandom) == "table" and value.currentRandom or nil
+    if rawCurrent
+        and type(rawCurrent.runId) == "string"
+        and #rawCurrent.runId >= 1
+        and #rawCurrent.runId <= 96
+        and rawCurrent.runId:match("^[%w%._:%-]+$")
+        and AbyssDefinitions.IsKnownGrade(rawCurrent.gradeId)
+    then
+        currentRandom = {
+            runId = rawCurrent.runId,
+            gradeId = rawCurrent.gradeId,
+            source = "random",
+            floor = clampInteger(rawCurrent.floor, 1, 1000000000, 1),
+            createdAt = math.max(0, TableUtils.ToInteger(rawCurrent.createdAt, 0)),
+        }
+    end
+    return {
+        tickets = math.max(0, TableUtils.ToInteger(
+            value.tickets,
+            supplied and 0 or AbyssDefinitions.STARTER_TICKETS
+        )),
+        dryStreak = clampInteger(
+            value.dryStreak,
+            0,
+            AbyssDefinitions.HARD_PITY_ATTEMPT - 1,
+            0
+        ),
+        activeRuns = math.max(0, TableUtils.ToInteger(value.activeRuns, 0)),
+        randomRuns = math.max(0, TableUtils.ToInteger(value.randomRuns, 0)),
+        equipmentDrops = math.max(0, TableUtils.ToInteger(value.equipmentDrops, 0)),
+        highestGrade = highestGrade,
+        randomCooldownBattles = clampInteger(
+            value.randomCooldownBattles,
+            0,
+            1000000,
+            0
+        ),
+        currentRandom = currentRandom,
+    }
+end
+
+local function sanitizeChallenges(value)
+    value = type(value) == "table" and value or {}
+    local session = nil
+    local rawSession = type(value.bossSession) == "table" and value.bossSession or nil
+    if rawSession
+        and type(rawSession.runId) == "string"
+        and #rawSession.runId >= 1
+        and #rawSession.runId <= 96
+        and rawSession.runId:match("^[%w%._:%-]+$")
+        and AbyssDefinitions.IsKnownGrade(rawSession.gradeId)
+        and rawSession.finished ~= true
+    then
+        session = {
+            runId = rawSession.runId,
+            gradeId = rawSession.gradeId,
+            ticketCost = math.max(0, TableUtils.ToInteger(rawSession.ticketCost, 0)),
+            startedAt = math.max(0, TableUtils.ToInteger(rawSession.startedAt, 0)),
+            lastHitAt = 0,
+            damage = ChallengeDefinitions.ClampScore(rawSession.damage),
+            hp = ChallengeDefinitions.ClampScore(rawSession.hp),
+            maxHp = math.max(1, ChallengeDefinitions.ClampScore(rawSession.maxHp)),
+            finished = false,
+        }
+    end
+    return {
+        bestStrikeDamage = ChallengeDefinitions.ClampScore(value.bestStrikeDamage),
+        lastStrikeDamage = ChallengeDefinitions.ClampScore(value.lastStrikeDamage),
+        lastStrikeAt = math.max(0, TableUtils.ToInteger(value.lastStrikeAt, 0)),
+        bestBossDamage = ChallengeDefinitions.ClampScore(value.bestBossDamage),
+        lastBossDamage = ChallengeDefinitions.ClampScore(value.lastBossDamage),
+        lastBossAt = math.max(0, TableUtils.ToInteger(value.lastBossAt, 0)),
+        lastBossGrade = AbyssDefinitions.IsKnownGrade(value.lastBossGrade)
+            and value.lastBossGrade or "rift",
+        lastBossKilled = value.lastBossKilled == true,
+        bossRuns = math.max(0, TableUtils.ToInteger(value.bossRuns, 0)),
+        bossKills = math.max(0, TableUtils.ToInteger(value.bossKills, 0)),
+        bossSession = session,
+    }
+end
+
+local function sanitizeRewardResource(value)
+    value = type(value) == "table" and value or {}
+    return {
+        gold = LargeNumber.Normalize(value.gold or LargeNumber.Zero()),
+        exp = clampInteger(value.exp, 0, RewardClaimDefinitions.MAX_REWARD_AMOUNT, 0),
+        fragments = clampInteger(value.fragments, 0, RewardClaimDefinitions.MAX_REWARD_AMOUNT, 0),
+        abyssTickets = clampInteger(value.abyssTickets, 0, RewardClaimDefinitions.MAX_REWARD_AMOUNT, 0),
+    }
+end
+
+local function sanitizeRewardMeta(value)
+    value = type(value) == "table" and value or {}
+    local result = {}
+    if type(value.activityId) == "string" then
+        result.activityId = value.activityId:sub(1, 96)
+    end
+    if value.day ~= nil then result.day = clampInteger(value.day, 1, 1000000, 1) end
+    if value.level ~= nil then result.level = clampInteger(value.level, 1, 1000000, 1) end
+    if value.floor ~= nil then result.floor = clampInteger(value.floor, 1, 1000000000, 1) end
+    if type(value.runId) == "string" then result.runId = value.runId:sub(1, 96) end
+    if AbyssDefinitions.IsKnownGrade(value.gradeId) then result.gradeId = value.gradeId end
+    if value.abyssSource == "activity"
+        or value.abyssSource == "random"
+        or value.abyssSource == "boss"
+    then
+        result.abyssSource = value.abyssSource
+    end
+    if value.processedSeconds ~= nil then
+        result.processedSeconds = math.max(0, TableUtils.ToInteger(value.processedSeconds, 0))
+    end
+    return result
+end
+
+local function sanitizeRewardClaims(value)
+    value = type(value) == "table" and value or {}
+    local pending = {}
+    local seenIds = {}
+    local seenKeys = {}
+    for _, raw in ipairs(type(value.pending) == "table" and value.pending or {}) do
+        local id = type(raw.id) == "string" and raw.id or ""
+        local sourceKey = type(raw.sourceKey) == "string" and raw.sourceKey or ""
+        if #pending < RewardClaimDefinitions.MAX_PENDING
+            and id:match("^[%w%._:%-]+$")
+            and #id <= 96
+            and sourceKey:match("^[%w%._:%-]+$")
+            and #sourceKey <= 128
+            and RewardClaimDefinitions.IsKnownSource(raw.source)
+            and not seenIds[id]
+            and not seenKeys[sourceKey]
+        then
+            pending[#pending + 1] = {
+                id = id,
+                source = raw.source,
+                sourceKey = sourceKey,
+                createdAt = math.max(0, TableUtils.ToInteger(raw.createdAt, 0)),
+                expiresAt = math.max(0, TableUtils.ToInteger(raw.expiresAt, 0)),
+                baseReward = sanitizeRewardResource(raw.baseReward),
+                extraReward = sanitizeRewardResource(raw.extraReward),
+                meta = sanitizeRewardMeta(raw.meta),
+            }
+            seenIds[id] = true
+            seenKeys[sourceKey] = true
+        end
+    end
+    local rawExclusive = type(value.exclusive) == "table" and value.exclusive or {}
+    local levelClaimed = {}
+    for level, claimed in pairs(type(rawExclusive.levelClaimed) == "table" and rawExclusive.levelClaimed or {}) do
+        if claimed == true and tostring(level):match("^%d+$") then
+            levelClaimed[tostring(level)] = true
+        end
+    end
+    return {
+        nextId = math.max(1, TableUtils.ToInteger(value.nextId, 1)),
+        pending = pending,
+        exclusive = {
+            dailyDayKey = math.max(0, TableUtils.ToInteger(rawExclusive.dailyDayKey, 0)),
+            dailyClaimed = math.max(0, math.min(
+                AbyssDefinitions.DAILY_AD_TICKET_LIMIT,
+                TableUtils.ToInteger(
+                    rawExclusive.dailyClaimed == true and 1 or rawExclusive.dailyClaimed,
+                    0
+                )
+            )),
+            weeklyWeekKey = math.max(0, TableUtils.ToInteger(rawExclusive.weeklyWeekKey, 0)),
+            weeklyClaimed = rawExclusive.weeklyClaimed == true,
+            levelClaimed = levelClaimed,
+        },
     }
 end
 
@@ -711,6 +892,9 @@ function StateNormalizer.Normalize(rawState, now)
         quests = sanitizeQuests(rawState.quests),
         activities = sanitizeActivities(rawState.activities),
         wishPool = sanitizeWishPool(rawState.wishPool),
+        abyss = sanitizeAbyss(rawState.abyss),
+        rewardClaims = sanitizeRewardClaims(rawState.rewardClaims),
+        challenges = sanitizeChallenges(rawState.challenges),
         tutorial = sanitizeTutorial(rawState.tutorial),
     }
 
@@ -784,7 +968,22 @@ function StateNormalizer.Normalize(rawState, now)
                 enraged = rawMonster.enraged == true,
                 nextMonsterAttackSeconds = clampNumber(rawMonster.nextMonsterAttackSeconds, 0, 60, Catalog.ENEMY_ATTACK_SECONDS),
                 isChapterBoss = encounter == "chapterBoss",
+                abyssRunId = type(rawMonster.abyssRunId) == "string"
+                    and rawMonster.abyssRunId:match("^[%w%._:%-]+$")
+                    and #rawMonster.abyssRunId <= 96
+                    and rawMonster.abyssRunId or nil,
+                abyssGradeId = AbyssDefinitions.IsKnownGrade(rawMonster.abyssGradeId)
+                    and rawMonster.abyssGradeId or nil,
+                abyssSource = rawMonster.abyssSource == "random" and "random" or nil,
             }
+            if not state.currentMonster.abyssRunId
+                or not state.currentMonster.abyssGradeId
+                or state.currentMonster.abyssSource ~= "random"
+            then
+                state.currentMonster.abyssRunId = nil
+                state.currentMonster.abyssGradeId = nil
+                state.currentMonster.abyssSource = nil
+            end
         end
     end
 

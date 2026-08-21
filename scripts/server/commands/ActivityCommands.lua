@@ -37,13 +37,16 @@ local function MutationResponse(result)
     }
 end
 
-local function AsyncMutation(services, operationName, mutator)
+local function AsyncMutation(services, operationName, mutator, afterSuccess)
     return function(context, payload, done)
         services.profileService:Apply(context.uid, operationName, function(state, now)
             return mutator(state, payload, now)
         end, function(result)
             if result.ok and result.data.delta then
                 services.sendDelta(context.uid, result.data.delta)
+            end
+            if result.ok and afterSuccess then
+                afterSuccess(context.uid, result)
             end
             local response = MutationResponse(result)
             done(response.ok, response)
@@ -71,13 +74,26 @@ function ActivityCommands.Register(router, services)
         end),
     })
 
+    local function AfterStrikeSettled(userId, result)
+        if not result or not result.ok then return end
+        local events = result.data and result.data.delta and result.data.delta.events or {}
+        for _, event in ipairs(events) do
+            if (event.kind or event.type) == "activity_claimed"
+                and services.refreshDamageLeaderboard
+            then
+                services.refreshDamageLeaderboard(userId)
+                return
+            end
+        end
+    end
+
     router:Register({
         name = "Activity.BeginStrike",
         schema = ACTIVITY_PAYLOAD_SCHEMA,
         rate = ServerConfig.RATES.Progression,
         handler = AsyncMutation(services, "activity begin strike", function(state, payload, now)
             return ActivityEngine.BeginStrike(state, payload.activityId, now)
-        end),
+        end, AfterStrikeSettled),
     })
 
     -- 打桩攻击频率高（限流服务端 0.3s/次），给足余量。
@@ -87,16 +103,28 @@ function ActivityCommands.Register(router, services)
         rate = { refillRate = 8, burst = 12 },
         handler = AsyncMutation(services, "activity strike", function(state, payload, now)
             return ActivityEngine.Strike(state, payload.activityId, now)
-        end),
+        end, AfterStrikeSettled),
     })
 
     router:Register({
         name = "Activity.FinishStrike",
         schema = ACTIVITY_PAYLOAD_SCHEMA,
         rate = ServerConfig.RATES.Progression,
-        handler = AsyncMutation(services, "activity finish strike", function(state, payload, now)
-            return ActivityEngine.FinishStrike(state, payload.activityId, now)
-        end),
+        handler = function(context, payload, done)
+            services.profileService:Apply(context.uid, "activity finish strike", function(state, now)
+                return ActivityEngine.FinishStrike(state, payload.activityId, now)
+            end, function(result)
+                if result.ok and result.data.delta then
+                    services.sendDelta(context.uid, result.data.delta)
+                end
+                if result.ok and services.refreshDamageLeaderboard then
+                    services.refreshDamageLeaderboard(context.uid)
+                end
+                local response = MutationResponse(result)
+                done(response.ok, response)
+            end)
+            return CommandRouter.PENDING
+        end,
     })
 end
 

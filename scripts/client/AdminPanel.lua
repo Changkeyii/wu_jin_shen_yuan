@@ -60,6 +60,7 @@ local function GmItemOptions()
     if GM_ITEM_OPTIONS then return GM_ITEM_OPTIONS end
     GM_ITEM_OPTIONS = {}
     GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = "wish_ticket", name = "许愿券" }
+    GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = "abyss_ticket", name = "深渊票" }
     for _, cell in ipairs(WishPoolDefinitions.DISPLAY_CELLS) do
         if cell.kind ~= "character" then
             local itemId = WishPoolDefinitions.MakeJarId(cell.kind, cell.rarity, cell.slot, cell.setId)
@@ -81,7 +82,9 @@ local function ItemMatchesFilter(option)
     end
     local filter = itemFilterType_
     if filter == "all" then return true end
-    if filter == "wish_ticket" then return option.itemId == "wish_ticket" end
+    if filter == "wish_ticket" or filter == "abyss_ticket" then
+        return option.itemId == filter
+    end
     for _, cell in ipairs(WishPoolDefinitions.DISPLAY_CELLS) do
         if WishPoolDefinitions.MakeJarId(cell.kind, cell.rarity, cell.slot, cell.setId) == option.itemId then
             if filter == "random" then return cell.kind == "random" end
@@ -907,6 +910,7 @@ function AdminPanel.Build(UI, options)
                     options = {
                         { value = "all", label = "全部道具" },
                         { value = "wish_ticket", label = "许愿券" },
+                        { value = "abyss_ticket", label = "深渊票" },
                         { value = "random", label = "全随机罐" },
                         { value = "rarity", label = "品阶罐" },
                         { value = "slot", label = "部位罐" },

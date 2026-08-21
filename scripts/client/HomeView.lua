@@ -114,10 +114,10 @@ end
 
 -- 左侧入口栏单项：图标 + 底部文字，底板由整条入口栏统一提供。
 local function SideEntryItem(options)
-    local iconSize = options.iconSize or 68
-    local labelHeight = options.labelHeight or 24
+    local iconSize = options.iconSize or 56
+    local labelHeight = options.labelHeight or 28
     local width = options.width or 80
-    local height = options.height or 90
+    local height = options.height or 96
     return UI.Panel {
         id = options.id,
         width = width,
@@ -141,10 +141,10 @@ local function SideEntryItem(options)
                 backgroundFit = "contain",
                 pointerEvents = "none",
             },
-            Kit.Txt(options.label or "", options.labelSize or 20, options.labelColor or C.text, {
+            Kit.Txt(options.label or "", options.labelSize or 18, options.labelColor or C.text, {
                 position = "absolute",
                 left = 0,
-                top = iconSize - 2,
+                top = iconSize + 2,
                 width = width,
                 height = labelHeight,
                 textAlign = "center",
@@ -194,7 +194,7 @@ local function MailEntry(game)
             alignItems = "center",
             justifyContent = "center",
             shape = "circle",
-            overflow = "hidden",
+            overflow = "visible",
             backgroundColor = C.error,
             borderWidth = 2,
             borderColor = { 0, 0, 0, 120 },
@@ -356,7 +356,7 @@ function HomeView.Build(context)
     local sideEntryPadY = 8
     local sideEntryGap = 4
     local innerH = math.max(1, sideEntryBarH - sideEntryPadY * 2 - math.max(0, #sideEntries - 1) * sideEntryGap)
-    local sideEntryItemH = math.floor(innerH / math.max(1, #sideEntries))
+    local sideEntryItemH = math.max(96, math.floor(innerH / math.max(1, #sideEntries)))
     for _, entry in ipairs(sideEntries) do
         if entry then
             entry.props = entry.props or {}
@@ -377,7 +377,7 @@ function HomeView.Build(context)
             color = { 50, 170, 255, 80 },
             offsetX = 0, offsetY = 0, blurRadius = 12,
         },
-        overflow = "hidden",
+        overflow = "visible",
         children = {
             UI.ScrollView {
                 width = "100%",

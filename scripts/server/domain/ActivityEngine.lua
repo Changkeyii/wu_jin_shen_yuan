@@ -8,6 +8,8 @@ local CombatEngine = require("server.domain.CombatEngine")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
 local BigNumber = require("shared.BigNumber")
 local TowerRules = require("shared.TowerRules")
+local RewardClaimEngine = require("server.domain.RewardClaimEngine")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 
 local ActivityEngine = {}
 
@@ -111,6 +113,34 @@ function ActivityEngine.SignIn(inputState, activityId, now)
     record.lastClaimAt = now
     local events = {}
     local reward = QuestEngine.GrantReward(working, { reward = dayEntry.reward }, now, events)
+    local offer = RewardClaimEngine.CreateAdOffer(
+        working,
+        {
+            source = "signin",
+            sourceKey = string.format(
+                "signin:%s:%d",
+                activityId,
+                record.totalDays
+            ),
+            baseReward = reward,
+            meta = {
+                activityId = activityId,
+                day = dayIndex,
+            },
+        },
+        now
+    )
+    if offer then
+        events[#events + 1] = PlayerTransition.Event(
+            "reward_offer_pending",
+            {
+                rewardId = offer.id,
+                source = offer.source,
+                baseReward = offer.baseReward,
+                extraReward = offer.extraReward,
+            }
+        )
+    end
     events[#events + 1] = PlayerTransition.Event("activity_signed", {
         activityId = activityId,
         day = dayIndex,
@@ -237,10 +267,19 @@ function ActivityEngine.FinishStrike(inputState, activityId, now)
     end
     local events = {}
     local reward = tier and QuestEngine.GrantReward(working, { reward = tier.reward }, now, events) or nil
+    working.challenges = type(working.challenges) == "table"
+        and working.challenges or ChallengeDefinitions.NewState()
+    working.challenges.lastStrikeDamage = ChallengeDefinitions.ClampScore(damage)
+    working.challenges.lastStrikeAt = now
+    if working.challenges.lastStrikeDamage > (working.challenges.bestStrikeDamage or 0) then
+        working.challenges.bestStrikeDamage = working.challenges.lastStrikeDamage
+    end
     events[#events + 1] = PlayerTransition.Event("activity_claimed", {
         activityId = activityId,
         rewardKind = def.rewardKind,
         damage = damage,
+        bestDamage = working.challenges.bestStrikeDamage,
+        ranked = true,
         tier = tier and tier.minDamage or 0,
         reward = reward,
     })

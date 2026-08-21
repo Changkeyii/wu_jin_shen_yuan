@@ -5,6 +5,8 @@ local BigNumber = require("shared.BigNumber")
 local QuestDefinitions = require("shared.QuestDefinitions")
 local ActivityDefinitions = require("shared.ActivityDefinitions")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 local ServerClock = require("client.ServerClock")
 
 local GameStateAdapter = {}
@@ -330,7 +332,7 @@ end
 
 local function EmptyView()
     return {
-        schemaVersion = 7,
+        schemaVersion = 10,
         revision = 0,
         updatedAt = 0,
         floor = 1,
@@ -344,6 +346,9 @@ local function EmptyView()
             mythPity = 0, mythGuarantees = 0, characterPity = 0,
             ownedCharacters = { ember_blade = true }, characterMarks = {},
         },
+        abyss = AbyssDefinitions.NewState(),
+        rewardClaims = require("shared.RewardClaimDefinitions").NewState(),
+        challenges = ChallengeDefinitions.NewState(),
         exp = 0,
         nextExp = 100,
         gold = LargeNumber.Zero(),
@@ -478,6 +483,19 @@ local function RebuildView()
         }
     end
 
+    local abyssTickets = nextView.abyss and nextView.abyss.tickets or 0
+    if abyssTickets > 0 then
+        nextView.inventory[#nextView.inventory + 1] = {
+            id = "abyss_ticket",
+            name = "深渊票",
+            category = "consumable",
+            rarity = "epic",
+            quantity = abyssTickets,
+            icon = AbyssDefinitions.ICON,
+            desc = "活动页主动深渊的入场凭证；玩家等级每 10 级提高基础消耗。",
+        }
+    end
+
     -- 许愿池罐子是背包道具（可开启）：投影为 wishjar 分类道具。
     -- 服务端权威库存仍在 wishPool.jars，开罐命令由服务端校验扣除。
     local wishPoolJars = nextView.wishPool and nextView.wishPool.jars
@@ -538,6 +556,10 @@ local function RebuildView()
     local wishDayKey = WishPoolDefinitions.DayKey(ServerClock.Now())
     nextView.wishPool.displayAdUsed = nextView.wishPool.adDayKey == wishDayKey
         and (nextView.wishPool.adUsed or 0) or 0
+    nextView.abyss = nextView.abyss or AbyssDefinitions.NewState()
+    nextView.abyssView = AbyssDefinitions.BuildView(nextView)
+    nextView.challenges = nextView.challenges or ChallengeDefinitions.NewState()
+    nextView.challengesView = ChallengeDefinitions.BuildView(nextView, ServerClock.Now())
     -- 任务系统展示视图（进度/状态/奖励），服务端权威判定一致。
     nextView.questsView = QuestDefinitions.BuildView(nextView, ServerClock.DayKey(ServerClock.Now()))
     -- 活动系统展示视图（签到/木桩/次数/红点）。
@@ -596,6 +618,15 @@ function GameStateAdapter.ApplyDelta(delta)
     if changes.activities ~= nil then authoritative_.activities = DeepCopy(changes.activities); changes.activities = nil end
     if changes.quests ~= nil then authoritative_.quests = DeepCopy(changes.quests); changes.quests = nil end
     if changes.wishPool ~= nil then authoritative_.wishPool = DeepCopy(changes.wishPool); changes.wishPool = nil end
+    if changes.abyss ~= nil then authoritative_.abyss = DeepCopy(changes.abyss); changes.abyss = nil end
+    if changes.rewardClaims ~= nil then
+        authoritative_.rewardClaims = DeepCopy(changes.rewardClaims)
+        changes.rewardClaims = nil
+    end
+    if changes.challenges ~= nil then
+        authoritative_.challenges = DeepCopy(changes.challenges)
+        changes.challenges = nil
+    end
     Merge(authoritative_, changes)
     if delta.inventory ~= nil then authoritative_.inventory = ProjectInventory(delta.inventory) end
     if delta.consumables ~= nil then authoritative_.consumables = DeepCopy(delta.consumables) end

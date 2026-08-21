@@ -11,6 +11,7 @@ local DomainMath = require("server.domain.DomainMath")
 local InventoryState = require("server.domain.InventoryState")
 local EquipmentEngine = require("server.domain.EquipmentEngine")
 local QuestEngine = require("server.domain.QuestEngine")
+local RewardClaimEngine = require("server.domain.RewardClaimEngine")
 
 local RewardEngine = {}
 
@@ -37,6 +38,13 @@ local function addExp(state, amount, events)
             nextExp = state.nextExp,
             expGained = gained,
         })
+        RewardClaimEngine.GrantLevelMilestones(
+            state,
+            previousLevel,
+            state.level,
+            PlayerTransition.Now(),
+            events
+        )
     end
     return levelUps > 0
 end

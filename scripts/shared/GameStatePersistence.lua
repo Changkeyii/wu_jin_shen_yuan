@@ -1,5 +1,8 @@
 local RarityCatalog = require("shared.RarityCatalog")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
+local RewardClaimDefinitions = require("shared.RewardClaimDefinitions")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local Contracts = require("shared.GameStateContracts")
@@ -156,6 +159,16 @@ function Persistence.NewInitialState(now)
             ownedCharacters = { ember_blade = true },
             characterMarks = {},
         },
+        abyss = AbyssDefinitions.NewState(),
+        rewardClaims = RewardClaimDefinitions.NewState(),
+        challenges = ChallengeDefinitions.NewState(),
+        quests = {
+            newbie = { claimed = {} },
+            daily = { dayKey = 0, progress = {}, claimed = {} },
+            achievement = { claimed = {} },
+            questStats = {},
+        },
+        activities = {},
         storyProgress = { introCompleted = false, highestCompletedChapter = 0, contentVersion = 1 },
         pendingStoryGate = nil,
         pendingEvent = nil,

@@ -4,6 +4,8 @@ local Catalog = require("server.domain.Catalog")
 local LargeNumber = require("shared.LargeNumber")
 local QuestEngine = require("server.domain.QuestEngine")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
+local AbyssDefinitions = require("shared.AbyssDefinitions")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 
 local StateFactory = {}
 
@@ -99,6 +101,9 @@ function StateFactory.Create(now)
             ownedCharacters = { ember_blade = true },
             characterMarks = {},
         },
+        abyss = AbyssDefinitions.NewState(),
+        rewardClaims = require("shared.RewardClaimDefinitions").NewState(),
+        challenges = ChallengeDefinitions.NewState(),
         tutorial = { step = 1, completed = false },
     }, now)
 end

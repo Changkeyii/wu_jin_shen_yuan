@@ -12,6 +12,7 @@ local DomainMath = require("server.domain.DomainMath")
 local TableUtils = require("server.domain.TableUtils")
 local MailRules = require("shared.MailRules")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
+local AbyssEngine = require("server.domain.AbyssEngine")
 
 local MailEngine = {}
 
@@ -495,6 +496,15 @@ function MailEngine.GrantAttachment(working, attachment, events, now)
         if type(working.wishPool) ~= "table" then working.wishPool = {} end
         if itemId == "wish_ticket" then
             working.wishPool.tickets = (working.wishPool.tickets or 0) + (attachment.count or 1)
+            attachment.claimedCount = attachment.count or 1
+            attachment.failReason = nil
+            return true
+        end
+        if itemId == "abyss_ticket" then
+            AbyssEngine.GrantTickets(
+                working,
+                attachment.count or 1
+            )
             attachment.claimedCount = attachment.count or 1
             attachment.failReason = nil
             return true

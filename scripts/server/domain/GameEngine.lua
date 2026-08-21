@@ -21,6 +21,9 @@ local AdventureEngine = require("server.domain.AdventureEngine")
 local RewardEngine = require("server.domain.RewardEngine")
 local QuestEngine = require("server.domain.QuestEngine")
 local TutorialEngine = require("server.domain.TutorialEngine")
+local AbyssEngine = require("server.domain.AbyssEngine")
+local RewardClaimEngine = require("server.domain.RewardClaimEngine")
+local RewardClaimDefinitions = require("shared.RewardClaimDefinitions")
 
 -- 允许对外导出函数别名（Equip/Decompose 等），避免 LSP 将空表字段判为 unknown。
 ---@type table<string, any>
@@ -48,7 +51,12 @@ local function appendAidFloor(state, floor)
     end
 end
 
-local function settleMonsterVictory(state, encounterKind, rng, now, events, context)
+local function settleMonsterVictory(state, monster, rng, now, events, context)
+    local encounterKind = monster.encounter
+    local randomAbyss = monster.abyssSource == "random"
+        and type(monster.abyssRunId) == "string"
+        and monster.abyssRunId ~= ""
+        and monster.abyssGradeId ~= nil
     local isBoss = encounterKind == "boss" or encounterKind == "chapterBoss"
     local isElite = encounterKind == "elite"
     QuestEngine.Track(state, isBoss and "boss_kill" or (isElite and "elite_kill" or "monster_kill"), 1, now)
@@ -86,48 +94,120 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
     end
 
     local inventoryChanged = false
-    local chance = RewardPolicy.DropChance(encounterKind, context and context.offline == true) or 0
-    local droppedRarity = nil
-    local droppedItem = nil
-    if DomainMath.RandomFloat(rng) < chance then
-        local rarity = RewardPolicy.RollRarity(encounterKind, state.floor, DomainMath.RandomFloat(rng), state.rewardPity)
-        droppedRarity = rarity
-        local source = encounterKind == "chapterBoss" and "chapter_boss_drop"
-            or (isBoss and "boss_drop" or (isElite and "elite_drop" or "monster_drop"))
-        local dropOptions = nil
-        if (tonumber(state.stats and state.stats.powerRatio) or 0) < 1 then
-            local weakRanked = EquipmentEngine.WeakestEquipmentSlots(state)
-            local weakSlots = {}
-            for index = 1, math.min(3, #weakRanked) do weakSlots[index] = weakRanked[index].slot end
-            local allSlots = {}
-            for index, slot in ipairs(Catalog.SLOTS) do allSlots[index] = slot.id end
-            dropOptions = {
-                slot = RewardPolicy.PickDropSlot(allSlots, weakSlots, DomainMath.RandomFloat(rng), DomainMath.RandomFloat(rng)),
-                rollTradeable = true,
-            }
-        else
-            dropOptions = { rollTradeable = true }
+    if randomAbyss then
+        local settled, _, _, abyssInventoryChanged =
+            AbyssEngine.SettleWorking(
+                state,
+                "random",
+                monster.abyssGradeId,
+                0,
+                monster.abyssRunId,
+                rng,
+                now,
+                events
+            )
+        if not settled then return false, inventoryChanged end
+        inventoryChanged = inventoryChanged
+            or abyssInventoryChanged == true
+    else
+        local chance = RewardPolicy.DropChance(
+            encounterKind,
+            context and context.offline == true
+        ) or 0
+        local droppedRarity = nil
+        local droppedItem = nil
+        if DomainMath.RandomFloat(rng) < chance then
+            local rarity = RewardPolicy.RollRarity(
+                encounterKind,
+                state.floor,
+                DomainMath.RandomFloat(rng),
+                state.rewardPity
+            )
+            droppedRarity = rarity
+            local source = encounterKind == "chapterBoss"
+                and "chapter_boss_drop"
+                or (isBoss and "boss_drop"
+                    or (isElite and "elite_drop" or "monster_drop"))
+            local dropOptions = nil
+            if (tonumber(state.stats and state.stats.powerRatio) or 0) < 1 then
+                local weakRanked = EquipmentEngine.WeakestEquipmentSlots(state)
+                local weakSlots = {}
+                for index = 1, math.min(3, #weakRanked) do
+                    weakSlots[index] = weakRanked[index].slot
+                end
+                local allSlots = {}
+                for index, slot in ipairs(Catalog.SLOTS) do
+                    allSlots[index] = slot.id
+                end
+                dropOptions = {
+                    slot = RewardPolicy.PickDropSlot(
+                        allSlots,
+                        weakSlots,
+                        DomainMath.RandomFloat(rng),
+                        DomainMath.RandomFloat(rng)
+                    ),
+                    rollTradeable = true,
+                }
+            else
+                dropOptions = { rollTradeable = true }
+            end
+            local added, item, inventoryAdded =
+                RewardEngine.AddGeneratedDrop(
+                    state,
+                    rarity,
+                    isBoss,
+                    rng,
+                    now,
+                    source,
+                    events,
+                    dropOptions
+                )
+            if not added then return false, inventoryChanged end
+            droppedItem = item
+            inventoryChanged = inventoryChanged or inventoryAdded
         end
-        local added, item, inventoryAdded = RewardEngine.AddGeneratedDrop(state, rarity, isBoss, rng, now, source, events, dropOptions)
-        if not added then return false, inventoryChanged end
-        droppedItem = item
-        inventoryChanged = inventoryChanged or inventoryAdded
-    end
-    if encounterKind == "chapterBoss" then
-        local pity = RewardPolicy.UpdatePity(state.rewardPity, droppedRarity)
-        if state.floor < RarityCatalog.Get("epic").unlockFloor then pity.epicMisses = 0 end
-        if state.floor < RarityCatalog.Get("myth").unlockFloor then pity.mythMisses = 0 end
-        state.rewardPity = pity
-        events[#events + 1] = PlayerTransition.Event("reward_pity_updated", {
-            epicMisses = pity.epicMisses,
-            mythMisses = pity.mythMisses,
-            droppedRarity = droppedRarity,
-        })
+        if encounterKind == "chapterBoss" then
+            local pity = RewardPolicy.UpdatePity(
+                state.rewardPity,
+                droppedRarity
+            )
+            if state.floor < RarityCatalog.Get("epic").unlockFloor then
+                pity.epicMisses = 0
+            end
+            if state.floor < RarityCatalog.Get("myth").unlockFloor then
+                pity.mythMisses = 0
+            end
+            state.rewardPity = pity
+            events[#events + 1] = PlayerTransition.Event(
+                "reward_pity_updated",
+                {
+                    epicMisses = pity.epicMisses,
+                    mythMisses = pity.mythMisses,
+                    droppedRarity = droppedRarity,
+                }
+            )
+        end
+
+        if droppedItem then
+            local _, boundOnEquip = EquipmentEngine.ConsiderUpgrade(
+                state,
+                droppedItem,
+                now,
+                events
+            )
+            inventoryChanged = inventoryChanged or boundOnEquip
+        end
     end
 
-    if droppedItem then
-        local _, boundOnEquip = EquipmentEngine.ConsiderUpgrade(state, droppedItem, now, events)
-        inventoryChanged = inventoryChanged or boundOnEquip
+    if not randomAbyss
+        and not (context and context.offline == true)
+        and state.abyss
+        and (state.abyss.randomCooldownBattles or 0) > 0
+    then
+        state.abyss.randomCooldownBattles = math.max(
+            0,
+            state.abyss.randomCooldownBattles - 1
+        )
     end
     if isBoss and context and context.offline == true then
         local _, boundOnOptimize = EquipmentEngine.OptimizeLoadout(state, now, events)
@@ -144,6 +224,57 @@ local function settleMonsterVictory(state, encounterKind, rng, now, events, cont
         local _, boundOnOptimize = EquipmentEngine.OptimizeLoadout(state, now, events)
         inventoryChanged = inventoryChanged or boundOnOptimize
         local completedFloor = state.floor
+        local milestoneReward = RewardClaimDefinitions.FloorMilestoneReward(
+            completedFloor
+        )
+        if milestoneReward then
+            local ticketCount = AbyssEngine.GrantTickets(
+                state,
+                milestoneReward.abyssTickets or 0
+            )
+            if (milestoneReward.fragments or 0) > 0 then
+                PlayerTransition.AddCurrency(
+                    state,
+                    "fragments",
+                    milestoneReward.fragments
+                )
+            end
+            local baseReward = {
+                gold = LargeNumber.Zero(),
+                exp = 0,
+                fragments = milestoneReward.fragments or 0,
+                abyssTickets = ticketCount,
+            }
+            local offer = RewardClaimEngine.CreateAdOffer(
+                state,
+                {
+                    source = "floor_milestone",
+                    sourceKey = "floor:" .. tostring(completedFloor),
+                    baseReward = baseReward,
+                    meta = { floor = completedFloor },
+                },
+                now
+            )
+            events[#events + 1] = PlayerTransition.Event(
+                "floor_milestone_reward",
+                {
+                    floor = completedFloor,
+                    reward = baseReward,
+                    rewardId = offer and offer.id or nil,
+                }
+            )
+            if offer then
+                events[#events + 1] = PlayerTransition.Event(
+                    "reward_offer_pending",
+                    {
+                        rewardId = offer.id,
+                        source = offer.source,
+                        baseReward = offer.baseReward,
+                        extraReward = offer.extraReward,
+                    }
+                )
+            end
+        end
         events[#events + 1] = PlayerTransition.Event("floor_completed", {
             floor = completedFloor,
             chapterBoss = encounterKind == "chapterBoss",
@@ -214,6 +345,9 @@ local function playerDeath(state, monster, events, context)
     local floor = state.floor
     local room = monster.room or state.position
     state.floorDefeats = math.max(0, TableUtils.ToInteger(state.floorDefeats, 0)) + 1
+    if monster.abyssSource == "random" and state.abyss then
+        state.abyss.currentRandom = nil
+    end
     state.currentMonster = nil
     state.position = 0
     state.currentEvent = Catalog.GetCellType(1, floor)
@@ -281,7 +415,7 @@ end
 
 local combatCallbacks = {
     settleVictory = function(state, monster, rng, now, events, context)
-        return settleMonsterVictory(state, monster.encounter, rng, now, events, context)
+        return settleMonsterVictory(state, monster, rng, now, events, context)
     end,
     handlePlayerDeath = function(state, monster, events, context)
         return playerDeath(state, monster, events, context)

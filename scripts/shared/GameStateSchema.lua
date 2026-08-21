@@ -32,6 +32,7 @@ local GameStateSchema = {
     BuildSnapshot = Wire.BuildSnapshot,
     BuildSnapshotEvents = Wire.BuildSnapshotEvents,
     BuildDelta = Wire.BuildDelta,
+    CanonicalizeGameEvents = Wire.CanonicalizeGameEvents,
     ValidateSnapshot = Wire.ValidateSnapshot,
     ValidateDelta = Wire.ValidateDelta,
     DeepCopy = TableUtils.DeepCopy,

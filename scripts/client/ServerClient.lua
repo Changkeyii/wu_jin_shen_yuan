@@ -593,7 +593,11 @@ function ServerClient.OpenWishJar(jarId, count, callback)
 end
 function ServerClient.ClaimDailyVip(callback) return ServerClient.Send("Game.ClaimDailyVip", {}, callback) end
 function ServerClient.ClaimDailyAdVip(callback) return ServerClient.Send("Game.ClaimDailyAdVip", {}, callback) end
-function ServerClient.GetLeaderboard(callback) return ServerClient.Send("Leaderboard.GetTop", {}, callback) end
+function ServerClient.GetLeaderboard(callback, board)
+    local payload = {}
+    if board and board ~= "power" then payload.board = tostring(board) end
+    return ServerClient.Send("Leaderboard.GetTop", payload, callback)
+end
 function ServerClient.GetLeaderboardDetail(userId, callback)
     return ServerClient.Send("Leaderboard.GetDetail", { userId = tostring(userId) }, callback)
 end
@@ -722,6 +726,20 @@ function ServerClient.StarPreview(slot, callback)
 end
 function ServerClient.Star(slot, materialItemId, callback)
     return ServerClient.Send("Game.Star", { slot = slot, materialItemId = materialItemId }, callback)
+end
+function ServerClient.ClaimRewardAdExtra(rewardId, callback)
+    return ServerClient.Send(
+        "Reward.ClaimAdExtra",
+        { rewardId = rewardId },
+        callback
+    )
+end
+function ServerClient.ClaimExclusiveAdGift(giftId, callback)
+    return ServerClient.Send(
+        "Reward.ClaimExclusiveAdGift",
+        { giftId = giftId },
+        callback
+    )
 end
 function ServerClient.PreviewOffline(callback)
     return ServerClient.Send("Game.PreviewOffline", {}, callback)
