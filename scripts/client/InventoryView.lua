@@ -5,6 +5,7 @@ local EquipmentQuickFilter = require("client.EquipmentQuickFilter")
 local EquipmentIcon = require("client.EquipmentIcon")
 local BackpackItemSlot = require("client.BackpackItemSlot")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
+local InventoryGridView = require("client.InventoryGridView")
 
 local InventoryView = {}
 
@@ -65,6 +66,7 @@ local function CreateInventoryView(context)
     local SetEquipmentPageScrollY = context.setEquipmentPageScrollY
     local RequestPageRefresh = context.requestPageRefresh
     local RequestDecomposePreview = context.requestDecomposePreview
+    local GetDecomposeRefund = context.getDecomposeRefund
     local EquipItem = context.equipItem
     local UnequipSlot = context.unequipSlot
     local DecomposeByFilter = context.decomposeByFilter
@@ -245,33 +247,6 @@ local function InventoryImageBox(item, selected, size)
         overflow = "visible",
         children = children,
     }
-end
-
-local function CreateItemIconCard(item, width, height)
-    local selected = selectedInventoryId == item.id
-    local amount = item and (item.quantity or 1) or 1
-    local amountText = (amount > 1 or (item and item.category == "wishjar"))
-        and ("x" .. tostring(amount)) or nil
-    return BackpackItemSlot.Build(context, item, {
-        width = width or 180,
-        height = height or width or 180,
-        selected = selected,
-        clickable = true,
-        showLockButton = item and item.equipmentId ~= nil,
-        amountText = amountText,
-        onClick = function(widget)
-            -- 罐子/许愿券等同普通道具：第一下选中，第二下或长按弹 Tips
-            if selected and ShowItemTips then
-                local bounds = widget and widget.GetAbsoluteLayoutForHitTest
-                    and widget:GetAbsoluteLayoutForHitTest()
-                    or nil
-                ShowItemTips(item, bounds, { source = "inventory" })
-                return
-            end
-            SetSelectedInventoryId(item.id)
-            RequestPageRefresh()
-        end,
-    })
 end
 
 local function CreateInventoryTabs()
@@ -557,24 +532,13 @@ local function CreateSelectedItemDetail()
     end
     local slotText = item.slot and SlotName(item.slot) or ItemPresentation.CategoryName(item.category)
     local setText = item.setId and (SETS[item.setId].short .. "套") or "散件"
-    local decomposeRefund = type(item.decomposeRefund) == "table" and item.decomposeRefund or nil
+    local decomposeRefund = GetDecomposeRefund and GetDecomposeRefund(item.id) or nil
     if item.id
         and not decomposeRefund
-        and item.refundRequestPending ~= true
         and RequestDecomposePreview
     then
-        item.refundRequestPending = true
         RequestDecomposePreview(item.id, function(response)
-            item.refundRequestPending = false
-            if response and response.ok and type(response.data) == "table" then
-                item.decomposeRefund = {
-                    gold = response.data.gold or 0,
-                    fragments = response.data.fragments or 0,
-                    rate = response.data.rate or 0,
-                    vipLevel = response.data.vipLevel or 0,
-                }
-                RequestPageRefresh()
-            end
+            if response and response.ok then RequestPageRefresh() end
         end)
     end
     local refundText = decomposeRefund
@@ -959,11 +923,6 @@ local function CreateInventoryPage()
             },
         }
     else
-        local cards = {}
-        for _, item in ipairs(items) do
-            cards[#cards + 1] = CreateItemIconCard(item)
-        end
-
         pageChildren[#pageChildren + 1] = UI.Panel {
             width = "100%",
             height = 500,
@@ -978,28 +937,7 @@ local function CreateInventoryPage()
             flexShrink = 1,
             overflow = "hidden",
             children = {
-                UI.ScrollView {
-                    width = "100%",
-                    height = "100%",
-                    flexGrow = 1,
-                    flexBasis = 0,
-                    scrollY = true,
-                    showScrollbar = false,
-                    children = {
-                        UI.Panel {
-                            width = "100%",
-                            flexDirection = "row",
-                            flexWrap = "wrap",
-                            justifyContent = "center",
-                            gap = 14,
-                            paddingLeft = 12,
-                            paddingRight = 12,
-                            paddingTop = 12,
-                            paddingBottom = 42,
-                            children = cards,
-                        },
-                    },
-                },
+                InventoryGridView.Build(context, items),
             },
         }
     end

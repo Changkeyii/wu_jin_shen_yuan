@@ -15,6 +15,7 @@ local WishPoolController = require("client.WishPoolController")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local RewardDialogView = require("client.RewardDialogView")
+local UIOverlay = require("client.UI.UIOverlay")
 
 local WishPoolView = {}
 
@@ -52,7 +53,7 @@ local jarLanes_ = {}
 local displayNodes_ = {}
 local forceStopCell_ = nil
 local requestRefresh_ = nil
-local coverRoot_ = nil
+local overlayHost_ = UIOverlay
 local cover_ = nil
 local jarOverlay_ = nil
 
@@ -168,18 +169,18 @@ end
 local COVER_NODE_ID = "wishPoolAnimationCover"
 
 local function hideJarOverlay()
-    if jarOverlay_ then
-        local parent = jarOverlay_.parent
-        if parent then parent:RemoveChild(jarOverlay_) end
-        jarOverlay_ = nil
+    if overlayHost_ then
+        overlayHost_.Remove("wish.jar")
+    elseif jarOverlay_ and jarOverlay_.parent then
+        jarOverlay_.parent:RemoveChild(jarOverlay_)
     end
+    jarOverlay_ = nil
 end
 
 -- 开罐动画全屏 overlay：不切换页面，在当前页之上播放卷轴 + 跳过按钮。
 local function showJarOverlay()
-    local root = coverRoot_ or UI.GetRoot()
-    if not root then
-        print("[WishPool] showJarOverlay skipped: no ui root")
+    if not overlayHost_ or not overlayHost_.GetRoot() then
+        print("[WishPool] showJarOverlay skipped: no overlay host root")
         return
     end
     hideJarOverlay()
@@ -217,28 +218,21 @@ local function showJarOverlay()
             },
         },
     }
-    root:AddChild(jarOverlay_)
+    overlayHost_.Add("wish.jar", jarOverlay_, { layer = "Blocking" })
 end
 
 local function hideCover()
-    if cover_ then
-        local parent = cover_.parent
-        if parent then parent:RemoveChild(cover_) end
-        cover_ = nil
+    if overlayHost_ then
+        overlayHost_.Remove("wish.cover")
+    elseif cover_ and cover_.parent then
+        cover_.parent:RemoveChild(cover_)
     end
-    local root = coverRoot_ or UI.GetRoot()
-    if root then
-        local existing = root:FindById(COVER_NODE_ID)
-        if existing and existing.parent then existing.parent:RemoveChild(existing) end
-    end
+    cover_ = nil
 end
 
 local function showCover()
-    -- coverRoot_ 由 GameView.Configure 注入；兜底取当前 UI 根，避免
-    -- 根节点重建（UI.SetRoot）后引用到已销毁的旧根导致遮罩挂不上。
-    local root = coverRoot_ or UI.GetRoot()
-    if not root then
-        print("[WishPool] showCover skipped: no ui root")
+    if not overlayHost_ or not overlayHost_.GetRoot() then
+        print("[WishPool] showCover skipped: no overlay host root")
         return
     end
     hideCover()
@@ -274,7 +268,7 @@ local function showCover()
             },
         },
     }
-    root:AddChild(cover_)
+    overlayHost_.Add("wish.cover", cover_, { layer = "Tooltip" })
 end
 
 local function addWishRewardCard(cards, entry)
@@ -1084,6 +1078,15 @@ function WishPoolView.IsAnimating()
     return animating_
 end
 
+function WishPoolView.ReattachOverlay()
+    if not animating_ then return end
+    if animationKind_ == "jar" then
+        showJarOverlay()
+    else
+        showCover()
+    end
+end
+
 -- 点击许愿后立即启动动画（乐观预动画），服务端结果到达后由 wish_drawn 事件修正停靠点。
 function WishPoolView.StartPendingWish()
     if animating_ then return false end
@@ -1110,7 +1113,7 @@ end
 function WishPoolView.Configure(context)
     context = context or {}
     requestRefresh_ = context.requestPageRefresh
-    coverRoot_ = context.root
+    overlayHost_ = context.overlayHost or UIOverlay
 end
 
 function WishPoolView.Reset()
@@ -1138,6 +1141,7 @@ function WishPoolView.Reset()
     displayNodes_ = {}
     forceStopCell_ = nil
     requestRefresh_ = nil
+    overlayHost_ = UIOverlay
 end
 
 ServerClient.On("delta", function(payload)

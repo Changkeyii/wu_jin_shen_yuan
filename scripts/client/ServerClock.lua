@@ -21,6 +21,10 @@ function ServerClock.DayKey(now)
     return math.floor(((tonumber(now) or ServerClock.Now()) + TIMEZONE_OFFSET_SECONDS) / DAY_SECONDS)
 end
 
+function ServerClock.IsSynced()
+    return synced_
+end
+
 function ServerClock.Reset()
     offsetSeconds_ = 0
     synced_ = false

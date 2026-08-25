@@ -10,6 +10,7 @@ local LargeNumber = require("shared.LargeNumber")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local QuestController = require("client.QuestController")
+local GridVirtualList = require("client.UI.GridVirtualList")
 
 local QuestView = {}
 
@@ -196,22 +197,35 @@ function QuestView.BuildPage()
     local list = view[tab] or {}
     local claimableCount = QuestController.CountClaimable(game, tab)
 
-    local cards = {}
-    for _, quest in ipairs(list) do
-        cards[#cards + 1] = QuestCard(quest)
-    end
-    if #cards == 0 then
-        cards[#cards + 1] = UI.Panel {
-            width = "100%",
-            flexShrink = 0,
-            height = 200,
-            alignItems = "center",
-            justifyContent = "center",
-            children = {
-                Kit.CompactTxt("暂无任务", 22, C.textSecondary, { width = "100%", textAlign = "center" }),
-            },
-        }
-    end
+    -- 虚拟列表：一维 list 按单列渲染，任务卡片池化复用。
+    local questList = GridVirtualList.Build {
+        columns = 1,
+        cardWidth = 1000, -- 全屏内容宽 = 设计宽 1080 - 左右 padding(40*2)
+        cardHeight = 168,
+        cardGap = 14,     -- 原卡片间距 gap
+        -- 原 ScrollView 为 flexGrow=1，高度由布局决定；此值仅用于布局完成前的池预创建估算。
+        viewportHeight = 800,
+        bounces = true,       -- 与原生 ScrollView 默认 bounces=true 一致
+        showScrollbar = false,
+        data = list,
+        emptyState = function()
+            return UI.Panel {
+                width = "100%",
+                flexShrink = 0,
+                height = 200,
+                alignItems = "center",
+                justifyContent = "center",
+                children = {
+                    Kit.CompactTxt("暂无任务", 22, C.textSecondary, { width = "100%", textAlign = "center" }),
+                },
+            }
+        end,
+        createCard = function(row, slotIndex)
+            local quest = row._boundItems[slotIndex]
+            if not quest then return nil end
+            return QuestCard(quest)
+        end,
+    }
 
     local dailyHeader = nil
     if tab == "daily" then
@@ -274,23 +288,7 @@ function QuestView.BuildPage()
             },
             BuildTabs(tab),
             dailyHeader or UI.Panel { width = "100%", flexShrink = 0, height = 0 },
-            UI.ScrollView {
-                width = "100%",
-                flexGrow = 1,
-                flexBasis = 0,
-                scrollY = true,
-                scrollX = false,
-                showScrollbar = false,
-                children = {
-                    UI.Panel {
-                        width = "100%",
-                        flexShrink = 0,
-                        gap = 14,
-                        paddingBottom = 24,
-                        children = cards,
-                    },
-                },
-            },
+            questList,
         },
     }
 end

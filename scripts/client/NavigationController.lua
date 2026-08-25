@@ -5,6 +5,7 @@ local LoadingController = require("client.LoadingController")
 local PlayPresentation = require("client.PlayPresentation")
 local AudioController = require("client.AudioController")
 local ItemTips = require("client.ItemTips")
+local ItemView = require("client.ItemView")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 
@@ -79,12 +80,25 @@ function NavigationController.SwitchPage(pageId, options)
     return true
 end
 
+local function HasEquipRedDot(game)
+    game = game or CurrentGame()
+    local flags = game.uiFlags
+    if type(flags) == "table" and flags.hasBetterUnequipped ~= nil then
+        return flags.hasBetterUnequipped == true
+    end
+    return ItemView.HasBetterUnequipped(game)
+end
+
 function NavigationController.Update(game)
     game = game or CurrentGame()
     for id, ref in pairs(refs_) do
         local active = game.page == id
         if ref.selected then ref.selected:SetStyle({ visible = active }) end
         if ref.label then ref.label:SetFontColor(active and C.text or C.textSecondary) end
+        if ref.badge then
+            local show = id == "equip" and HasEquipRedDot(game)
+            ref.badge:SetStyle({ visible = show })
+        end
     end
 end
 
@@ -150,6 +164,23 @@ function NavigationController.Build(game)
             textAlign = "center",
             textStroke = { width = 2, color = "#000000" },
         })
+        local badge = nil
+        if itemId == "equip" then
+            badge = UI.Panel {
+                position = "absolute",
+                right = math.max(8, math.floor(buttonW * 0.18)),
+                top = 18,
+                width = 22,
+                height = 22,
+                shape = "circle",
+                overflow = "hidden",
+                visible = HasEquipRedDot(game),
+                backgroundColor = C.error,
+                borderWidth = 2,
+                borderColor = { 0, 0, 0, 160 },
+                pointerEvents = "none",
+            }
+        end
         local button = UI.Panel {
             -- 序章功能介绍：底部导航高亮目标
             id = "tutorialFeatureNav:" .. tostring(itemId),
@@ -158,13 +189,14 @@ function NavigationController.Build(game)
             top = 28,
             width = buttonW,
             height = 126,
+            overflow = "visible",
             clickable = true,
             onClick = function()
                 if CurrentGame().page ~= itemId then NavigationController.SwitchPage(itemId) end
             end,
-            children = { buttonBg, selected, label },
+            children = { buttonBg, selected, label, badge },
         }
-        refs_[itemId] = { button = button, selected = selected, label = label }
+        refs_[itemId] = { button = button, selected = selected, label = label, badge = badge }
         children[#children + 1] = button
     end
 

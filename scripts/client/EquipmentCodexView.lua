@@ -1,6 +1,7 @@
 local UI = require("urhox-libs/UI")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local ItemSlotBase = require("client.ItemSlotBase")
+local GridVirtualList = require("client.UI.GridVirtualList")
 
 local EquipmentCodexView = {}
 
@@ -184,30 +185,25 @@ function EquipmentCodexView.Build(context)
     local allDefinitions = EquipmentCatalog.GetAll()
     local unlockedCount = CollectionCount(collection)
     local definitions = FilterDefinitions()
-    local rows = {}
-    for index = 1, #definitions, 2 do
-        local cards = {}
-        for offset = 0, 1 do
-            local definition = definitions[index + offset]
-            if definition then
-                cards[#cards + 1] = BuildCard(context, definition, collection[definition.id])
-            else
-                cards[#cards + 1] = UI.Panel {
-                    width = CARD_WIDTH,
-                    height = CARD_HEIGHT,
-                    flexShrink = 0,
-                }
-            end
-        end
-        rows[#rows + 1] = UI.Panel {
-            width = 946,
-            height = CARD_HEIGHT,
-            flexShrink = 0,
-            flexDirection = "row",
-            gap = 16,
-            children = cards,
-        }
-    end
+    -- 虚拟网格：一维 definitions 按 2 列分组为行，行对象池化复用，卡片子树按需重建。
+    local codexList = GridVirtualList.Build {
+        columns = 2,
+        cardWidth = CARD_WIDTH,
+        cardHeight = CARD_HEIGHT,
+        cardGap = 16,   -- 原行内卡片间距 gap
+        rowGap = 16,    -- 原容器行间距 gap
+        -- 原 ScrollView 为 absolute(left=58 top=298 width=976 bottom=24)；
+        -- 设计高度 1920 - 顶栏310 - 底栏170 = 1440，滚动区 ≈ 1440 - 298 - 24 = 1118。
+        -- 仅用于 Yoga 布局完成前的池预创建，实际视口以布局计算为准。
+        viewportHeight = 1118,
+        bounces = true, -- 与原生 ScrollView 默认 bounces=true 一致
+        data = definitions,
+        createCard = function(row, slotIndex)
+            local definition = row._boundItems[slotIndex]
+            if not definition then return nil end
+            return BuildCard(context, definition, collection[definition.id])
+        end,
+    }
 
     local filterButtons = {}
     for _, set in ipairs(SETS) do
@@ -277,22 +273,7 @@ function EquipmentCodexView.Build(context)
                 justifyContent = "space-between",
                 children = filterButtons,
             },
-            UI.ScrollView {
-                position = "absolute", left = 58, top = 298,
-                width = 976, bottom = 24,
-                scrollX = false,
-                scrollY = true,
-                showScrollbar = true,
-                children = {
-                    UI.Panel {
-                        width = 962,
-                        flexShrink = 0,
-                        gap = 16,
-                        paddingBottom = 28,
-                        children = rows,
-                    },
-                },
-            },
+            codexList,
         },
     }
 end

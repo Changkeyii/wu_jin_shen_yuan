@@ -2,6 +2,7 @@ local UI = require("urhox-libs/UI")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local ServerClient = require("client.ServerClient")
 local BackpackItemSlot = require("client.BackpackItemSlot")
+local GridVirtualList = require("client.UI.GridVirtualList")
 local RarityCatalog = require("shared.RarityCatalog")
 local ItemSort = require("shared.ItemSort")
 local LargeNumber = require("shared.LargeNumber")
@@ -100,7 +101,11 @@ function EquipmentDispositionDialog.Show(context, options)
     local guideBlue = context.C.focus or { 111, 231, 255, 255 }
     local function RefreshCell(itemId)
         local cell = cells[itemId]
-        if not cell then return end
+        -- 虚拟网格行池化复用：不在当前绑定行中的卡片可能已被销毁，跳过并清理引用。
+        if not cell or cell.panel.parent == nil then
+            cells[itemId] = nil
+            return
+        end
         local isSelected = selected[itemId] == true
         cell.panel:SetBackgroundColor(isSelected and { 30, 90, 150, 120 } or { 12, 22, 40, 120 })
         -- 教学态用蓝色描边；选中时同样保持 focus 蓝。
@@ -113,70 +118,90 @@ function EquipmentDispositionDialog.Show(context, options)
         cell.label:SetFontColor(isSelected and context.C.success or context.C.textDim)
     end
 
-    local cards = {}
     local itemContext = ItemContext(context)
-    for _, item in ipairs(items) do
-        local currentItem = item
-        local label = context.compactTxt(
-            selected[currentItem.id] and "✓ 已选择" or "○ 未选择",
-            15,
-            selected[currentItem.id] and context.C.success or context.C.textDim,
-            {
-                width = "100%", height = 22, textAlign = "center",
-                textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+    -- 分解候选虚拟网格：行池化复用，替代全量 cards + flexWrap ScrollView。
+    -- 弹窗每次打开重建，无需保存滚动位置。
+    local candidateGrid = GridVirtualList.Build {
+        columns = 3,
+        cardWidth = 186,
+        cardHeight = 216,
+        cardGap = 12,
+        rowGap = 12,
+        -- content 高度 584 - countText 36 - gap 12 = 536。
+        viewportHeight = 536,
+        widgetProps = {
+            width = "100%",
+            flexGrow = 1,
+            flexBasis = 0,
+        },
+        showScrollbar = false,
+        data = items,
+        createCard = function(row, slotIndex, item)
+            if not item then return nil end
+            local label = context.compactTxt(
+                selected[item.id] and "✓ 已选择" or "○ 未选择",
+                15,
+                selected[item.id] and context.C.success or context.C.textDim,
+                {
+                    width = "100%", height = 22, textAlign = "center",
+                    textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                }
+            )
+            local itemCard = BackpackItemSlot.Build(itemContext, item, {
+                width = 174,
+                height = 174,
+                selected = false,
+                clickable = false,
+                showLockButton = false,
+                -- 预览格子由外层整卡接管点击，内部图标/文案不得截获命中。
+                itemTips = false,
+            })
+            -- 整棵子树不参与命中：点击任意位置都落到外层 panel.onClick。
+            if itemCard and itemCard.SetProp then
+                itemCard:SetProp("pointerEvents", "none")
+            elseif itemCard and itemCard.props then
+                itemCard.props.pointerEvents = "none"
+            end
+            local panel = UI.Panel {
+                id = tutorialSelection and ("tutorialDispositionCandidate:" .. tostring(item.id)) or nil,
+                width = 186,
+                height = 216,
+                flexShrink = 0,
+                clickable = true,
+                alignItems = "center",
+                justifyContent = "center",
+                gap = 4,
+                paddingTop = 6,
+                paddingBottom = 6,
+                backgroundColor = selected[item.id]
+                    and { 30, 90, 150, 120 }
+                    or { 12, 22, 40, 120 },
+                -- 教学态：候选卡片自带蓝色描边，不依赖覆盖层几何高亮。
+                borderWidth = tutorialSelection and 4 or 2,
+                borderColor = tutorialSelection
+                    and guideBlue
+                    or (selected[item.id] and context.C.focus or context.C.border),
+                borderRadius = 10,
+                onClick = function()
+                    -- 行会被池化复用：点击时从当前绑定读取 item，禁止闭包捕获 bind 参数。
+                    local currentItem = row._boundItems[slotIndex]
+                    if not currentItem then return end
+                    selected[currentItem.id] = not selected[currentItem.id]
+                    RefreshCell(currentItem.id)
+                    RefreshTotals()
+                    if tutorialSelection and options.onTutorialSelectionChanged then
+                        options.onTutorialSelectionChanged(
+                            currentItem.id,
+                            selected[currentItem.id] == true
+                        )
+                    end
+                end,
+                children = { itemCard, label },
             }
-        )
-        local itemCard = BackpackItemSlot.Build(itemContext, currentItem, {
-            width = 174,
-            height = 174,
-            selected = false,
-            clickable = false,
-            showLockButton = false,
-            -- 预览格子由外层整卡接管点击，内部图标/文案不得截获命中。
-            itemTips = false,
-        })
-        -- 整棵子树不参与命中：点击任意位置都落到外层 panel.onClick。
-        if itemCard and itemCard.SetProp then
-            itemCard:SetProp("pointerEvents", "none")
-        elseif itemCard and itemCard.props then
-            itemCard.props.pointerEvents = "none"
-        end
-        local panel = UI.Panel {
-            id = tutorialSelection and ("tutorialDispositionCandidate:" .. tostring(currentItem.id)) or nil,
-            width = 186,
-            height = 216,
-            flexShrink = 0,
-            clickable = true,
-            alignItems = "center",
-            justifyContent = "center",
-            gap = 4,
-            paddingTop = 6,
-            paddingBottom = 6,
-            backgroundColor = selected[currentItem.id]
-                and { 30, 90, 150, 120 }
-                or { 12, 22, 40, 120 },
-            -- 教学态：候选卡片自带蓝色描边，不依赖覆盖层几何高亮。
-            borderWidth = tutorialSelection and 4 or 2,
-            borderColor = tutorialSelection
-                and guideBlue
-                or (selected[currentItem.id] and context.C.focus or context.C.border),
-            borderRadius = 10,
-            onClick = function()
-                selected[currentItem.id] = not selected[currentItem.id]
-                RefreshCell(currentItem.id)
-                RefreshTotals()
-                if tutorialSelection and options.onTutorialSelectionChanged then
-                    options.onTutorialSelectionChanged(
-                        currentItem.id,
-                        selected[currentItem.id] == true
-                    )
-                end
-            end,
-            children = { itemCard, label },
-        }
-        cells[currentItem.id] = { panel = panel, label = label }
-        cards[#cards + 1] = panel
-    end
+            cells[item.id] = { panel = panel, label = label }
+            return panel
+        end,
+    }
 
     countText = context.compactTxt(
         string.format("即将%s %d / %d 件装备", mode.verb, SelectedCount(), #items),
@@ -235,24 +260,7 @@ function EquipmentDispositionDialog.Show(context, options)
         width = "100%", height = 584, flexShrink = 0, gap = 12,
         children = {
             countText,
-            UI.ScrollView {
-                width = "100%", flexGrow = 1, flexBasis = 0,
-                scrollX = false, scrollY = true, showScrollbar = false,
-                children = {
-                    UI.Panel {
-                        width = "100%", flexShrink = 0, alignItems = "center", paddingBottom = 12,
-                        children = {
-                            UI.Panel {
-                                width = 582, flexShrink = 0,
-                                flexDirection = "row", flexWrap = "wrap",
-                                gap = 12, justifyContent = "flex-start",
-                                alignItems = "flex-start", alignContent = "flex-start",
-                                children = cards,
-                            },
-                        },
-                    },
-                },
-            },
+            candidateGrid,
         },
     }
 

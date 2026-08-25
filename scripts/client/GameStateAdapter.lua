@@ -15,6 +15,168 @@ local authoritative_ = nil
 local view_ = nil
 local page_ = "home"
 local connectionState_ = "syncing"
+local dirtyDomains_ = { all = true }
+
+local function MarkDirty(...)
+    for index = 1, select("#", ...) do
+        local domain = select(index, ...)
+        if domain == "all" then
+            dirtyDomains_ = { all = true }
+            return
+        end
+        if not dirtyDomains_.all and type(domain) == "string" and domain ~= "" then
+            dirtyDomains_[domain] = true
+        end
+    end
+end
+
+local function BeginDirtyTracking()
+    dirtyDomains_ = {}
+end
+
+local function MarkDirtyForKey(key)
+    local domains = {
+        inventory = { "inventory" },
+        overflowLoot = { "inventory" },
+        lootStash = { "inventory" },
+        consumables = { "inventory" },
+        inventoryCapacity = { "inventory" },
+        inventoryBonusSlots = { "inventory" },
+        inventoryExpand = { "inventory" },
+        equipped = { "equipment", "inventory" },
+        equippedSlots = { "equipment", "inventory" },
+        stats = { "player", "equipment" },
+        hp = { "player", "combat" },
+        hpBig = { "player", "combat" },
+        playerMaxHp = { "player", "combat" },
+        displayedPower = { "player", "equipment" },
+        recommendedPower = { "progression" },
+        nextChapterRecommendedPower = { "progression" },
+        powerRatio = { "progression" },
+        headroomFloors = { "progression" },
+        difficultyLabel = { "progression" },
+        floor = { "progression", "combat" },
+        maxFloor = { "progression" },
+        position = { "progression", "combat" },
+        room = { "progression", "combat" },
+        currentMonster = { "combat" },
+        currentEvent = { "combat" },
+        recentDamage = { "combat" },
+        autoRun = { "combat" },
+        stepTimer = { "combat" },
+        gold = { "player", "market" },
+        fragments = { "player", "market" },
+        exp = { "player", "progression" },
+        nextExp = { "player", "progression" },
+        level = { "player", "progression" },
+        vipLevel = { "player" },
+        dailyVip = { "player" },
+        pendingOfflineSeconds = { "player" },
+        offlineSeconds = { "player" },
+        quests = { "quest" },
+        rewardClaims = { "quest" },
+        activities = { "activity" },
+        wishPool = { "wish", "inventory" },
+        abyss = { "abyss", "inventory" },
+        challenges = { "challenge" },
+        marketListings = { "market" },
+        tutorial = { "tutorial" },
+        pendingStoryGate = { "tutorial", "combat" },
+        pendingStory = { "tutorial", "combat" },
+        pendingEvent = { "combat" },
+        pendingEquipDecision = { "equipment", "combat" },
+        playerNickname = { "player", "equipment" },
+        isAdmin = { "admin" },
+        logs = { "logs" },
+    }
+    local ignored = {
+        changes = true,
+        changed = true,
+        state = true,
+        delta = true,
+        events = true,
+        snapshot = true,
+        revision = true,
+        updatedAt = true,
+        serverTime = true,
+    }
+    local matched = domains[key]
+    if matched then
+        MarkDirty(table.unpack(matched))
+    elseif not ignored[key] then
+        MarkDirty("all")
+    end
+end
+
+local function MarkDirtyForChanges(changes)
+    for key in pairs(changes or {}) do
+        MarkDirtyForKey(key)
+    end
+end
+
+local function MarkDirtyForEvent(event)
+    local kind = type(event) == "table" and (event.kind or event.type) or nil
+    local domains = {
+        battle_won = { "combat", "progression", "player" },
+        monster_defeated = { "combat", "progression", "player" },
+        battle_started = { "combat" },
+        monster_spawned = { "combat" },
+        battle_hit = { "combat" },
+        damage_dealt = { "combat" },
+        player_attack_hit = { "combat" },
+        player_damaged = { "combat", "player" },
+        player_healed = { "combat", "player" },
+        life_steal = { "combat", "player" },
+        player_died = { "combat", "player" },
+        player_revived = { "combat", "player" },
+        floor_reset = { "combat", "progression" },
+        floor_advanced = { "combat", "progression" },
+        cell_entered = { "combat", "progression" },
+        equipment_drop = { "inventory", "equipment" },
+        loot_dropped = { "inventory", "equipment" },
+        loot_settled = { "inventory" },
+        equipment_equipped = { "inventory", "equipment" },
+        equipment_unequipped = { "inventory", "equipment" },
+        equipment_decomposed = { "inventory", "equipment", "player" },
+        equipment_auto_disposed = { "inventory", "equipment", "player" },
+        equipment_lock_changed = { "inventory", "equipment" },
+        equipment_strengthened = { "inventory", "equipment", "player" },
+        equipment_starred = { "inventory", "equipment", "player" },
+        equipment_upgrade_available = { "inventory", "equipment" },
+        equipment_reverted = { "inventory", "equipment" },
+        equip_undone = { "inventory", "equipment" },
+        inventory_full = { "inventory" },
+        inventory_drop_skipped = { "inventory" },
+        inventory_policy_changed = { "inventory" },
+        quest_claimed = { "quest", "player" },
+        activity_signed = { "activity", "player" },
+        activity_claimed = { "activity", "player" },
+        wish_drawn = { "wish", "inventory" },
+        wish_jar_opened = { "wish", "inventory" },
+        abyss_echo = { "abyss", "player" },
+        offline_collected = { "player", "inventory" },
+        story_gate = { "tutorial", "combat" },
+        story_advanced = { "tutorial", "combat" },
+        story_completed = { "tutorial", "combat" },
+        story_skipped = { "tutorial", "combat" },
+        tutorial_step = { "tutorial" },
+        tutorial_completed = { "tutorial" },
+        event_pending = { "combat" },
+        event_resolved = { "combat" },
+        equip_decision_applied = { "equipment", "combat" },
+    }
+    if domains[kind] then
+        MarkDirty(table.unpack(domains[kind]))
+    elseif kind then
+        MarkDirty("all")
+    end
+end
+
+local function MarkDirtyForEvents(events)
+    for _, event in ipairs(events or {}) do
+        MarkDirtyForEvent(event)
+    end
+end
 
 local function DeepCopy(value, seen)
     if type(value) ~= "table" then return value end
@@ -547,6 +709,60 @@ local function RebuildView()
         item.isEquipped = item.equippedSlot ~= nil
     end
     nextView.equipped = equippedObjects
+    nextView.itemById = byId
+    nextView.equippedSlotByItemId = equippedSlotByItemId
+    nextView.uiFlags = nextView.uiFlags or {}
+    local betterUnequippedSlots = {}
+    local equippedCountBySet = {}
+    local equippedRegionBySet = {}
+    local equippedSetBySlot = {}
+    for slotId, current in pairs(equippedObjects) do
+        if current and current.setEnabled == true and current.setId then
+            local setId = current.setId
+            equippedCountBySet[setId] = (equippedCountBySet[setId] or 0) + 1
+            equippedSetBySlot[slotId] = setId
+            local region = EquipmentCatalog.REGION_BY_SLOT[slotId] or current.region
+            if region then
+                equippedRegionBySet[setId] = equippedRegionBySet[setId] or {}
+                equippedRegionBySet[setId][region] = (equippedRegionBySet[setId][region] or 0) + 1
+            end
+        end
+    end
+    for _, item in ipairs(nextView.inventory) do
+        if item
+            and item.slot
+            and item.equipmentId
+            and not item.aidLocked
+            and not item.isEquipped
+        then
+            local current = equippedObjects[item.slot]
+            local locked = current and (current.locked or current.aidLocked)
+            if not locked then
+                local itemPower = item.power or item.displayedPower or item.evaluatedPower or item.powerContribution or 0
+                local currentPower = current and (current.power or current.displayedPower
+                    or current.evaluatedPower or current.powerContribution) or 0
+                if not current or BigNumber.Compare(itemPower, currentPower) > 0 then
+                    betterUnequippedSlots[item.slot] = true
+                elseif item.setEnabled == true and item.setId
+                    and equippedSetBySlot[item.slot] ~= item.setId
+                then
+                    local setId = item.setId
+                    local count = equippedCountBySet[setId] or 0
+                    local region = EquipmentCatalog.REGION_BY_SLOT[item.slot] or item.region
+                    local regionCount = region and equippedRegionBySet[setId]
+                        and (equippedRegionBySet[setId][region] or 0) or 0
+                    local completesSet = count + 1 == 3 or count + 1 == 6
+                        or count + 1 == 9 or count + 1 == 12
+                    local completesRegion = region ~= nil and region ~= "weapon" and regionCount + 1 == 3
+                    if completesSet or completesRegion then
+                        betterUnequippedSlots[item.slot] = true
+                    end
+                end
+            end
+        end
+    end
+    nextView.uiFlags.betterUnequippedSlots = betterUnequippedSlots
+    nextView.uiFlags.hasBetterUnequipped = next(betterUnequippedSlots) ~= nil
     -- 许愿池展示所需的日切只影响客户端文案，不改变服务端权威计数。
     nextView.wishPool = nextView.wishPool or {
         tickets = 0, jars = {}, adDayKey = 0, adUsed = 0, totalWishes = 0,
@@ -573,6 +789,7 @@ function GameStateAdapter.Reset()
     view_ = nil
     page_ = "home"
     connectionState_ = "syncing"
+    dirtyDomains_ = { all = true }
     return RebuildView()
 end
 
@@ -582,12 +799,14 @@ function GameStateAdapter.ApplySnapshot(snapshot)
     end
     authoritative_ = DeepCopy(snapshot)
     NormalizeStoryGate(authoritative_)
+    dirtyDomains_ = { all = true }
     RebuildView()
     return true, view_
 end
 
 function GameStateAdapter.ApplySnapshotEvents(events)
     if not authoritative_ then return false end
+    MarkDirtyForEvents(events)
     ApplyEvents(authoritative_, events)
     RebuildView()
     return true
@@ -607,7 +826,17 @@ function GameStateAdapter.ApplyDelta(delta)
         return true, view_
     end
 
+    BeginDirtyTracking()
     local changes = DeepCopy(delta.changes or delta.changed or delta.state or {})
+    MarkDirtyForChanges(changes)
+    MarkDirtyForChanges({
+        inventory = delta.inventory,
+        consumables = delta.consumables,
+        logs = delta.logs,
+        stats = delta.stats,
+    })
+    MarkDirtyForEvents(delta.events)
+    if next(dirtyDomains_) == nil then MarkDirty("meta") end
     if changes.inventory ~= nil then authoritative_.inventory = ProjectInventory(changes.inventory); changes.inventory = nil end
     if changes.overflowLoot ~= nil then authoritative_.overflowLoot = ProjectInventory(changes.overflowLoot); changes.overflowLoot = nil end
     if changes.lootStash ~= nil then authoritative_.lootStash = DeepCopy(changes.lootStash); changes.lootStash = nil end
@@ -642,12 +871,18 @@ end
 
 function GameStateAdapter.SetConnectionState(state)
     connectionState_ = state or "disconnected"
+    MarkDirty("all")
     RebuildView()
 end
 
 function GameStateAdapter.SetPage(page)
     page_ = page or "home"
+    MarkDirty("all")
     RebuildView()
+end
+
+function GameStateAdapter.GetDirtyDomains()
+    return DeepCopy(dirtyDomains_)
 end
 
 function GameStateAdapter.GetViewState()

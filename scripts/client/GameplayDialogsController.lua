@@ -2,6 +2,7 @@ local ServerClient = require("client.ServerClient")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local StoryCatalog = require("shared.StoryCatalog")
 local LargeNumber = require("shared.LargeNumber")
+local ServerClock = require("client.ServerClock")
 
 local GameplayDialogsController = {}
 
@@ -59,7 +60,7 @@ function GameplayDialogsController.ShowPendingEvent(pendingEvent)
     if pendingEvent.fragmentsReward then
         lines[#lines + 1] = "获得碎片：" .. tostring(pendingEvent.fragmentsReward)
     end
-    local remaining = math.max(0, (tonumber(pendingEvent.expiresAt) or 0) - os.time())
+    local remaining = math.max(0, (tonumber(pendingEvent.expiresAt) or 0) - ServerClock.Now())
     lines[#lines + 1] = "未选择将在 " .. tostring(remaining) .. " 秒后自动跳过"
 
     return CommonPromptDialog.Show {

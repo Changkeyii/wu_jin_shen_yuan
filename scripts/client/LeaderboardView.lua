@@ -7,6 +7,7 @@ local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DialogCoordinator = require("client.DialogCoordinator")
+local GridVirtualList = require("client.UI.GridVirtualList")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -172,24 +173,6 @@ function LeaderboardView.Show(list, selfRank, total, onSelectPlayer, options)
         or (options.board == "boss" and "boss" or "power")
     local meta = BOARD_META[board] or BOARD_META.power
     list = type(list) == "table" and list or {}
-    local rows = {}
-    for _, entry in ipairs(list) do
-        rows[#rows + 1] = BuildRow(entry, selfRank, onSelectPlayer)
-    end
-    if #rows == 0 then
-        rows[#rows + 1] = UI.Panel {
-            width = 820,
-            height = 200,
-            alignItems = "center",
-            justifyContent = "center",
-            children = {
-                Kit.Txt(meta.empty, 24, C.textSecondary, {
-                    width = "100%", height = 80, textAlign = "center",
-                    textStroke = { width = 2, color = "#000000" },
-                }),
-            },
-        }
-    end
 
     local selfLine = selfRank and selfRank > 0
         and ("我的排名：第 " .. tostring(selfRank) .. " 名")
@@ -233,24 +216,36 @@ function LeaderboardView.Show(list, selfRank, total, onSelectPlayer, options)
                 children = {
                     TabRow(board, options.onSelectTab),
                     header,
-                    UI.ScrollView {
-                        width = 860,
-                        height = 780,
-                        scrollX = false,
-                        scrollY = true,
+                    GridVirtualList.Build {
+                        columns = 1,
+                        cardWidth = 820,
+                        cardHeight = 64,
+                        cardGap = 8,
+                        viewportHeight = 780,
+                        data = list,
                         showScrollbar = false,
-                        children = {
-                            UI.Panel {
-                                width = "100%",
-                                flexDirection = "row",
-                                flexWrap = "wrap",
-                                justifyContent = "center",
-                                gap = 8,
-                                paddingTop = 4,
-                                paddingBottom = 12,
-                                children = rows,
-                            },
+                        widgetProps = {
+                            width = 860,
+                            height = 780,
                         },
+                        createCard = function(row, slotIndex, entry)
+                            if not entry then return nil end
+                            return BuildRow(entry, selfRank, onSelectPlayer)
+                        end,
+                        emptyState = function()
+                            return UI.Panel {
+                                width = 820,
+                                height = 200,
+                                alignItems = "center",
+                                justifyContent = "center",
+                                children = {
+                                    Kit.Txt(meta.empty, 24, C.textSecondary, {
+                                        width = "100%", height = 80, textAlign = "center",
+                                        textStroke = { width = 2, color = "#000000" },
+                                    }),
+                                },
+                            }
+                        end,
                     },
                     Kit.Txt(selfLine, 20, C.textSecondary, {
                         width = "100%", height = 32, textAlign = "center",

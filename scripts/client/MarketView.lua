@@ -18,6 +18,8 @@ local ServerClient = require("client.ServerClient")
 local ItemSlotBase = require("client.ItemSlotBase")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
 local BlackMarketView = require("client.BlackMarketView")
+local ServerClock = require("client.ServerClock")
+local GridVirtualList = require("client.UI.GridVirtualList")
 
 local MarketView = {}
 
@@ -108,7 +110,7 @@ end
 
 local function LoadBrowse(force)
     if browseCache_.loading then return end
-    local now = os.time()
+    local now = ServerClock.Now()
     if not force and browseCache_.loadedAt > 0 and (now - browseCache_.loadedAt) < 15 then return end
     browseCache_.loading = true
     ServerClient.MarketBrowse({ rarity = rarityFilter_, limit = 60 }, function(result)
@@ -120,7 +122,7 @@ local function LoadBrowse(force)
             browseCache_.total = data.total or 0
             browseCache_.levelCap = data.levelCap
             browseCache_.nextSweepAt = data.nextSweepAt or 0
-            browseCache_.serverTime = data.serverTime or os.time()
+            browseCache_.serverTime = data.serverTime or ServerClock.Now()
         else
             browseCache_.listings = {}
             browseCache_.total = 0
@@ -131,7 +133,7 @@ end
 
 local function LoadMailbox(force)
     if mailCache_.loading then return end
-    local now = os.time()
+    local now = ServerClock.Now()
     if not force and mailCache_.loadedAt > 0 and (now - mailCache_.loadedAt) < 15 then return end
     mailCache_.loading = true
     ServerClient.MarketMailbox(function(result)
@@ -277,7 +279,14 @@ local function ListingItem(listing)
     return item
 end
 
-local function ListingCard(listing, buttonLabel, buttonImage, onClick, disabled, extraText)
+--- 交易行卡片，供虚拟列表行内构建。
+--- 虚拟列表行会被池化复用：卡片交互回调禁止在 bind 时把挂单捕获进闭包，
+--- 一律在触发时从 row._boundItems[slotIndex] 读取当前挂单（columns=1 时 slotIndex 恒为 1）。
+---@param row table 当前虚拟行（含 _boundItems）
+---@param slotIndex number 行内槽位
+---@param listing table bind 时的挂单（仅用于静态渲染）
+---@param opts table { buttonLabel, buttonImage, onClick(listing), disabled, extraText }
+local function ListingCard(row, slotIndex, listing, opts)
     local C = context_.C
     local item = ListingItem(listing)
     return UI.Panel {
@@ -307,7 +316,7 @@ local function ListingCard(listing, buttonLabel, buttonImage, onClick, disabled,
                     position = "absolute", left = 196, top = 79,
                     width = 420, height = 32,
                 }),
-            context_.compactTxt(extraText or "", 16, C.warning, {
+            context_.compactTxt(opts.extraText or "", 16, C.warning, {
                 position = "absolute", left = 196, top = 124,
                 width = 420, height = 64, whiteSpace = "normal", lineHeight = 1.35,
             }),
@@ -323,7 +332,14 @@ local function ListingCard(listing, buttonLabel, buttonImage, onClick, disabled,
             UI.Panel {
                 position = "absolute", left = 673, top = 139,
                 width = 160, height = 58,
-                children = { ImageButton(buttonLabel, buttonImage, onClick, disabled) },
+                children = {
+                    ImageButton(opts.buttonLabel, opts.buttonImage, function()
+                        -- 行被池化复用：点击时读取当前绑定挂单，不使用 bind 时捕获的 item。
+                        local current = row._boundItems[slotIndex]
+                        if not current or not opts.onClick then return end
+                        opts.onClick(current)
+                    end, opts.disabled),
+                },
             },
         },
     }
@@ -333,8 +349,9 @@ local function BuildBrowse(game)
     local C = context_.C
     LoadBrowse(false)
 
-    local rows = {}
-    for _, listing in ipairs(browseCache_.listings) do
+    -- 虚拟列表行卡片构建：行被池化复用，按钮回调触发时从 row._boundItems[slotIndex]
+    -- 读取当前挂单，不捕获 bind 时的 listing。
+    local function createCard(row, slotIndex, listing)
         local blocked = listing.affordableLevel == false
         local swept = MarketCatalog.WillBeSwept(listing.price, listing.standardValue)
         local note = string.format("黑市标准值 %s", FormatGold(listing.standardValue))
@@ -343,19 +360,20 @@ local function BuildBrowse(game)
         elseif swept then
             note = note .. "\n该价格将在固定时点被系统扫货"
         end
-        rows[#rows + 1] = ListingCard(
-            listing,
-            blocked and "等级不足" or "购买",
-            context_.ASSETS.ui.inventoryActionGold,
-            function()
-                local item = ListingItem(listing)
+        return ListingCard(row, slotIndex, listing, {
+            buttonLabel = blocked and "等级不足" or "购买",
+            buttonImage = context_.ASSETS.ui.inventoryActionGold,
+            disabled = blocked or game.readOnly,
+            extraText = note,
+            onClick = function(currentListing)
+                local item = ListingItem(currentListing)
                 context_.showPrompt({
                     title = "确认购买",
                     message = string.format("花费 %s 金币购买 %s？",
-                        FormatGold(listing.price), tostring(item.name)),
+                        FormatGold(currentListing.price), tostring(item.name)),
                     confirmText = "购买", cancelText = "取消",
                     onConfirm = function()
-                        ServerClient.MarketBuy(listing, function(result)
+                        ServerClient.MarketBuy(currentListing, function(result)
                             if result and result.ok then Toast("购买成功", "装备已放入背包")
                             else Toast("购买失败", (result and result.reason) or "请稍后再试") end
                             LoadBrowse(true)
@@ -363,12 +381,7 @@ local function BuildBrowse(game)
                     end,
                 })
             end,
-            blocked or game.readOnly,
-            note
-        )
-    end
-    if #rows == 0 then
-        rows[1] = EmptyMessage(browseCache_.loading and "正在读取交易行..." or "当前没有符合条件的挂单")
+        })
     end
 
     local filterButtons = {
@@ -389,7 +402,7 @@ local function BuildBrowse(game)
         function() LoadBrowse(true) end, false, 132)
 
     local sweepIn = math.max(0,
-        (browseCache_.nextSweepAt or 0) - (browseCache_.serverTime or os.time()))
+        (browseCache_.nextSweepAt or 0) - (browseCache_.serverTime or ServerClock.Now()))
 
     return UI.Panel {
         width = "100%", height = "100%", position = "relative",
@@ -406,17 +419,29 @@ local function BuildBrowse(game)
                     position = "absolute", left = 24, top = 72,
                     width = 850, height = 34, textAlign = "center",
                 }),
-            UI.ScrollView {
-                position = "absolute", left = 0, top = 112, right = 0, bottom = 0,
-                scrollX = false, scrollY = true, showScrollbar = true,
-                children = {
-                    UI.Panel {
-                        width = 900, flexShrink = 0, gap = 12,
-                        marginLeft = 20,
-                        paddingBottom = 24, children = rows,
-                    },
+            GridVirtualList.Build({
+                columns = 1,
+                cardWidth = 900,
+                cardHeight = 249,
+                cardGap = 12,
+                rowGap = 12,
+                viewportHeight = 1348,
+                data = browseCache_.listings,
+                createCard = createCard,
+                bounces = true,
+                emptyState = function()
+                    return UI.Panel {
+                        position = "absolute", left = 0, top = 112, right = 0, bottom = 0,
+                        children = {
+                            EmptyMessage(browseCache_.loading and "正在读取交易行..."
+                                or "当前没有符合条件的挂单"),
+                        },
+                    }
+                end,
+                widgetProps = {
+                    position = "absolute", left = 0, top = 112, right = 0, bottom = 0,
                 },
-            },
+            }),
         },
     }
 end
@@ -597,9 +622,10 @@ local function BuildListingComposer(game)
 end
 
 local function BuildMyListings(game)
-    local rows = { BuildListingComposer(game) }
-    for _, listing in ipairs(game.marketListings or {}) do
-        local remaining = math.max(0, (listing.expiresAt or 0) - os.time())
+    -- 上架器固定置顶；挂单列表使用虚拟列表池化渲染（每行一项，行高 249）。
+    -- 行被池化复用：下架回调触发时从 row._boundItems[slotIndex] 读取当前挂单。
+    local function createCard(row, slotIndex, listing)
+        local remaining = math.max(0, (listing.expiresAt or 0) - ServerClock.Now())
         local feeUnits = listing.feeUnits
             or math.floor((listing.feeRate or 0)
                 * MarketCatalog.FEE_RATE_SCALE + 0.5)
@@ -611,32 +637,45 @@ local function BuildMyListings(game)
             FormatDuration(remaining),
             FormatGold(proceeds),
             (listing.feeRate or 0) * 100)
-        rows[#rows + 1] = ListingCard(
-            listing, "下架", context_.ASSETS.ui.inventoryActionRed,
-            function()
-                ServerClient.MarketCancel(listing.itemId, function(result)
+        return ListingCard(row, slotIndex, listing, {
+            buttonLabel = "下架",
+            buttonImage = context_.ASSETS.ui.inventoryActionRed,
+            disabled = game.readOnly,
+            extraText = note,
+            onClick = function(currentListing)
+                ServerClient.MarketCancel(currentListing.itemId, function(result)
                     if result and result.ok then Toast("已下架", "装备已退回背包")
                     else Toast("下架失败", (result and result.reason) or "请稍后再试") end
                     Refresh()
                 end)
             end,
-            game.readOnly,
-            note
-        )
-    end
-    if #(game.marketListings or {}) == 0 then
-        rows[#rows + 1] = EmptyMessage("当前没有挂单")
+        })
     end
 
-    return UI.ScrollView {
-        width = "100%", height = "100%",
-        scrollX = false, scrollY = true, showScrollbar = true,
+    return UI.Panel {
+        width = "100%", height = "100%", position = "relative",
         children = {
             UI.Panel {
-                width = 900, flexShrink = 0, gap = 14,
-                marginLeft = 20,
-                paddingBottom = 24, children = rows,
+                width = 900, flexShrink = 0, marginLeft = 20,
+                children = { BuildListingComposer(game) },
             },
+            GridVirtualList.Build({
+                columns = 1,
+                cardWidth = 900,
+                cardHeight = 249,
+                cardGap = 14,
+                rowGap = 14,
+                viewportHeight = 1030,
+                data = game.marketListings or {},
+                createCard = createCard,
+                bounces = true,
+                emptyState = function() return EmptyMessage("当前没有挂单") end,
+                widgetProps = {
+                    width = "100%",
+                    flexGrow = 1,
+                    flexBasis = 0,
+                },
+            }),
         },
     }
 end
@@ -669,7 +708,7 @@ local function MailCard(mail)
                 position = "absolute", left = 60, top = 74,
                 width = 650, height = 34,
             }),
-            context_.compactTxt(os.date("%m-%d %H:%M", math.floor(value.at or os.time())), 15, C.textDim, {
+            context_.compactTxt(os.date("%m-%d %H:%M", math.floor(value.at or ServerClock.Now())), 15, C.textDim, {
                 position = "absolute", left = 720, top = 50,
                 width = 130, height = 30, textAlign = "center",
             }),
@@ -680,10 +719,10 @@ end
 local function BuildMailbox(game)
     local C = context_.C
     LoadMailbox(false)
-    local rows = {}
-    for _, mail in ipairs(mailCache_.mails) do rows[#rows + 1] = MailCard(mail) end
-    if #rows == 0 then
-        rows[1] = EmptyMessage(mailCache_.loading and "正在读取交易信箱..." or "交易信箱为空")
+
+    -- 虚拟列表行卡片构建（MailCard 无交互回调，仅按 bind 数据静态渲染）。
+    local function createCard(row, slotIndex, mail)
+        return MailCard(mail)
     end
 
     return UI.Panel {
@@ -718,17 +757,29 @@ local function BuildMailbox(game)
                     end, game.readOnly or mailCache_.count == 0),
                 },
             },
-            UI.ScrollView {
-                position = "absolute", left = 0, top = 74, right = 0, bottom = 0,
-                scrollX = false, scrollY = true, showScrollbar = true,
-                children = {
-                    UI.Panel {
-                        width = 900, flexShrink = 0, gap = 12,
-                        marginLeft = 20,
-                        paddingBottom = 24, children = rows,
-                    },
+            GridVirtualList.Build({
+                columns = 1,
+                cardWidth = 900,
+                cardHeight = 142,
+                cardGap = 12,
+                rowGap = 12,
+                viewportHeight = 1386,
+                data = mailCache_.mails,
+                createCard = createCard,
+                bounces = true,
+                emptyState = function()
+                    return UI.Panel {
+                        position = "absolute", left = 0, top = 74, right = 0, bottom = 0,
+                        children = {
+                            EmptyMessage(mailCache_.loading and "正在读取交易信箱..."
+                                or "交易信箱为空"),
+                        },
+                    }
+                end,
+                widgetProps = {
+                    position = "absolute", left = 0, top = 74, right = 0, bottom = 0,
                 },
-            },
+            }),
         },
     }
 end

@@ -13,6 +13,8 @@ local RewardDialogView = require("client.RewardDialogView")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
+local ServerClock = require("client.ServerClock")
+local GridVirtualList = require("client.UI.GridVirtualList")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -34,13 +36,18 @@ local scope_ = "all"
 local list_ = {}
 local rebuild_ = nil
 local detailRebuild_ = nil
+-- 当前邮件列表的 VirtualList 实例与操作栏容器。
+-- 数据刷新（Refresh）时只对列表 UpdateData、重绘操作栏，不重建整个层，
+-- 保证玩家滚动位置不受影响（数据与表现解耦）。
+local listWidget_ = nil
+local actionBarHost_ = nil
 
 -- ============================================================================
 -- 格式化
 -- ============================================================================
 
 local function FormatClock(timestamp, now)
-    now = now or os.time()
+    now = now or ServerClock.Now()
     timestamp = math.max(0, math.floor(tonumber(timestamp) or 0))
     if timestamp <= 0 then return "—" end
     local elapsed = math.max(0, now - timestamp)
@@ -57,7 +64,7 @@ end
 
 local function RemainingText(expireAt, now)
     expireAt = math.max(0, math.floor(tonumber(expireAt) or 0))
-    now = math.max(0, math.floor(tonumber(now) or os.time()))
+    now = math.max(0, math.floor(tonumber(now) or ServerClock.Now()))
     if expireAt <= 0 then return "永久" end
     local remain = expireAt - now
     if remain <= 0 then return "已过期" end
@@ -224,7 +231,7 @@ local function BuildListItem(item, onOpen)
                 width = 40,
                 textAlign = "center",
             }),
-            Kit.CompactTxt(RemainingText(item.expireAt, os.time()), 16, expired and C.error or C.textDim, {
+            Kit.CompactTxt(RemainingText(item.expireAt, ServerClock.Now()), 16, expired and C.error or C.textDim, {
                 width = 132,
                 textAlign = "right",
                 textStroke = { width = 1, color = "#000000" },
@@ -254,6 +261,11 @@ local function BuildTabBar()
             onClick = function()
                 if scope_ == tab.id then return end
                 scope_ = tab.id
+                -- 页签切换 = 换了一个列表，重置滚动位置；数据刷新才保留位置
+                if listWidget_ then
+                    listWidget_.scrollOffset_ = 0
+                    listWidget_.scrollView_:SetScrollDirect(0, 0)
+                end
                 MailView.Refresh()
             end,
             children = {
@@ -278,36 +290,43 @@ local function BuildTabBar()
 end
 
 local function BuildListContent()
-    local now = os.time()
-    local rows = {}
-    for _, item in ipairs(list_) do
-        rows[#rows + 1] = BuildListItem(item, function(mailId)
-            MailView.ShowDetail(mailId)
-        end)
-    end
-    if #rows == 0 then
-        rows[1] = UI.Panel {
+    local content = GridVirtualList.Build {
+        columns = 1,
+        cardWidth = 880,
+        cardHeight = 92,
+        cardGap = 10,
+        viewportHeight = 1250,
+        data = list_,
+        showScrollbar = true,
+        widgetProps = {
             width = "100%",
-            height = 220,
-            alignItems = "center",
-            justifyContent = "center",
-            children = {
-                Kit.Txt(scope_ == "favorite" and "暂无收藏邮件" or "邮箱空空如也", 26, C.textSecondary, {
-                    width = "100%",
-                    textAlign = "center",
-                    textStroke = { width = 2, color = "#000000" },
-                }),
-            },
-        }
-    end
-
-    return UI.Panel {
-        width = "100%",
-        flexShrink = 0,
-        gap = 10,
-        paddingBottom = 12,
-        children = rows,
+            height = 1250,
+        },
+        createCard = function(row, slotIndex, item)
+            if not item then return nil end
+            return BuildListItem(item, function(mailId)
+                MailView.ShowDetail(mailId)
+            end)
+        end,
+        emptyState = function()
+            return UI.Panel {
+                width = "100%",
+                height = 220,
+                alignItems = "center",
+                justifyContent = "center",
+                children = {
+                    Kit.Txt(scope_ == "favorite" and "暂无收藏邮件" or "邮箱空空如也", 26, C.textSecondary, {
+                        width = "100%",
+                        textAlign = "center",
+                        textStroke = { width = 2, color = "#000000" },
+                    }),
+                },
+            }
+        end,
     }
+    -- 记录列表实例：数据刷新时用它 UpdateData 就地更新（保留滚动位置），避免重建跳顶
+    listWidget_ = content and content.scrollView_ and content or nil
+    return content
 end
 
 local function ActionBar()
@@ -437,6 +456,28 @@ local function ActionBar()
     }
 end
 
+-- 操作栏容器：数据刷新后只重绘操作栏（按钮可见性依赖 list_），不触碰列表本身。
+local function BuildActionBarHost()
+    actionBarHost_ = ActionBar()
+    return actionBarHost_
+end
+
+local function RefreshActionBar()
+    if not actionBarHost_ then return end
+    for i = #actionBarHost_.children, 1, -1 do
+        local child = actionBarHost_.children[i]
+        actionBarHost_:RemoveChild(child)
+        child:Destroy()
+    end
+    local fresh = ActionBar()
+    if fresh then
+        for _, child in ipairs(fresh.children or {}) do
+            actionBarHost_:AddChild(child)
+        end
+        fresh:Destroy()
+    end
+end
+
 local function BuildPanelContent()
     return UI.Panel {
         width = "100%",
@@ -446,15 +487,8 @@ local function BuildPanelContent()
         paddingBottom = 12,
         children = {
             BuildTabBar(),
-            UI.ScrollView {
-                width = "100%",
-                height = 1250,
-                scrollX = false,
-                scrollY = true,
-                showScrollbar = true,
-                children = { BuildListContent() },
-            },
-            ActionBar(),
+            BuildListContent(),
+            BuildActionBarHost(),
         },
     }
 end
@@ -560,8 +594,12 @@ function MailView.Refresh()
     ServerClient.MailList(scope_, function(response)
         if response and response.ok then
             list_ = (response.data and response.data.items) or {}
-            -- 重建列表内容
-            if layer_ then
+            if listWidget_ and #list_ > 0 then
+                -- 数据更新：保留当前滚动位置，只刷新当前显示区域的邮件行，不重建列表
+                GridVirtualList.UpdateData(listWidget_, list_, { columns = 1 })
+                RefreshActionBar()
+            elseif layer_ then
+                -- 列表尚未构建 / 空态与列表态切换：需要整层重建
                 MailView.Present()
             end
         end
@@ -580,6 +618,8 @@ function MailView.Hide()
     if layer_ and root_ then root_:RemoveChild(layer_) end
     layer_ = nil
     rebuild_ = nil
+    listWidget_ = nil
+    actionBarHost_ = nil
 end
 
 -- ============================================================================
@@ -923,7 +963,7 @@ function MailView.PresentDetail(mail)
                                     },
                                     Kit.CompactTxt(
                                         expired and "该邮件已过期，附件无法领取"
-                                            or (isPermanent and "本邮件长期有效" or RemainingText(mail.expireAt, os.time())),
+                                            or (isPermanent and "本邮件长期有效" or RemainingText(mail.expireAt, ServerClock.Now())),
                                         18,
                                         expired and C.error or (isPermanent and C.textSecondary or C.gold),
                                         {

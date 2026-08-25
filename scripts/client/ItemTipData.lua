@@ -90,7 +90,7 @@ function ItemTipData.BuildRows(item, compactForCompare, ports)
         item.tradeable == true and C.success or C.textDim
     )
     AddRow(rows, "来源", SOURCE_NAMES[item.source] or "其他途径", C.textSecondary)
-    local refund = type(item.decomposeRefund) == "table" and item.decomposeRefund or nil
+    local refund = ports.decomposeRefund
     AddRow(
         rows,
         "分解返还",

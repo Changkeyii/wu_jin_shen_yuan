@@ -12,6 +12,7 @@ local RewardDialogView = require("client.RewardDialogView")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ItemView = require("client.ItemView")
+local GridVirtualList = require("client.UI.GridVirtualList")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -233,7 +234,11 @@ actionFns_.DecomposeByFilter = function()
 
     local function UpdateCellInPlace(itemId)
         local ref = cellRefs[itemId]
-        if not ref then return end
+        -- 虚拟网格行池化复用：不在当前绑定行中的卡片可能已被销毁，跳过并清理引用。
+        if not ref or ref.cell.parent == nil then
+            cellRefs[itemId] = nil
+            return
+        end
         local on = selected[itemId]
         ref.cell:SetBackgroundColor(on and { 30, 90, 150, 120 } or { 12, 22, 40, 120 })
         if tutorialSelection then
@@ -269,60 +274,80 @@ actionFns_.DecomposeByFilter = function()
         end)
     end
 
-    local gridChildren = {}
-    for _, item in ipairs(items) do
-        local currentItem = item
-        local label = Kit.CompactTxt(selected[currentItem.id] and "✓ 已选择" or "○ 未选择", 15,
-            selected[currentItem.id] and C.success or C.textDim, {
-                width = "100%", height = 22, textAlign = "center",
-                textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
-            })
-        local card = RewardDialogView.BuildItemCard(
-            ItemView.ItemImage(currentItem),
-            currentItem.name or "装备",
-            nil,
-            currentItem.rarity or "common",
-            currentItem
-        )
-        card:SetProp("pointerEvents", "none")
-        local cell = UI.Panel {
-            -- 构造时写入 id，确保引导层能立刻按 id 命中（后写 props.id 不更新 instance.id）
-            id = tutorialSelection
-                and ("tutorialDispositionCandidate:" .. tostring(currentItem.id))
-                or nil,
-            width = 186,
-            height = 216,
-            flexShrink = 0,
-            clickable = true,
-            alignItems = "center",
-            justifyContent = "center",
-            gap = 4,
-            paddingTop = 6,
-            paddingBottom = 6,
-            backgroundColor = selected[currentItem.id] and { 30, 90, 150, 120 } or { 12, 22, 40, 120 },
-            borderWidth = tutorialSelection and 4 or 2,
-            borderColor = tutorialSelection
-                and C.focus
-                or (selected[currentItem.id] and C.focus or C.border),
-            borderRadius = 10,
-            onClick = function()
-                selected[currentItem.id] = not selected[currentItem.id]
-                UpdateCellInPlace(currentItem.id)
-                UpdateTotalsInPlace()
-                if tutorialSelection then
-                    require("client.TutorialController").SetDispositionSelected(
-                        selected[currentItem.id] == true
-                    )
-                end
-            end,
-            children = {
-                card,
-                label,
-            },
-        }
-        cellRefs[currentItem.id] = { cell = cell, label = label }
-        gridChildren[#gridChildren + 1] = cell
-    end
+    -- 分解候选虚拟网格：行池化复用，替代全量 gridChildren + flexWrap ScrollView。
+    -- 弹窗每次打开重建，无需保存滚动位置。
+    local decomposeGrid = GridVirtualList.Build {
+        columns = 3,
+        cardWidth = 186,
+        cardHeight = 216,
+        cardGap = 12,
+        rowGap = 12,
+        -- content 高度 660 - headerCountText 36 - 底部结算条 64 - 两个 gap 24 = 536。
+        viewportHeight = 536,
+        widgetProps = {
+            width = "100%",
+            flexGrow = 1,
+            flexBasis = 0,
+        },
+        showScrollbar = false,
+        data = items,
+        createCard = function(row, slotIndex, item)
+            if not item then return nil end
+            local label = Kit.CompactTxt(selected[item.id] and "✓ 已选择" or "○ 未选择", 15,
+                selected[item.id] and C.success or C.textDim, {
+                    width = "100%", height = 22, textAlign = "center",
+                    textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+                })
+            local card = RewardDialogView.BuildItemCard(
+                ItemView.ItemImage(item),
+                item.name or "装备",
+                nil,
+                item.rarity or "common",
+                item
+            )
+            card:SetProp("pointerEvents", "none")
+            local cell = UI.Panel {
+                -- 构造时写入 id，确保引导层能立刻按 id 命中（后写 props.id 不更新 instance.id）
+                id = tutorialSelection
+                    and ("tutorialDispositionCandidate:" .. tostring(item.id))
+                    or nil,
+                width = 186,
+                height = 216,
+                flexShrink = 0,
+                clickable = true,
+                alignItems = "center",
+                justifyContent = "center",
+                gap = 4,
+                paddingTop = 6,
+                paddingBottom = 6,
+                backgroundColor = selected[item.id] and { 30, 90, 150, 120 } or { 12, 22, 40, 120 },
+                borderWidth = tutorialSelection and 4 or 2,
+                borderColor = tutorialSelection
+                    and C.focus
+                    or (selected[item.id] and C.focus or C.border),
+                borderRadius = 10,
+                onClick = function()
+                    -- 行会被池化复用：点击时从当前绑定读取 item，禁止闭包捕获 bind 参数。
+                    local currentItem = row._boundItems[slotIndex]
+                    if not currentItem then return end
+                    selected[currentItem.id] = not selected[currentItem.id]
+                    UpdateCellInPlace(currentItem.id)
+                    UpdateTotalsInPlace()
+                    if tutorialSelection then
+                        require("client.TutorialController").SetDispositionSelected(
+                            selected[currentItem.id] == true
+                        )
+                    end
+                end,
+                children = {
+                    card,
+                    label,
+                },
+            }
+            cellRefs[item.id] = { cell = cell, label = label }
+            return cell
+        end,
+    }
 
     local gold0, frag0 = RecomputeTotals()
     totalGoldText = Kit.CompactTxt("+" .. Kit.FormatInt(gold0), 24, C.gold, {
@@ -348,35 +373,7 @@ actionFns_.DecomposeByFilter = function()
         gap = 12,
         children = {
             headerCountText,
-            UI.ScrollView {
-                width = "100%",
-                flexGrow = 1,
-                flexBasis = 0,
-                scrollX = false,
-                scrollY = true,
-                showScrollbar = false,
-                children = {
-                    UI.Panel {
-                        width = "100%",
-                        flexShrink = 0,
-                        alignItems = "center",
-                        paddingBottom = 12,
-                        children = {
-                            UI.Panel {
-                                width = 582,
-                                flexShrink = 0,
-                                flexDirection = "row",
-                                flexWrap = "wrap",
-                                gap = 12,
-                                justifyContent = "flex-start",
-                                alignItems = "flex-start",
-                                alignContent = "flex-start",
-                                children = gridChildren,
-                            },
-                        },
-                    },
-                },
-            },
+            decomposeGrid,
             UI.Panel {
                 width = "100%",
                 height = 64,

@@ -2,7 +2,9 @@ local UI = require("urhox-libs/UI")
 local ItemSort = require("shared.ItemSort")
 local ItemSlotBase = require("client.ItemSlotBase")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
+local GridVirtualList = require("client.UI.GridVirtualList")
 local EquipmentQuickFilter = require("client.EquipmentQuickFilter")
+local ItemView = require("client.ItemView")
 
 local EquipmentLoadoutView = {}
 
@@ -100,6 +102,9 @@ function EquipmentLoadoutView.Build(context)
         ItemSort.Sort(list)
         return list
     end
+
+    local betterSlots = ItemView.BetterUnequippedSlots(game)
+    local hasBetterUnequipped = next(betterSlots) ~= nil
 
     local filtered = CollectSlotCandidates(selectedSlot)
     -- 序章穿戴/强化：优先切到已穿戴武器部位，保证强化按钮可用且高亮目标稳定。
@@ -248,16 +253,18 @@ function EquipmentLoadoutView.Build(context)
             borderColor = { 8, 24, 54, 255 },
             pointerEvents = "none",
         }
-        endpoint:Animate {
-            keyframes = {
-                [0] = { opacity = 0.55, scale = 0.86 },
-                [0.5] = { opacity = 1.0, scale = 1.08 },
-                [1] = { opacity = 0.55, scale = 0.86 },
-            },
-            duration = 1.5 + animationIndex * 0.05,
-            easing = "easeInOut",
-            loop = true,
-        }
+        if active then
+            endpoint:Animate {
+                keyframes = {
+                    [0] = { opacity = 0.55, scale = 0.86 },
+                    [0.5] = { opacity = 1.0, scale = 1.08 },
+                    [1] = { opacity = 0.55, scale = 0.86 },
+                },
+                duration = 1.5 + animationIndex * 0.05,
+                easing = "easeInOut",
+                loop = true,
+            }
+        end
         segments[#segments + 1] = endpoint
 
         return UI.Panel {
@@ -273,7 +280,6 @@ function EquipmentLoadoutView.Build(context)
 
     local drawMode = false
     local editorSelectedIndex = nil
-    local drawPreview = nil
     local drawModeLabel = nil
     local editorSlotLabel = nil
     local editorToolbar = nil
@@ -312,6 +318,7 @@ function EquipmentLoadoutView.Build(context)
                     editorSelectedIndex = animationIndex
                     local oldConnector = connectorWidgets[animationIndex]
                     if oldConnector and connectorLayer then
+                        oldConnector:StopAnimation()
                         connectorLayer:RemoveChild(oldConnector)
                         connectorWidgets[animationIndex] = nil
                     end
@@ -360,6 +367,23 @@ function EquipmentLoadoutView.Build(context)
                 }),
             },
         }
+        if betterSlots[slot.id] then
+            -- 空部位贴右上；已穿戴时避开左上强化数字和右上卸下按钮。
+            slotWidget:AddChild(UI.Panel {
+                position = "absolute",
+                left = item and 47 or nil,
+                right = item and nil or 4,
+                top = 2,
+                width = 18,
+                height = 18,
+                shape = "circle",
+                overflow = "hidden",
+                backgroundColor = C.error,
+                borderWidth = 2,
+                borderColor = { 0, 0, 0, 160 },
+                pointerEvents = "none",
+            })
+        end
         if item then
             slotWidget:AddChild(UI.Panel {
                 position = "absolute",
@@ -389,16 +413,20 @@ function EquipmentLoadoutView.Build(context)
         if item and RegisterItemTipsTrigger then
             RegisterItemTipsTrigger(slotWidget, item)
         end
-        slotWidget:Animate {
-            keyframes = {
-                [0] = { translateY = 0, opacity = 0.94 },
-                [0.5] = { translateY = -2, opacity = 1.0 },
-                [1] = { translateY = 0, opacity = 0.94 },
-            },
-            duration = 1.8 + animationIndex * 0.07,
-            easing = "easeInOut",
-            loop = true,
-        }
+        if active then
+            slotWidget:Animate {
+                keyframes = {
+                    [0] = { translateY = 0, opacity = 0.94 },
+                    [0.5] = { translateY = -2, opacity = 1.0 },
+                    [1] = { translateY = 0, opacity = 0.94 },
+                },
+                duration = 1.8 + animationIndex * 0.07,
+                easing = "easeInOut",
+                loop = true,
+            }
+        else
+            slotWidget:SetStyle({ translateY = 0, opacity = 0.94 })
+        end
         return slotWidget
     end
 
@@ -447,12 +475,58 @@ function EquipmentLoadoutView.Build(context)
         width = 860,
         height = 720,
         pointerEvents = "none",
+        visible = false,
     }
+    local drawPreviewSegments = {}
+    for index = 1, 3 do
+        drawPreviewSegments[index] = UI.Panel {
+            position = "absolute",
+            left = 0,
+            top = 0,
+            width = 0,
+            height = 4,
+            backgroundColor = C.focus,
+            opacity = 0.96,
+            rotate = 0,
+            transformOrigin = "top-left",
+            pointerEvents = "none",
+            visible = false,
+        }
+    end
+    local drawPreviewEndpoint = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        width = 12,
+        height = 12,
+        shape = "circle",
+        backgroundColor = C.focus,
+        borderWidth = 2,
+        borderColor = { 8, 24, 54, 255 },
+        pointerEvents = "none",
+        visible = false,
+    }
+    local drawPreviewChildren = {}
+    for _, segment in ipairs(drawPreviewSegments) do
+        drawPreviewChildren[#drawPreviewChildren + 1] = segment
+    end
+    drawPreviewChildren[#drawPreviewChildren + 1] = drawPreviewEndpoint
+    local drawPreview = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        width = 860,
+        height = 720,
+        pointerEvents = "none",
+        children = drawPreviewChildren,
+    }
+    drawPreviewLayer:AddChild(drawPreview)
+
     local function ClearDrawPreview()
-        if drawPreview then
-            drawPreviewLayer:RemoveChild(drawPreview)
-            drawPreview = nil
+        for _, segment in ipairs(drawPreviewSegments) do
+            segment:SetStyle({ visible = false })
         end
+        drawPreviewEndpoint:SetStyle({ visible = false })
     end
 
     local function GetPointerPoint(event)
@@ -497,21 +571,48 @@ function EquipmentLoadoutView.Build(context)
             x = math.max(286, math.min(574, cursorPoint.x)),
             y = math.max(86, math.min(596, cursorPoint.y)),
         }
-        local previewLayout = {
-            x = source.x,
-            y = source.y,
-            startSide = source.startSide,
-            anchorX = target.x,
-            anchorY = target.y,
-            route = BuildAutomaticRoute(source, target),
+        local start = ConnectorStartPoint(source)
+        local route = BuildAutomaticRoute(source, target)
+        local points = {
+            start,
+            route[1],
+            route[2],
+            target,
         }
-        drawPreview = CreateRoutedConnector(previewLayout, true, editorSelectedIndex)
-        drawPreviewLayer:AddChild(drawPreview)
+        local segmentCount = 0
+        for index = 1, #points - 1 do
+            local from = points[index]
+            local to = points[index + 1]
+            local dx = to.x - from.x
+            local dy = to.y - from.y
+            local length = math.sqrt(dx * dx + dy * dy)
+            if length >= 2 and segmentCount < #drawPreviewSegments then
+                segmentCount = segmentCount + 1
+                drawPreviewSegments[segmentCount]:SetStyle {
+                    left = from.x,
+                    top = from.y - 2,
+                    width = length,
+                    height = 4,
+                    rotate = math.deg(math.atan(dy, dx)),
+                    visible = true,
+                }
+            end
+        end
+        drawPreviewEndpoint:SetStyle {
+            left = target.x - 6,
+            top = target.y - 6,
+            width = 12,
+            height = 12,
+            visible = true,
+        }
     end
 
     RefreshConnector = function(index)
         local oldConnector = connectorWidgets[index]
-        if oldConnector then connectorLayer:RemoveChild(oldConnector) end
+        if oldConnector then
+            oldConnector:StopAnimation()
+            connectorLayer:RemoveChild(oldConnector)
+        end
         local layout = slotLayout[index]
         local newConnector = CreateRoutedConnector(layout, editorSelectedIndex == index, index)
         connectorWidgets[index] = newConnector
@@ -574,11 +675,13 @@ function EquipmentLoadoutView.Build(context)
             if drawModeLabel then drawModeLabel:SetText("退出编辑") end
             if editorSlotLabel then editorSlotLabel:SetText("选择部位") end
             if editorToolbar then editorToolbar:SetVisible(true) end
+            if drawPreviewLayer then drawPreviewLayer:SetStyle({ visible = true }) end
             if dragHint then dragHint:SetText("先点部位槽，再点击角色上的最终连接点；路线会自动生成") end
         else
             if drawModeLabel then drawModeLabel:SetText("编辑连线") end
             if editorSlotLabel then editorSlotLabel:SetText("") end
             if editorToolbar then editorToolbar:SetVisible(false) end
+            if drawPreviewLayer then drawPreviewLayer:SetStyle({ visible = false }) end
             if dragHint then dragHint:SetText("") end
         end
     end
@@ -608,103 +711,118 @@ function EquipmentLoadoutView.Build(context)
         if dragHint then dragHint:SetText("") end
     end
 
-    local function CreateEquipmentCard(item)
-        local active = selectedCandidate and selectedCandidate.id == item.id
+    -- 池化虚拟网格：行会被 VirtualList 复用，卡片闭包内一律通过
+    -- row._boundItems[slotIndex] 读取当前 item，绝不捕获 bind 时的 item 引用。
+    local function createCard(row, slotIndex, item)
+        if not item then return nil end
         local TutorialController = require("client.TutorialController")
         local tutorialEquipStep = TutorialController.IsActive
             and TutorialController.IsActive()
             and TutorialController.GetStep
             and TutorialController.GetStep() == 2
-        local card = EquipmentItemSlot.Build(slotContext, item, {
+        local currentItem = row._boundItems[slotIndex] or item
+        local active = selectedCandidate and selectedCandidate.id == currentItem.id
+        local card = EquipmentItemSlot.Build(slotContext, currentItem, {
             -- 构造时写入 id，避免后写 props.id 导致引导层找不到。
-            id = "tutorialCandidate:" .. tostring(item.id),
+            id = "tutorialCandidate:" .. tostring(currentItem.id),
             active = active,
             clickable = true,
-            detailText = "战力 " .. ItemPowerText(item),
+            detailText = "战力 " .. ItemPowerText(currentItem),
             -- 序章穿戴：候选本体自带蓝色描边，不依赖覆盖层几何。
             tutorialHighlight = tutorialEquipStep == true,
             itemTips = tutorialEquipStep ~= true,
             onPointerDown = function()
                 if tutorialEquipStep then return end
-                StartDrag(item)
+                local currentItem = row._boundItems[slotIndex]
+                if not currentItem then return end
+                StartDrag(currentItem)
             end,
             onPointerUp = function(event)
                 if tutorialEquipStep then return end
                 DropAtPointer(event)
             end,
             onClick = function(widget)
+                local currentItem = row._boundItems[slotIndex]
+                if not currentItem then return end
                 if tutorialEquipStep then
                     -- 主路径推进：选中候选后立刻进入“快捷穿戴”子步骤。
                     if TutorialController.NotifyAction then
                         TutorialController.NotifyAction("equip_select")
                     end
-                    if item.slot then SetSelectedSlot(item.slot) end
-                    SetSelectedInventoryId(item.id)
+                    if currentItem.slot then SetSelectedSlot(currentItem.slot) end
+                    SetSelectedInventoryId(currentItem.id)
                     RequestPageRefresh()
                     return
                 end
-                if active and ShowItemTips then
+                local activeNow = selectedCandidate and selectedCandidate.id == currentItem.id
+                if activeNow and ShowItemTips then
                     draggingItem = nil
                     if dragHint then dragHint:SetText("") end
                     local bounds = widget and widget.GetAbsoluteLayoutForHitTest
                         and widget:GetAbsoluteLayoutForHitTest()
                         or nil
-                    ShowItemTips(item, bounds, { source = "equipment" })
+                    ShowItemTips(currentItem, bounds, { source = "equipment" })
                     return
                 end
                 -- 选中列表装备时同步部位，保证强化/升星命中正确槽位。
-                if item.slot then SetSelectedSlot(item.slot) end
-                SetSelectedInventoryId(item.id)
+                if currentItem.slot then SetSelectedSlot(currentItem.slot) end
+                SetSelectedInventoryId(currentItem.id)
                 RequestPageRefresh()
             end,
             onLongPress = function(_, widget)
                 if tutorialEquipStep then return end
+                local currentItem = row._boundItems[slotIndex]
+                if not currentItem then return end
                 draggingItem = nil
                 if dragHint then dragHint:SetText("") end
                 if not ShowItemTips then return end
                 local bounds = widget and widget.GetAbsoluteLayoutForHitTest
                     and widget:GetAbsoluteLayoutForHitTest()
                     or nil
-                ShowItemTips(item, bounds, { source = "equipment" })
+                ShowItemTips(currentItem, bounds, { source = "equipment" })
             end,
         })
         return card
     end
 
-    local cardChildren = {}
-    for _, item in ipairs(filtered) do
-        cardChildren[#cardChildren + 1] = CreateEquipmentCard(item)
-    end
-    if #cardChildren == 0 then
-        cardChildren[1] = UI.Panel {
-            width = "100%",
-            height = 380,
-            alignItems = "center",
-            justifyContent = "center",
-            gap = 12,
-            children = {
-                UI.Panel { width = 180, height = 180, backgroundImage = inventoryEmptyState, backgroundFit = "contain" },
-                Txt("当前部位暂无可穿戴装备", 25, C.textSecondary, { width = "100%", height = 38, textAlign = "center", textStroke = { width = 1, color = "#000000" } }),
-            },
-        }
-    end
-
-    local equipmentListScrollView = UI.ScrollView {
-        position = "absolute",
-        left = 18,
-        top = 58,
-        width = 824,
-        height = 438,
-        scrollY = true,
-        showScrollbar = false,
-        onScroll = function(_, _, scrollY)
-            SetEquipmentScrollY(scrollY)
-        end,
-        children = {
-            UI.Panel { width = "100%", flexDirection = "row", flexWrap = "wrap", justifyContent = "center", gap = 10, padding = 8, children = cardChildren },
+    -- 候选装备虚拟网格：代替全量 cardChildren + flexWrap ScrollView。
+    -- 滚动位置由 getScrollY/setScrollY 恢复/保存，页面其余部分不受影响。
+    local equipmentListScrollView = GridVirtualList.Build {
+        columns = 4,
+        cardWidth = 180,
+        cardHeight = 182,
+        cardGap = 10,
+        rowGap = 10,
+        viewportHeight = 438,
+        widgetProps = {
+            position = "absolute",
+            left = 18,
+            top = 58,
+            width = 824,
+            height = 438,
         },
+        showScrollbar = false,
+        bounces = false,
+        poolBuffer = 2,
+        data = filtered,
+        createCard = createCard,
+        emptyState = function()
+            -- 空状态面板放在原 ScrollView 位置，保持原尺寸/布局原样返回。
+            return UI.Panel {
+                width = "100%",
+                height = 380,
+                alignItems = "center",
+                justifyContent = "center",
+                gap = 12,
+                children = {
+                    UI.Panel { width = 180, height = 180, backgroundImage = inventoryEmptyState, backgroundFit = "contain" },
+                    Txt("当前部位暂无可穿戴装备", 25, C.textSecondary, { width = "100%", height = 38, textAlign = "center", textStroke = { width = 1, color = "#000000" } }),
+                },
+            }
+        end,
+        getScrollY = function() return GetEquipmentScrollY() end,
+        setScrollY = function(v) SetEquipmentScrollY(v or 0) end,
     }
-    equipmentListScrollView.state.scrollY = math.max(0, GetEquipmentScrollY() or 0)
 
     local detailChildren = {}
     if selectedCandidate then
@@ -836,7 +954,7 @@ function EquipmentLoadoutView.Build(context)
             }),
         },
     }
-    local autoEquipButton = ImageButton(
+    local autoEquipInner = ImageButton(
         "一键穿戴",
         190,
         50,
@@ -862,6 +980,30 @@ function EquipmentLoadoutView.Build(context)
         end,
         readOnly
     )
+    local autoEquipChildren = { autoEquipInner }
+    if hasBetterUnequipped then
+        autoEquipChildren[#autoEquipChildren + 1] = UI.Panel {
+            position = "absolute",
+            right = -4,
+            top = -6,
+            width = 20,
+            height = 20,
+            shape = "circle",
+            overflow = "hidden",
+            backgroundColor = C.error,
+            borderWidth = 2,
+            borderColor = { 0, 0, 0, 160 },
+            pointerEvents = "none",
+        }
+    end
+    local autoEquipButton = UI.Panel {
+        width = 190,
+        height = 50,
+        flexShrink = 0,
+        position = "relative",
+        overflow = "visible",
+        children = autoEquipChildren,
+    }
     local upgradeActionBar = UI.Panel {
         width = 900,
         height = 82,
@@ -995,6 +1137,7 @@ function EquipmentLoadoutView.Build(context)
                 if not editorSelectedIndex then return end
                 local oldConnector = connectorWidgets[editorSelectedIndex]
                 if oldConnector then
+                    oldConnector:StopAnimation()
                     connectorLayer:RemoveChild(oldConnector)
                     connectorWidgets[editorSelectedIndex] = nil
                 end
@@ -1006,6 +1149,11 @@ function EquipmentLoadoutView.Build(context)
     }
     topArea:AddChild(dragHint)
     topArea:AddChild(connectorLayer)
+    topArea:AddChild(drawPreviewLayer)
+    topArea:AddChild(drawSurface)
+    topArea:AddChild(drawButton)
+    topArea:AddChild(editorSlotLabel)
+    topArea:AddChild(editorToolbar)
     for _, slotWidget in ipairs(slotWidgets) do topArea:AddChild(slotWidget) end
 
     local equipmentPageScrollView = UI.ScrollView {

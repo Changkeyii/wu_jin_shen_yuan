@@ -3,12 +3,22 @@ local ItemSort = require("shared.ItemSort")
 local RarityCatalog = require("shared.RarityCatalog")
 local ServerClient = require("client.ServerClient")
 local BackpackItemSlot = require("client.BackpackItemSlot")
+local GridVirtualList = require("client.UI.GridVirtualList")
 local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
 local EquipmentDispositionDialog = require("client.EquipmentDispositionDialog")
 
 local BlackMarketView = {}
 
 local RULES = "黑市按装备标准回收价收购可交易装备。锁定、穿戴中的装备不能出售；神话装备不在黑市出售范围内。批量出售由服务器校验并结算。\n\n交易行挂单价格不设上下限；价格不高于标准值10%的挂单，会在每日07:00与20:00（UTC+8）由系统低价扫货。"
+
+-- 黑市背包网格（虚拟列表）：
+-- 正文容器宽 940（body），滚动内容左右各 10 padding → 可用宽 920。
+-- 卡片 180×180 + gap 14，一行可放 4 张：4*180 + 3*14 = 762 ≤ 920；不足一行取整为 4 列。
+local MARKET_CARD_WIDTH = 180
+local MARKET_CARD_HEIGHT = 180
+local MARKET_CARD_GAP = 14
+local MARKET_GRID_CONTENT_WIDTH = 940 - 20
+local MARKET_GRID_COLUMNS = math.floor((MARKET_GRID_CONTENT_WIDTH + MARKET_CARD_GAP) / (MARKET_CARD_WIDTH + MARKET_CARD_GAP))
 
 local function ImageButton(context, label, onClick, disabled)
     return UI.Panel {
@@ -103,37 +113,77 @@ end
 
 function BlackMarketView.Build(context)
     local visibleItems = CollectVisibleItems(context)
-    local cards = {}
     local slotContext = EquipmentContext(context)
-    for _, item in ipairs(visibleItems) do
-        cards[#cards + 1] = BackpackItemSlot.Build(slotContext, item, {
-            width = 180,
-            height = 180,
-            clickable = true,
-            showLockButton = true,
-            onClick = function(widget)
-                local bounds = widget and widget.GetAbsoluteLayoutForHitTest
-                    and widget:GetAbsoluteLayoutForHitTest()
-                    or nil
-                context.showItemTips(item, bounds, { source = "black-market" })
-            end,
-            onLongPress = function()
-                context.setEquipmentLock(item)
-            end,
-        })
-    end
-    if #cards == 0 then
-        cards[1] = UI.Panel {
-            width = "100%", height = 260, flexShrink = 0,
-            justifyContent = "center", alignItems = "center",
-            children = {
-                context.compactTxt("当前没有可出售装备", 24, context.C.textSecondary, {
-                    width = "100%", height = 48, textAlign = "center",
-                    textStroke = { width = 1, color = "#000000" },
-                }),
-            },
-        }
-    end
+    -- 黑市背包虚拟网格：行池化复用，替代全量 cards + flexWrap ScrollView。
+    -- 页面无滚动状态变量，无需接入 getScrollY/setScrollY。
+    local inventoryGrid = GridVirtualList.Build {
+        columns = MARKET_GRID_COLUMNS,
+        cardWidth = MARKET_CARD_WIDTH,
+        cardHeight = MARKET_CARD_HEIGHT,
+        cardGap = MARKET_CARD_GAP,
+        rowGap = MARKET_CARD_GAP,
+        -- 视口高度（设计分辨率 1080×1920）：
+        -- 页面中部 1440 - 市场外框上下 226 - body 上下 160 - 网格区上下 154 = 900。
+        viewportHeight = 900,
+        widgetProps = {
+            width = "100%",
+            height = "100%",
+        },
+        showScrollbar = true,
+        data = visibleItems,
+        createCard = function(row, slotIndex, item)
+            if not item then return nil end
+            return BackpackItemSlot.Build(slotContext, item, {
+                width = MARKET_CARD_WIDTH,
+                height = MARKET_CARD_HEIGHT,
+                clickable = true,
+                showLockButton = true,
+                onClick = function(widget)
+                    -- 行会被池化复用：点击时从当前绑定读取 item，禁止闭包捕获 bind 参数。
+                    local currentItem = row._boundItems[slotIndex]
+                    if not currentItem then return end
+                    local bounds = widget and widget.GetAbsoluteLayoutForHitTest
+                        and widget:GetAbsoluteLayoutForHitTest()
+                        or nil
+                    context.showItemTips(currentItem, bounds, { source = "black-market" })
+                end,
+                onLongPress = function()
+                    local currentItem = row._boundItems[slotIndex]
+                    if not currentItem then return end
+                    context.setEquipmentLock(currentItem)
+                end,
+            })
+        end,
+        emptyState = function()
+            -- 空状态面板放在原 ScrollView 位置，保持原布局/文案原样返回。
+            return UI.Panel {
+                width = "100%",
+                height = "100%",
+                children = {
+                    UI.Panel {
+                        width = "100%", flexShrink = 0,
+                        flexDirection = "row", flexWrap = "wrap",
+                        justifyContent = "center", alignItems = "flex-start",
+                        gap = 14,
+                        paddingLeft = 10, paddingRight = 10,
+                        paddingTop = 12, paddingBottom = 42,
+                        children = {
+                            UI.Panel {
+                                width = "100%", height = 260, flexShrink = 0,
+                                justifyContent = "center", alignItems = "center",
+                                children = {
+                                    context.compactTxt("当前没有可出售装备", 24, context.C.textSecondary, {
+                                        width = "100%", height = 48, textAlign = "center",
+                                        textStroke = { width = 1, color = "#000000" },
+                                    }),
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+        end,
+    }
 
     return UI.Panel {
         width = "100%", height = "100%", position = "relative", overflow = "hidden",
@@ -156,23 +206,7 @@ function BlackMarketView.Build(context)
             UI.Panel {
                 position = "absolute", left = 0, top = 62, right = 0, bottom = 92,
                 overflow = "hidden",
-                children = {
-                    UI.ScrollView {
-                        width = "100%", height = "100%",
-                        scrollX = false, scrollY = true, showScrollbar = true,
-                        children = {
-                            UI.Panel {
-                                width = "100%", flexShrink = 0,
-                                flexDirection = "row", flexWrap = "wrap",
-                                justifyContent = "center", alignItems = "flex-start",
-                                gap = 14,
-                                paddingLeft = 10, paddingRight = 10,
-                                paddingTop = 12, paddingBottom = 42,
-                                children = cards,
-                            },
-                        },
-                    },
-                },
+                children = { inventoryGrid },
             },
             UI.Panel {
                 position = "absolute", left = 170, bottom = 12,

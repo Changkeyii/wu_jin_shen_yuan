@@ -48,6 +48,13 @@ local EquipmentLoadoutView = require("client.EquipmentLoadoutView")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ItemView = require("client.ItemView")
+local RewardClaimController = require("client.RewardClaimController")
+local UIRefreshCoordinator = require("client.UI.UIRefreshCoordinator")
+local UIBinder = require("client.UI.UIBinder")
+local UITimer = require("client.UI.UITimer")
+local UIOverlay = require("client.UI.UIOverlay")
+local UIManager = require("client.UI.UIManager")
+local ClientViewCache = require("client.UI.ClientViewCache")
 
 local CONFIG = GameTheme.CONFIG
 local C = GameTheme.Colors
@@ -67,13 +74,13 @@ local game = GameStateAdapter.GetViewState()
 local uiRoot_ = nil
 local screenRoot_ = nil
 local pageContainer_ = nil
-local needsFullRebuild_ = false
-local needsPageRefresh_ = false
+local binderToken_ = nil
 local inventoryState_ = {
     selectedInventoryId = nil,
     selectedSlot = "weapon",
     selectedCategory = "all",
     tabScrollX = 0,
+    inventoryGridScrollY = 0,
     equipmentScrollY = 0,
     equipmentPageScrollY = 0,
 }
@@ -82,11 +89,62 @@ local viewportWidth_ = 0
 local viewportHeight_ = 0
 
 local function RequestPageRefresh()
-    needsPageRefresh_ = true
+    UIRefreshCoordinator.Request("page")
 end
 
 local function RequestFullRebuild()
-    needsFullRebuild_ = true
+    UIRefreshCoordinator.Request("root")
+end
+
+local function GetDecomposeRefund(itemId)
+    return ClientViewCache.GetDecomposeRefund(itemId, GameStateAdapter.GetRevision())
+end
+
+local function RequestDecomposePreview(itemId, callback)
+    local revision = GameStateAdapter.GetRevision()
+    local value = ClientViewCache.GetDecomposeRefund(itemId, revision)
+    if value ~= nil then
+        if callback then
+            callback({ ok = true, data = value, cached = true })
+        end
+        return true
+    end
+    if not ClientViewCache.BeginDecomposeRefund(itemId, revision) then
+        return false
+    end
+    ServerClient.DecomposePreview(itemId, function(response)
+        if response and response.ok and type(response.data) == "table" then
+            ClientViewCache.ResolveDecomposeRefund(itemId, revision, {
+                gold = response.data.gold or 0,
+                fragments = response.data.fragments or 0,
+                rate = response.data.rate or 0,
+                vipLevel = response.data.vipLevel or 0,
+            })
+        else
+            ClientViewCache.FailDecomposeRefund(itemId, revision)
+        end
+        if callback then callback(response) end
+    end)
+    return true
+end
+
+local PAGE_DOMAINS = {
+    home = { player = true, progression = true, combat = true, inventory = true, equipment = true, quest = true, activity = true, wish = true, abyss = true, challenge = true, tutorial = true },
+    bag = { inventory = true, equipment = true, player = true, wish = true, abyss = true },
+    equip = { inventory = true, equipment = true, player = true },
+    codex = { inventory = true, equipment = true, progression = true },
+    quest = { quest = true, player = true, progression = true },
+    market = { market = true, inventory = true, player = true },
+}
+
+local function DomainsAffectCurrentPage(domains, page)
+    if type(domains) ~= "table" or domains.all then return true end
+    local interests = PAGE_DOMAINS[page]
+    if not interests then return false end
+    for domain in pairs(domains) do
+        if interests[domain] then return true end
+    end
+    return false
 end
 
 local ACTION_ERROR_MESSAGES = {
@@ -210,12 +268,15 @@ local function BuildInventoryContext()
         setSelectedCategory = function(value) inventoryState_.selectedCategory = value end,
         getInventoryTabScrollX = function() return inventoryState_.tabScrollX end,
         setInventoryTabScrollX = function(value) inventoryState_.tabScrollX = value or 0 end,
+        getInventoryGridScrollY = function() return inventoryState_.inventoryGridScrollY end,
+        setInventoryGridScrollY = function(value) inventoryState_.inventoryGridScrollY = value or 0 end,
         getEquipmentScrollY = function() return inventoryState_.equipmentScrollY end,
         setEquipmentScrollY = function(value) inventoryState_.equipmentScrollY = value or 0 end,
         getEquipmentPageScrollY = function() return inventoryState_.equipmentPageScrollY end,
         setEquipmentPageScrollY = function(value) inventoryState_.equipmentPageScrollY = value or 0 end,
         requestPageRefresh = RequestPageRefresh,
-        requestDecomposePreview = ServerClient.DecomposePreview,
+        requestDecomposePreview = RequestDecomposePreview,
+        getDecomposeRefund = GetDecomposeRefund,
         equipItem = actionFns_.EquipItem,
         unequipSlot = actionFns_.UnequipSlot,
         decomposeByFilter = actionFns_.DecomposeByFilter,
@@ -651,6 +712,9 @@ local function BuildRoot()
         }
     }
     UI.SetRoot(screenRoot_, true)
+    UIOverlay.AttachRoot(screenRoot_)
+    WishPoolView.ReattachOverlay()
+    UIManager.AttachContainer(pageContainer_, true)
     LootStashController.AttachRoot(uiRoot_)
     EquipmentUpgradePromptController.AttachRoot(uiRoot_)
     CommonPromptDialog.Configure {
@@ -674,7 +738,8 @@ local function BuildRoot()
         compareMagnitude = BigNumber.Compare,
         formatInt = Kit.FormatInt,
         isEquipped = function(item) return ItemView.IsEquipped(game, item) end,
-        requestDecomposePreview = ServerClient.DecomposePreview,
+        requestDecomposePreview = RequestDecomposePreview,
+        getDecomposeRefund = GetDecomposeRefund,
         showDisposition = function(mode, items)
             EquipmentDispositionDialog.Show(BuildDispositionContext(), {
                 mode = mode,
@@ -717,15 +782,15 @@ local function InitUI()
 end
 
 local function BindServerEvents()
-    ServerClient.On("snapshot", function()
+    ServerClient.On("snapshot", function(payload)
         game = GameStateAdapter.GetViewState()
+        local dirtyDomains = GameStateAdapter.GetDirtyDomains()
+        ClientViewCache.Set("gameView", "dirtyDomains", dirtyDomains)
+        UIBinder.Notify(dirtyDomains, game, payload)
         RewardFeedbackController.SyncSnapshot()
         PlayPresentation.HandleSnapshot()
-        UpdateTopBar()
-        if pageContainer_ then
-            RefreshCurrentPage()
-        else
-            BuildRoot()
+        if not pageContainer_ then
+            RequestFullRebuild()
         end
         LoadingController.MarkSnapshotReceived()
         FaceSlapController.Evaluate("snapshot")
@@ -737,6 +802,9 @@ local function BindServerEvents()
     end)
     ServerClient.On("delta", function(payload)
         game = GameStateAdapter.GetViewState()
+        local dirtyDomains = GameStateAdapter.GetDirtyDomains()
+        ClientViewCache.Set("gameView", "dirtyDomains", dirtyDomains)
+        UIBinder.Notify(dirtyDomains, game, payload)
         -- 开罐事件：在背包/当前页全屏 overlay 播放开罐卷轴，不切换页面
         for _, event in ipairs((payload and payload.events) or {}) do
             local kind = event.kind or event.type
@@ -754,28 +822,22 @@ local function BindServerEvents()
         PlayPresentation.HandleDelta(payload)
         RewardFeedbackController.PresentDelta(payload)
         UpdateTopBar()
+        NavigationController.Update(game)
         if game.page == "play" then
             PlayPresentation.Update(0)
-        elseif game.page == "home"
-            or game.page == "equip"
-            or game.page == "bag"
-            or game.page == "codex"
-            or game.page == "quest"
-        then
-            -- These pages render authoritative values as static nodes, so
-            -- rebuild after every accepted server delta.
-            RequestPageRefresh()
         elseif game.page == "activity" then
             -- 打桩场景是实时动画场景：delta 到达时重建会立即清除伤害飘字，打桩中跳过重建；
             -- 打桩结束后由快照/下一次刷新重建回卡片列表。
-            if not ActivityView.IsStriking() then
+            if not ActivityView.IsStriking() and DomainsAffectCurrentPage(dirtyDomains, game.page) then
                 RequestPageRefresh()
             end
         elseif game.page == "wish" then
             -- 许愿跑马灯和开罐卷轴由服务端事件驱动；动画期间禁止重建页面。
-            if not WishPoolView.IsAnimating() then
+            if not WishPoolView.IsAnimating() and DomainsAffectCurrentPage(dirtyDomains, game.page) then
                 RequestPageRefresh()
             end
+        elseif DomainsAffectCurrentPage(dirtyDomains, game.page) then
+            RequestPageRefresh()
         end
     end)
     ServerClient.On("status", function(payload)
@@ -829,6 +891,21 @@ local function BindServerEvents()
 end
 
 function GameView.Start()
+    UIRefreshCoordinator.Reset()
+    UIBinder.Reset()
+    UITimer.Reset()
+    UIOverlay.Reset()
+    UIManager.Reset()
+    ClientViewCache.ClearAll()
+    binderToken_ = UIBinder.Subscribe("all", function(domains, state)
+        UIRefreshCoordinator.Request("topBar")
+        UIRefreshCoordinator.Request("navigation")
+        if state and state.page ~= "play" and state.page ~= "activity" and state.page ~= "wish"
+            and DomainsAffectCurrentPage(domains, state.page)
+        then
+            RequestPageRefresh()
+        end
+    end)
     NavigationController.Configure {
         refreshPage = function() RefreshCurrentPage() end,
         isIdleRewardTracking = RewardFeedbackController.IsTracking,
@@ -868,7 +945,7 @@ function GameView.Start()
     }
     WishPoolView.Configure {
         requestPageRefresh = RequestPageRefresh,
-        root = screenRoot_,
+        overlayHost = UIOverlay,
     }
     FaceSlapController.Configure {
         getGame = GameStateAdapter.GetViewState,
@@ -968,6 +1045,20 @@ end
 
 function GameView.Stop()
     UnsubscribeFromEvent("Update")
+    if binderToken_ then UIBinder.Unsubscribe(binderToken_); binderToken_ = nil end
+    UIRefreshCoordinator.Reset()
+    UITimer.Reset()
+    UIManager.Reset()
+    UIOverlay.Reset()
+    UIBinder.Reset()
+    ClientViewCache.ClearAll()
+    inventoryState_.selectedInventoryId = nil
+    inventoryState_.selectedSlot = "weapon"
+    inventoryState_.selectedCategory = "all"
+    inventoryState_.tabScrollX = 0
+    inventoryState_.inventoryGridScrollY = 0
+    inventoryState_.equipmentScrollY = 0
+    inventoryState_.equipmentPageScrollY = 0
     PlayPresentation.Reset()
     ActivityView.Reset()
     WishPoolView.Reset()
@@ -1000,7 +1091,7 @@ function GameView.HandleUpdate(eventType, eventData)
     ServerClient.Update(dt)
     LoadingController.Update(dt)
     DailyVipController.Update(dt)
-    require("client.RewardClaimController").Update(dt)
+    RewardClaimController.Update(dt)
     WishPoolController.Update(dt)
     FaceSlapController.Update(dt)
     MailController.Update(dt)
@@ -1011,6 +1102,8 @@ function GameView.HandleUpdate(eventType, eventData)
     if game.page == "activity" then ActivityView.Update(dt) end
     -- 许愿/开罐动画为全屏 overlay，任何页面都需要驱动；无动画时内部直接返回
     WishPoolView.Update(dt)
+    UITimer.Update()
+    UIManager.Update(dt)
     local physicalWidth = graphics:GetWidth()
     local physicalHeight = graphics:GetHeight()
     if physicalWidth ~= viewportWidth_ or physicalHeight ~= viewportHeight_ then
@@ -1018,13 +1111,14 @@ function GameView.HandleUpdate(eventType, eventData)
         viewportHeight_ = physicalHeight
         RequestFullRebuild()
     end
-    if needsFullRebuild_ then
-        needsFullRebuild_ = false
-        needsPageRefresh_ = false
+    local refresh = UIRefreshCoordinator.Consume()
+    if refresh.root then
         BuildRoot()
-    elseif needsPageRefresh_ then
-        needsPageRefresh_ = false
+    elseif refresh.page then
         RefreshCurrentPage()
+    else
+        if refresh.topBar then UpdateTopBar() end
+        if refresh.navigation then NavigationController.Update(game) end
     end
     -- 新手强引导：维护目标重建、布局重试与异步弹窗输入白名单。
     TutorialController.Update(dt)

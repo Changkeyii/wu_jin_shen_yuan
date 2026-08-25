@@ -512,25 +512,17 @@ function ItemTips.Show(item, anchor, options, expanded)
     end
     options = options or {}
     local allowActions = options.allowActions ~= false
+    local decomposeRefund = context_.getDecomposeRefund
+        and context_.getDecomposeRefund(item.id)
+        or nil
     if allowActions
         and item.id
-        and type(item.decomposeRefund) ~= "table"
-        and options.refundRequestPending ~= true
+        and not decomposeRefund
         and context_.requestDecomposePreview
     then
-        options.refundRequestPending = true
         context_.requestDecomposePreview(item.id, function(response)
-            options.refundRequestPending = false
-            if response and response.ok and type(response.data) == "table" then
-                item.decomposeRefund = {
-                    gold = response.data.gold or 0,
-                    fragments = response.data.fragments or 0,
-                    rate = response.data.rate or 0,
-                    vipLevel = response.data.vipLevel or 0,
-                }
-                if currentItem_ == item then
-                    ItemTips.Show(item, anchor, options, expanded)
-                end
+            if response and response.ok and currentItem_ == item then
+                ItemTips.Show(item, anchor, options, expanded)
             end
         end)
     end
@@ -587,6 +579,7 @@ function ItemTips.Show(item, anchor, options, expanded)
         colors = C,
         formatInt = context_.formatInt,
         isEquipped = context_.isEquipped,
+        decomposeRefund = decomposeRefund,
     })) do
         rows[#rows + 1] = BuildRow(row, rowWidth)
     end
