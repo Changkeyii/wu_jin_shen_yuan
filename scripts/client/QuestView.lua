@@ -21,7 +21,7 @@ local ASSETS = ViewAssets.ASSETS
 local SURFACE = { 33, 69, 138, 235 }
 local SURFACE_CAN = { 20, 62, 36, 235 }
 
-local TAB_NAMES = { newbie = "新手", daily = "每日", achievement = "成就" }
+local TAB_NAMES = { newbie = "新手", daily = "每日", weekly = "周常", achievement = "成就" }
 
 local function NextDayCountdown()
     local now = ServerClock.Now()
@@ -54,55 +54,84 @@ local function ProgressRatio(quest)
     return math.max(0, math.min(1, (quest.cur or 0) / target))
 end
 
-local function QuestCard(quest)
+local function QuestButtonSpec(quest)
     local claimed = quest.state == "claimed"
     local claimable = quest.state == "claimable"
-    local inProgress = not claimed and not claimable
+    if claimed then
+        return {
+            text = "已完成",
+            color = C.textDim,
+            image = ASSETS.ui.buttonBlueWide,
+            opacity = 0.72,
+            clickable = false,
+        }
+    end
+    if claimable then
+        return {
+            text = "领取",
+            color = C.text,
+            image = ASSETS.ui.inventoryActionGold,
+            opacity = 1,
+            clickable = true,
+        }
+    end
+    return {
+        text = "进行中",
+        color = C.textSecondary,
+        image = ASSETS.ui.buttonBlueWide,
+        opacity = 0.55,
+        clickable = false,
+    }
+end
+
+local function QuestCard(quest)
+    local claimable = quest.state == "claimable"
     local ratio = ProgressRatio(quest)
     local trackWidth = 480
     local fillWidth = math.max(0, math.floor(trackWidth * ratio))
-
-    local button
-    if claimed then
-        button = UI.Panel {
-            position = "absolute", right = 24, top = 26, width = 168, height = 64,
-            backgroundImage = ASSETS.ui.buttonBlueWide, backgroundFit = "contain",
-            opacity = 0.72,
-            children = {
-                Kit.Txt("已完成", 20, C.textDim, {
-                    width = "100%", height = 64, textAlign = "center",
-                    textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
-                }),
-            },
-        }
-    elseif claimable then
-        button = UI.Panel {
-            position = "absolute", right = 24, top = 26, width = 168, height = 64,
-            clickable = true,
-            backgroundImage = ASSETS.ui.inventoryActionGold, backgroundFit = "contain",
-            onClick = function() QuestController.Claim(quest.id) end,
-            children = {
-                Kit.Txt("领取", 22, C.text, {
-                    width = "100%", height = 64, textAlign = "center",
-                    textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
-                }),
-            },
-        }
-    else
-        button = UI.Panel {
-            position = "absolute", right = 24, top = 26, width = 168, height = 64,
-            backgroundImage = ASSETS.ui.buttonBlueWide, backgroundFit = "contain",
-            opacity = 0.55,
-            children = {
-                Kit.Txt("进行中", 20, C.textSecondary, {
-                    width = "100%", height = 64, textAlign = "center",
-                    textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
-                }),
-            },
-        }
-    end
-
-    return UI.Panel {
+    local spec = QuestButtonSpec(quest)
+    local bound = { quest = quest }
+    local titleLabel = Kit.Txt(quest.title, 24, claimable and C.gold or C.text, {
+        position = "absolute", left = 24, top = 16, width = 620, height = 36,
+        textAlign = "left", textStroke = { width = 2, color = "#000000" },
+    })
+    local descLabel = Kit.CompactTxt(quest.desc, 17, C.textSecondary, {
+        position = "absolute", left = 24, top = 56, width = 620, height = 28,
+        textAlign = "left",
+    })
+    local fill = UI.Panel {
+        position = "absolute", left = 0, top = 0,
+        width = fillWidth, height = 14,
+        backgroundColor = claimable and C.gold or C.focus,
+        pointerEvents = "none",
+    }
+    local progressLabel = Kit.CompactTxt(string.format("%d / %d", quest.cur or 0, quest.target or 0),
+        18, claimable and C.gold or C.text, {
+            position = "absolute", left = 24, top = 116, width = 260, height = 26,
+            textAlign = "left", textStroke = { width = 1, color = "#000000" },
+        })
+    local rewardLabel = Kit.CompactTxt(RewardText(quest.reward), 17, C.textSecondary, {
+        position = "absolute", left = 500, top = 116, width = 380, height = 26,
+        textAlign = "right",
+    })
+    local buttonText = Kit.Txt(spec.text, spec.clickable and 22 or 20, spec.color, {
+        width = "100%", height = 64, textAlign = "center",
+        textStroke = { width = spec.clickable and 2 or 1, color = "#000000" }, pointerEvents = "none",
+    })
+    local button = UI.Panel {
+        position = "absolute", right = 24, top = 26, width = 168, height = 64,
+        clickable = spec.clickable,
+        backgroundImage = spec.image, backgroundFit = "contain",
+        opacity = spec.opacity,
+        onClick = function()
+            local current = bound.quest
+            if current and current.state == "claimable" then
+                QuestController.Claim(current.id)
+            end
+        end,
+        children = { buttonText },
+    }
+    local card = UI.Panel {
         width = "100%",
         height = 168,
         flexShrink = 0,
@@ -117,15 +146,8 @@ local function QuestCard(quest)
         paddingLeft = 24,
         paddingRight = 20,
         children = {
-            Kit.Txt(quest.title, 24, claimable and C.gold or C.text, {
-                position = "absolute", left = 24, top = 16, width = 620, height = 36,
-                textAlign = "left", textStroke = { width = 2, color = "#000000" },
-            }),
-            Kit.CompactTxt(quest.desc, 17, C.textSecondary, {
-                position = "absolute", left = 24, top = 56, width = 620, height = 28,
-                textAlign = "left",
-            }),
-            -- 进度条
+            titleLabel,
+            descLabel,
             UI.Panel {
                 position = "absolute", left = 24, top = 92,
                 width = trackWidth, height = 18,
@@ -133,27 +155,46 @@ local function QuestCard(quest)
                 borderWidth = 2,
                 borderColor = C.border,
                 overflow = "hidden",
-                children = {
-                    UI.Panel {
-                        position = "absolute", left = 0, top = 0,
-                        width = fillWidth, height = 14,
-                        backgroundColor = claimable and C.gold or C.focus,
-                        pointerEvents = "none",
-                    },
-                },
+                children = { fill },
             },
-            Kit.CompactTxt(string.format("%d / %d", quest.cur or 0, quest.target or 0),
-                18, claimable and C.gold or C.text, {
-                    position = "absolute", left = 24, top = 116, width = 260, height = 26,
-                    textAlign = "left", textStroke = { width = 1, color = "#000000" },
-                }),
-            Kit.CompactTxt(RewardText(quest.reward), 17, C.textSecondary, {
-                position = "absolute", left = 500, top = 116, width = 380, height = 26,
-                textAlign = "right",
-            }),
+            progressLabel,
+            rewardLabel,
             button,
         },
     }
+    function card:Rebind(nextQuest)
+        if not nextQuest then return self end
+        bound.quest = nextQuest
+        local nextClaimable = nextQuest.state == "claimable"
+        local nextSpec = QuestButtonSpec(nextQuest)
+        local nextRatio = ProgressRatio(nextQuest)
+        if titleLabel.SetText then titleLabel:SetText(nextQuest.title or "") end
+        titleLabel:SetStyle({ fontColor = nextClaimable and C.gold or C.text })
+        if descLabel.SetText then descLabel:SetText(nextQuest.desc or "") end
+        fill:SetStyle({
+            width = math.max(0, math.floor(trackWidth * nextRatio)),
+            backgroundColor = nextClaimable and C.gold or C.focus,
+        })
+        if progressLabel.SetText then
+            progressLabel:SetText(string.format("%d / %d", nextQuest.cur or 0, nextQuest.target or 0))
+        end
+        progressLabel:SetStyle({ fontColor = nextClaimable and C.gold or C.text })
+        if rewardLabel.SetText then rewardLabel:SetText(RewardText(nextQuest.reward)) end
+        if buttonText.SetText then buttonText:SetText(nextSpec.text) end
+        buttonText:SetStyle({ fontColor = nextSpec.color })
+        button:SetStyle({
+            clickable = nextSpec.clickable,
+            backgroundImage = nextSpec.image,
+            opacity = nextSpec.opacity,
+        })
+        self:SetStyle({
+            backgroundColor = nextClaimable and SURFACE_CAN or SURFACE,
+            borderWidth = nextClaimable and 3 or 2,
+            borderColor = nextClaimable and C.gold or C.border,
+        })
+        return self
+    end
+    return card
 end
 
 local function BuildTabs(tab)
@@ -162,7 +203,9 @@ local function BuildTabs(tab)
         local active = tab == questType
         local currentQuestType = questType
         tabChildren[#tabChildren + 1] = UI.Panel {
-            width = 200,
+            width = "23%",
+            minWidth = 150,
+            maxWidth = 220,
             height = 64,
             flexShrink = 0,
             clickable = true,
@@ -245,7 +288,13 @@ function QuestView.BuildPage()
         }
     end
 
-    return UI.Panel {
+    local claimAllLabel = Kit.Txt("一键领取" .. (claimableCount > 0 and ("(" .. tostring(claimableCount) .. ")") or ""),
+        22, C.text, {
+            width = "100%", height = 72, textAlign = "center",
+            textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+        })
+    local pageTab = tab
+    local root = UI.Panel {
         width = "100%",
         height = "100%",
         flexShrink = 0,
@@ -277,11 +326,7 @@ function QuestView.BuildPage()
                             if claimableCount > 0 then QuestController.ClaimAll() end
                         end,
                         children = {
-                            Kit.Txt("一键领取" .. (claimableCount > 0 and ("(" .. tostring(claimableCount) .. ")") or ""),
-                                22, C.text, {
-                                    width = "100%", height = 72, textAlign = "center",
-                                    textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
-                                }),
+                            claimAllLabel,
                         },
                     },
                 },
@@ -290,6 +335,29 @@ function QuestView.BuildPage()
             dailyHeader or UI.Panel { width = "100%", flexShrink = 0, height = 0 },
             questList,
         },
+    }
+    return {
+        GetRoot = function() return root end,
+        Update = function()
+            local nextTab = QuestController.GetTab()
+            if nextTab ~= pageTab then return false end
+            local nextGame = GameStateAdapter.GetViewState()
+            local nextView = nextGame.questsView or QuestDefinitions.BuildView(nextGame, ServerClock.DayKey(ServerClock.Now()))
+            local nextList = nextView[nextTab] or {}
+            local nextClaimable = QuestController.CountClaimable(nextGame, nextTab)
+            if questList and questList.scrollView_ then
+                GridVirtualList.UpdateData(questList, nextList, { columns = 1 })
+            elseif #nextList > 0 then
+                return false
+            end
+            if claimAllLabel.SetText then
+                claimAllLabel:SetText("一键领取" .. (nextClaimable > 0 and ("(" .. tostring(nextClaimable) .. ")") or ""))
+            end
+            return true
+        end,
+        Destroy = function()
+            if root and root.Destroy then root:Destroy() end
+        end,
     }
 end
 

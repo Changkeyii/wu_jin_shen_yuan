@@ -691,7 +691,7 @@ function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
     if timeStep <= 0 then
         return PlayerTransition.NoCommit(inputState, now, "combat_tick_ignored")
     end
-    local working = PlayerTransition.Copy(inputState, now)
+    local working = PlayerTransition.ShallowClone(inputState, now)
     if not working.autoRun then
         return PlayerTransition.NoCommit(inputState, now, "combat_paused")
     end

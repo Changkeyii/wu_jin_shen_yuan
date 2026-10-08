@@ -64,7 +64,7 @@ end
 function QuestController.HasClaimable(game)
     local view = game and game.questsView
     if not view then return false end
-    for _, questType in ipairs({ "newbie", "daily", "achievement" }) do
+    for _, questType in ipairs({ "newbie", "daily", "weekly", "achievement" }) do
         for _, quest in ipairs(view[questType] or {}) do
             if quest.state == "claimable" then return true end
         end

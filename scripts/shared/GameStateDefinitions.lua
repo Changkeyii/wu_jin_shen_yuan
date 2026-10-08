@@ -661,6 +661,24 @@ local QUEST_COUNTER_SCHEMA = {
     max = LargeNumber.MAX_SAFE_INTEGER,
 }
 
+local QUEST_PROGRESS_FIELDS = {
+    monster_kill = QUEST_COUNTER_SCHEMA,
+    elite_kill = QUEST_COUNTER_SCHEMA,
+    boss_kill = QUEST_COUNTER_SCHEMA,
+    item_pickup = QUEST_COUNTER_SCHEMA,
+    chest_open = QUEST_COUNTER_SCHEMA,
+    decompose = QUEST_COUNTER_SCHEMA,
+    sell = QUEST_COUNTER_SCHEMA,
+    floor_advance = QUEST_COUNTER_SCHEMA,
+    abyss_run = QUEST_COUNTER_SCHEMA,
+    campaign_stage_clear = QUEST_COUNTER_SCHEMA,
+    campaign_chapter_clear = QUEST_COUNTER_SCHEMA,
+    campaign_star_earned = QUEST_COUNTER_SCHEMA,
+    campaign_battle_clear = QUEST_COUNTER_SCHEMA,
+    campaign_boss_clear = QUEST_COUNTER_SCHEMA,
+    strike_record = QUEST_COUNTER_SCHEMA,
+}
+
 -- 活动系统存档：活动 id 为动态键，record 结构由服务端生成/规范化保证。
 local ACTIVITIES_SCHEMA = {
     type = "object",
@@ -717,6 +735,52 @@ local CHALLENGE_BOSS_SESSION_SCHEMA = {
         hp = { type = "integer", min = 0, max = LargeNumber.MAX_CLOUD_INTEGER },
         maxHp = { type = "integer", min = 1, max = LargeNumber.MAX_CLOUD_INTEGER },
         finished = { type = "boolean" },
+    },
+}
+
+local CAMPAIGN_STAGE_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "clearCount", "bestStars", "firstClearClaimed", "clearedAt" },
+    fields = {
+        clearCount = { type = "integer", min = 1, max = 1000000 },
+        bestStars = { type = "integer", min = 0, max = 3 },
+        firstClearClaimed = { type = "boolean" },
+        clearedAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+    },
+}
+
+local CAMPAIGN_CHAPTER_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = { "rewardClaimed", "clearedAt" },
+    fields = {
+        rewardClaimed = { type = "boolean" },
+        clearedAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+    },
+}
+
+local CAMPAIGN_SCHEMA = {
+    type = "object",
+    allowUnknown = false,
+    required = {
+        "contentVersion", "highestUnlockedChapter", "currentStageId",
+        "completedStages", "completedChapters", "claimedRewardKeys", "choices",
+        "sweepDayKey", "sweepUsed", "echoDayKey", "echoStageIds", "echoClaimed",
+    },
+    fields = {
+        contentVersion = { type = "integer", min = 1, max = 1000000 },
+        highestUnlockedChapter = { type = "integer", min = 1, max = 40 },
+        currentStageId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
+        completedStages = { type = "object", allowUnknown = true, values = CAMPAIGN_STAGE_SCHEMA },
+        completedChapters = { type = "object", allowUnknown = true, values = CAMPAIGN_CHAPTER_SCHEMA },
+        claimedRewardKeys = { type = "object", allowUnknown = true, values = { type = "boolean" } },
+        choices = { type = "object", allowUnknown = true },
+        sweepDayKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        sweepUsed = { type = "integer", min = 0, max = 3 },
+        echoDayKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        echoStageIds = { type = "array", maxLength = 3, items = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" } },
+        echoClaimed = { type = "object", allowUnknown = true, values = { type = "boolean" } },
     },
 }
 
@@ -844,7 +908,7 @@ local WISH_POOL_SCHEMA = {
 local QUESTS_SCHEMA = {
     type = "object",
     allowUnknown = false,
-    required = { "newbie", "daily", "achievement", "questStats" },
+    required = { "newbie", "daily", "weekly", "achievement", "questStats" },
     fields = {
         newbie = {
             type = "object",
@@ -863,17 +927,21 @@ local QUESTS_SCHEMA = {
                 progress = {
                     type = "object",
                     allowUnknown = false,
-                    fields = {
-                        monster_kill = QUEST_COUNTER_SCHEMA,
-                        elite_kill = QUEST_COUNTER_SCHEMA,
-                        boss_kill = QUEST_COUNTER_SCHEMA,
-                        item_pickup = QUEST_COUNTER_SCHEMA,
-                        chest_open = QUEST_COUNTER_SCHEMA,
-                        decompose = QUEST_COUNTER_SCHEMA,
-                        sell = QUEST_COUNTER_SCHEMA,
-                        floor_advance = QUEST_COUNTER_SCHEMA,
-                        abyss_run = QUEST_COUNTER_SCHEMA,
-                    },
+                    fields = QUEST_PROGRESS_FIELDS,
+                },
+                claimed = { type = "object", allowUnknown = true },
+            },
+        },
+        weekly = {
+            type = "object",
+            allowUnknown = false,
+            required = { "weekKey", "progress", "claimed" },
+            fields = {
+                weekKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+                progress = {
+                    type = "object",
+                    allowUnknown = false,
+                    fields = QUEST_PROGRESS_FIELDS,
                 },
                 claimed = { type = "object", allowUnknown = true },
             },
@@ -889,17 +957,7 @@ local QUESTS_SCHEMA = {
         questStats = {
             type = "object",
             allowUnknown = false,
-            fields = {
-                monster_kill = QUEST_COUNTER_SCHEMA,
-                elite_kill = QUEST_COUNTER_SCHEMA,
-                boss_kill = QUEST_COUNTER_SCHEMA,
-                item_pickup = QUEST_COUNTER_SCHEMA,
-                chest_open = QUEST_COUNTER_SCHEMA,
-                decompose = QUEST_COUNTER_SCHEMA,
-                sell = QUEST_COUNTER_SCHEMA,
-                floor_advance = QUEST_COUNTER_SCHEMA,
-                abyss_run = QUEST_COUNTER_SCHEMA,
-            },
+            fields = QUEST_PROGRESS_FIELDS,
         },
     },
 }
@@ -930,6 +988,7 @@ local Definitions = {
     ABYSS_SCHEMA = ABYSS_SCHEMA,
     REWARD_CLAIMS_SCHEMA = REWARD_CLAIMS_SCHEMA,
     CHALLENGES_SCHEMA = CHALLENGES_SCHEMA,
+    CAMPAIGN_SCHEMA = CAMPAIGN_SCHEMA,
     LOADOUT_BACKUP_SCHEMA = LOADOUT_BACKUP_SCHEMA,
     SET_PROGRESS_SCHEMA = SET_PROGRESS_SCHEMA,
     STATS_SCHEMA = STATS_SCHEMA,

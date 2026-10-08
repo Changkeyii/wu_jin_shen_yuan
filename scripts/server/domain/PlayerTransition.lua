@@ -22,12 +22,16 @@ local SCALAR_DELTA_FIELDS = {
     "abyss",
     "rewardClaims",
     "challenges",
+    "campaign",
     -- 序章步骤必须随 delta 下发，否则客户端 view.tutorial 会一直停在快照值，
     -- 分解/强化教学的 tutorialSelection 与兜底推进都会失效。
     "tutorial",
     -- 广告扩容背包格数与当日广告次数。
     "inventoryBonusSlots",
     "inventoryExpand",
+    "seasonRewardWeekKey",
+    "seasonTitle",
+    "seasonFrame",
 }
 
 function PlayerTransition.Now(now)
@@ -36,6 +40,37 @@ end
 
 function PlayerTransition.Copy(state, now)
     return StateNormalizer.Normalize(TableUtils.DeepCopy(state), PlayerTransition.Now(now))
+end
+
+function PlayerTransition.ShallowClone(state, now)
+    local clone = {}
+    for key, value in pairs(state or {}) do
+        clone[key] = value
+    end
+    clone.updatedAt = PlayerTransition.Now(now)
+    clone.currentMonster = type(state.currentMonster) == "table" and TableUtils.DeepCopy(state.currentMonster) or state.currentMonster
+    clone.stats = type(state.stats) == "table" and TableUtils.DeepCopy(state.stats) or state.stats
+    clone.hpBig = state.hpBig
+    clone.inventory = state.inventory
+    clone.equipped = state.equipped
+    clone.overflowLoot = state.overflowLoot
+    clone.quests = state.quests
+    return clone
+end
+
+function PlayerTransition.DetachInventory(state)
+    if type(state.inventory) == "table" then
+        state.inventory = TableUtils.DeepCopy(state.inventory)
+    end
+    if type(state.overflowLoot) == "table" then
+        state.overflowLoot = TableUtils.DeepCopy(state.overflowLoot)
+    end
+    if type(state.equipped) == "table" then
+        state.equipped = TableUtils.DeepCopy(state.equipped)
+    end
+    if type(state.lootStash) == "table" then
+        state.lootStash = TableUtils.DeepCopy(state.lootStash)
+    end
 end
 
 function PlayerTransition.Event(kind, fields)
@@ -72,9 +107,11 @@ end
 function PlayerTransition.RefreshDerived(state, combatOnly)
     local previousMaximum = state.stats and (state.stats.hpBig or state.stats.hp) or 1
     local previousHp = DomainMath.Magnitude(state.hpBig, state.hp, previousMaximum)
-    for _, item in ipairs(state.inventory) do item.power = Catalog.GetItemPower(item) end
-    for _, item in ipairs(state.overflowLoot or {}) do item.power = Catalog.GetItemPower(item) end
-    InventoryState.UpdateCollection(state)
+    if not combatOnly then
+        for _, item in ipairs(state.inventory) do item.power = Catalog.GetItemPower(item) end
+        for _, item in ipairs(state.overflowLoot or {}) do item.power = Catalog.GetItemPower(item) end
+        InventoryState.UpdateCollection(state)
+    end
     state.nextExp = Catalog.NextExp(state.level)
     local previousStats = state.stats or {}
     state.stats = Catalog.CalculateStats(state, combatOnly and { skipPowerEvaluation = true } or nil)
@@ -160,9 +197,15 @@ local function BuildDelta(previous, current, kind, events, inventoryChanged, equ
         equippedChanged = equippedChanged == true,
     }
     if inventoryChanged then
-        changed.inventory = TableUtils.DeepCopy(current.inventory)
-        changed.equipped = TableUtils.DeepCopy(current.equipped)
-        changed.consumables = TableUtils.DeepCopy(current.consumables)
+        if current.inventoryPatch then
+            changed.inventoryPatch = TableUtils.DeepCopy(current.inventoryPatch)
+            changed.equipped = TableUtils.DeepCopy(current.equipped)
+            changed.consumables = TableUtils.DeepCopy(current.consumables)
+        else
+            changed.inventory = TableUtils.DeepCopy(current.inventory)
+            changed.equipped = TableUtils.DeepCopy(current.equipped)
+            changed.consumables = TableUtils.DeepCopy(current.consumables)
+        end
     end
     if equippedChanged then changed.equipped = TableUtils.DeepCopy(current.equipped) end
     return delta
@@ -170,12 +213,32 @@ end
 
 function PlayerTransition.Finalize(inputState, workingState, now, kind, events, inventoryChanged, equippedChanged, combatOnly)
     now = PlayerTransition.Now(now)
-    local previous = PlayerTransition.Copy(inputState, now)
-    workingState.revision = previous.revision + 1
+    local previousRevision = math.max(0, TableUtils.ToInteger(inputState and inputState.revision, 0))
+    workingState.revision = previousRevision + 1
     workingState.updatedAt = now
     workingState.lastActiveAt = now
+    if combatOnly == true then
+        PlayerTransition.RefreshDerived(workingState, true)
+        local previous = {
+            revision = previousRevision,
+            inventory = inputState.inventory,
+            equipped = inputState.equipped,
+            consumables = inputState.consumables,
+            stats = inputState.stats,
+        }
+        for _, field in ipairs(SCALAR_DELTA_FIELDS) do
+            previous[field] = inputState[field]
+        end
+        return {
+            ok = true,
+            state = workingState,
+            delta = BuildDelta(previous, workingState, kind, events, inventoryChanged, equippedChanged),
+            commit = { kind = "none", expectedRevision = previousRevision },
+        }
+    end
+    local previous = PlayerTransition.Copy(inputState, now)
     workingState = StateNormalizer.Normalize(workingState, now)
-    PlayerTransition.RefreshDerived(workingState, combatOnly == true)
+    PlayerTransition.RefreshDerived(workingState, false)
     return {
         ok = true,
         state = workingState,

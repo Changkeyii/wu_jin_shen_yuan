@@ -115,11 +115,11 @@ local BrawlForgeTheme = UI.Theme.ExtendTheme(UI.Theme.defaultTheme, {
     typography = {
         fontFamily = "sans",
         h1 = { fontSize = 32 },
-        h2 = { fontSize = 28 },
-        h3 = { fontSize = 24 },
-        body = { fontSize = 18 },
-        bodySmall = { fontSize = 16 },
-        caption = { fontSize = 14 },
+        h2 = { fontSize = 26 },
+        h3 = { fontSize = 22 },
+        body = { fontSize = 20 },
+        bodySmall = { fontSize = 17 },
+        caption = { fontSize = 15 },
     },
     componentDefaults = {
         borderRadius = 0,
@@ -147,7 +147,7 @@ local BrawlForgeTheme = UI.Theme.ExtendTheme(UI.Theme.defaultTheme, {
             borderWidth = 3,
             borderColor = C.border,
         },
-        Badge = { borderWidth = 2, borderRadius = 0 },
+        Badge = { borderWidth = 2, borderRadius = 8 },
         Chip = { borderWidth = 3, borderRadius = 0 },
         Alert = { borderWidth = 3, borderRadius = 0 },
         Tabs = {
@@ -170,7 +170,7 @@ local BrawlForgeTheme = UI.Theme.ExtendTheme(UI.Theme.defaultTheme, {
         },
         Toast = {
             borderWidth = 2,
-            borderRadius = 0,
+            borderRadius = 8,
             boxShadow = HUD_SHADOW,
         },
     },
@@ -237,6 +237,24 @@ local EVENT_INFO = {
     boss = { name = "首领", short = "王", color = C.error },
 }
 
+local TypeScale = {
+    pageTitle = 32,
+    chapterTitle = 26,
+    body = 20,
+    bodySecondary = 17,
+    status = 15,
+    badge = 15,
+}
+
+local Radius = {
+    panel = 0,
+    button = 0,
+    tab = 0,
+    badge = 8,
+    avatar = 999,
+    toast = 8,
+}
+
 return {
     CONFIG = CONFIG,
     Colors = C,
@@ -248,4 +266,6 @@ return {
     SetOrder = SET_ORDER,
     Sets = SETS,
     EventInfo = EVENT_INFO,
+    TypeScale = TypeScale,
+    Radius = Radius,
 }

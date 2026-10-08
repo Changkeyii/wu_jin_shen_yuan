@@ -24,6 +24,7 @@ local QuestController = require("client.QuestController")
 local ActivityView = require("client.ActivityView")
 local ActivityController = require("client.ActivityController")
 local StoryBrowserController = require("client.StoryBrowserController")
+local CampaignView = require("client.CampaignView")
 local WishPoolView = require("client.WishPoolView")
 local WishPoolController = require("client.WishPoolController")
 local TutorialController = require("client.TutorialController")
@@ -48,6 +49,7 @@ local EquipmentLoadoutView = require("client.EquipmentLoadoutView")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ItemView = require("client.ItemView")
+local InventoryFullPrompt = require("client.InventoryFullPrompt")
 local RewardClaimController = require("client.RewardClaimController")
 local UIRefreshCoordinator = require("client.UI.UIRefreshCoordinator")
 local UIBinder = require("client.UI.UIBinder")
@@ -55,6 +57,7 @@ local UITimer = require("client.UI.UITimer")
 local UIOverlay = require("client.UI.UIOverlay")
 local UIManager = require("client.UI.UIManager")
 local ClientViewCache = require("client.UI.ClientViewCache")
+local UILayout = require("client.UI.UILayout")
 
 local CONFIG = GameTheme.CONFIG
 local C = GameTheme.Colors
@@ -87,6 +90,8 @@ local inventoryState_ = {
 local topRefs_ = {}
 local viewportWidth_ = 0
 local viewportHeight_ = 0
+local pageCache_ = {}
+local activePageId_ = nil
 
 local function RequestPageRefresh()
     UIRefreshCoordinator.Request("page")
@@ -133,8 +138,11 @@ local PAGE_DOMAINS = {
     bag = { inventory = true, equipment = true, player = true, wish = true, abyss = true },
     equip = { inventory = true, equipment = true, player = true },
     codex = { inventory = true, equipment = true, progression = true },
-    quest = { quest = true, player = true, progression = true },
+    quest = { quest = true, player = true, progression = true, campaign = true },
     market = { market = true, inventory = true, player = true },
+    campaign = { campaign = true, player = true, inventory = true, combat = true },
+    activity = { activity = true, player = true, challenge = true, abyss = true },
+    wish = { wish = true, inventory = true, player = true },
 }
 
 local function DomainsAffectCurrentPage(domains, page)
@@ -592,6 +600,7 @@ local function CreatePageContent()
     if game.page == "quest" then return QuestView.BuildPage() end
     if game.page == "activity" then return ActivityView.BuildPage() end
     if game.page == "wish" then return WishPoolView.BuildPage() end
+    if game.page == "campaign" then return CampaignView.BuildPage() end
     if game.page == "frameEditor" then return BuildFrameEditorPage() end
     return HomeView.Build {
         game = game,
@@ -602,27 +611,86 @@ local function CreatePageContent()
     }
 end
 
-RefreshCurrentPage = function()
+local function PageWidget(entry)
+    if type(entry) == "table" and entry.GetRoot then return entry:GetRoot() end
+    return entry
+end
+
+local function DestroyCachedPage(entry)
+    local widget = PageWidget(entry)
+    if widget and widget.parent then widget:Remove() end
+    if type(entry) == "table" and entry.Destroy then
+        pcall(entry.Destroy, entry)
+    elseif widget and widget.Destroy then
+        pcall(widget.Destroy, widget)
+    end
+end
+
+local function HideCachedPage(pageId)
+    local entry = pageCache_[pageId]
+    if not entry then return end
+    if type(entry) == "table" and entry.OnHide then pcall(entry.OnHide, entry) end
+    local widget = PageWidget(entry)
+    if widget and widget.parent then widget:Remove() end
+end
+
+local function ShowCachedPage(pageId, rebuild)
+    if not pageContainer_ then RequestFullRebuild(); return end
+    if activePageId_ and activePageId_ ~= pageId then
+        HideCachedPage(activePageId_)
+    end
+    if rebuild and pageCache_[pageId] then
+        DestroyCachedPage(pageCache_[pageId])
+        pageCache_[pageId] = nil
+    end
+    local entry = pageCache_[pageId]
+    if not entry then
+        entry = CreatePageContent()
+        pageCache_[pageId] = entry
+    end
+    local widget = PageWidget(entry)
+    if widget and widget.parent ~= pageContainer_ then
+        pageContainer_:AddChild(widget)
+    end
+    activePageId_ = pageId
+    if type(entry) == "table" and entry.OnShow then pcall(entry.OnShow, entry, game) end
+    if type(entry) == "table" and entry.Update then pcall(entry.Update, entry, game) end
+end
+
+RefreshCurrentPage = function(forceRebuild)
     if not pageContainer_ then RequestFullRebuild(); return end
     game = GameStateAdapter.GetViewState()
-    pageContainer_:ClearChildren()
-    pageContainer_:AddChild(CreatePageContent())
+    local pageId = game.page or "home"
+    if forceRebuild or not pageCache_[pageId] or activePageId_ ~= pageId then
+        ShowCachedPage(pageId, forceRebuild == true)
+    else
+        local entry = pageCache_[pageId]
+        if type(entry) == "table" and entry.Update then
+            local ok, keep = pcall(entry.Update, entry, game)
+            if not ok or keep == false then
+                ShowCachedPage(pageId, true)
+            end
+        else
+            ShowCachedPage(pageId, true)
+        end
+    end
     UpdateTopBar()
     NavigationController.Update(game)
 end
 
 local function BuildRoot()
     game = GameStateAdapter.GetViewState()
-    local initialPageChildren = {}
-    if game.connectionState == "ready" then
-        initialPageChildren[1] = CreatePageContent()
+    for pageId, entry in pairs(pageCache_) do
+        DestroyCachedPage(entry)
+        pageCache_[pageId] = nil
     end
+    activePageId_ = nil
     pageContainer_ = UI.Panel {
         id = "middlePageContainer",
         width = "100%",
         height = "100%",
         overflow = "hidden",
-        children = initialPageChildren,
+        children = {},
     }
 
     local topZone = UI.Panel {
@@ -632,6 +700,7 @@ local function BuildRoot()
         top = 0,
         right = 0,
         height = LAYOUT.TOP_ZONE_HEIGHT,
+        zIndex = UILayout.Z.topBar,
         overflow = "hidden",
         pointerEvents = "box-none",
         children = { TopBarView.Build(game, topRefs_) },
@@ -644,6 +713,7 @@ local function BuildRoot()
         top = LAYOUT.TOP_ZONE_HEIGHT,
         right = 0,
         bottom = LAYOUT.BOTTOM_ZONE_HEIGHT,
+        zIndex = UILayout.Z.middle,
         overflow = "hidden",
         pointerEvents = "box-none",
         children = { pageContainer_ },
@@ -656,6 +726,7 @@ local function BuildRoot()
         right = 0,
         bottom = 0,
         height = LAYOUT.BOTTOM_ZONE_HEIGHT,
+        zIndex = UILayout.Z.bottomNav,
         overflow = "hidden",
         pointerEvents = "box-none",
         children = { NavigationController.Build(game) },
@@ -767,7 +838,11 @@ local function BuildRoot()
     MailView.AttachRoot(screenRoot_)
     TutorialController.AttachRoot(screenRoot_)
     StoryBrowserController.AttachRoot(screenRoot_)
+    CampaignView.AttachRoot(screenRoot_)
     LoadingController.AttachRoot(uiRoot_)
+    if game.connectionState == "ready" then
+        RefreshCurrentPage(true)
+    end
     if game.page == "play" then
         LoadingController.EnsurePlayAssetsReady(function() PlayPresentation.Update(0) end)
     end
@@ -907,7 +982,7 @@ function GameView.Start()
         end
     end)
     NavigationController.Configure {
-        refreshPage = function() RefreshCurrentPage() end,
+        refreshPage = function() RefreshCurrentPage(true) end,
         isIdleRewardTracking = RewardFeedbackController.IsTracking,
         showIdleRewardSummary = RewardFeedbackController.ShowIdleSummary,
         onPageChanged = FaceSlapController.RetryPending,
@@ -1052,6 +1127,11 @@ function GameView.Stop()
     UIOverlay.Reset()
     UIBinder.Reset()
     ClientViewCache.ClearAll()
+    for pageId, entry in pairs(pageCache_) do
+        DestroyCachedPage(entry)
+        pageCache_[pageId] = nil
+    end
+    activePageId_ = nil
     inventoryState_.selectedInventoryId = nil
     inventoryState_.selectedSlot = "weapon"
     inventoryState_.selectedCategory = "all"
@@ -1061,10 +1141,12 @@ function GameView.Stop()
     inventoryState_.equipmentPageScrollY = 0
     PlayPresentation.Reset()
     ActivityView.Reset()
+    InventoryFullPrompt.Reset()
     WishPoolView.Reset()
     WishPoolController.Reset()
     TutorialController.Reset()
     StoryBrowserController.Reset()
+    CampaignView.Reset()
     CommonPromptDialog.Reset()
     DialogCoordinator.Clear(false)
     ItemTips.Stop()
@@ -1092,6 +1174,8 @@ function GameView.HandleUpdate(eventType, eventData)
     LoadingController.Update(dt)
     DailyVipController.Update(dt)
     RewardClaimController.Update(dt)
+    InventoryFullPrompt.Update(dt)
+    ActivityView.UpdateAd(dt)
     WishPoolController.Update(dt)
     FaceSlapController.Update(dt)
     MailController.Update(dt)
@@ -1100,6 +1184,7 @@ function GameView.HandleUpdate(eventType, eventData)
     if game.page == "play" then PlayPresentation.Update(dt) end
     if game.page == "frameEditor" then FrameEditorView.Update(dt) end
     if game.page == "activity" then ActivityView.Update(dt) end
+    CampaignView.UpdateBattle(dt)
     -- 许愿/开罐动画为全屏 overlay，任何页面都需要驱动；无动画时内部直接返回
     WishPoolView.Update(dt)
     UITimer.Update()

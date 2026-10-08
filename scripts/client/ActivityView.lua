@@ -22,6 +22,7 @@ local AbyssPresentation = require("client.AbyssPresentation")
 local RewardClaimController = require("client.RewardClaimController")
 local BigNumber = require("shared.BigNumber")
 local RarityCatalog = require("shared.RarityCatalog")
+local UILayout = require("client.UI.UILayout")
 
 local ActivityView = {}
 
@@ -65,6 +66,14 @@ local bossRemaining_ = 0
 local bossLastHp_ = 0
 local sceneMode_ = "strike"
 
+-- 打桩额外次数激励广告状态。广告位由 @runtime.ad 自动配置，Lua 不持有广告位 ID。
+local strikeAdInFlight_ = false
+local strikeAdRequestPending_ = false
+local strikeAdSequence_ = 0
+local strikeAdElapsed_ = 0
+local strikeAdFinish_ = nil
+local STRIKE_AD_WATCHDOG_SECONDS = 45
+
 -- ===== 页签状态 =====
 -- tab 固定顺序：新手签到 → 轮回签到 → 每日补给 → 热门活动（许愿池/深渊远征/PVP）
 local activityTab_ = "act_signin_newbie_7"
@@ -82,7 +91,9 @@ local function BuildTabBar()
         local active = activityTab_ == entry.id
         local currentEntry = entry
         children[#children + 1] = UI.Panel {
-            width = 220,
+            width = "22%",
+            minWidth = 160,
+            maxWidth = 240,
             height = 64,
             flexShrink = 0,
             clickable = true,
@@ -347,14 +358,63 @@ local function StrikeCard(item)
     end
 
     local function WatchAdAction()
-        local accepted = _G["sdk"]:ShowRewardVideoAd(function(result)
-            if result and result.success == true then
-                ActivityController.UnlockExtraStrike(item.id)
-            else
-                Toast("需完整观看广告才能解锁额外次数", "warning")
+        if strikeAdRequestPending_ then
+            Toast("额外次数正在解锁，请稍候", "info")
+            return
+        end
+        if strikeAdInFlight_ then
+            Toast("广告正在播放，请勿重复点击", "info")
+            return
+        end
+        local sdk = _G["sdk"]
+        if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
+            Toast("广告暂不可用，请稍后重试", "warning")
+            return
+        end
+
+        strikeAdInFlight_ = true
+        strikeAdElapsed_ = 0
+        strikeAdSequence_ = strikeAdSequence_ + 1
+        local sequence = strikeAdSequence_
+        local completed = false
+        local callbackFired = false
+
+        local function Finish(result)
+            if completed or sequence ~= strikeAdSequence_ then return end
+            completed = true
+            strikeAdInFlight_ = false
+            strikeAdElapsed_ = 0
+            strikeAdFinish_ = nil
+            if not result or result.success ~= true then
+                Toast(
+                    result and result.msg == "embed manual close"
+                        and "需完整观看广告才能解锁额外次数"
+                        or "广告暂不可用，请稍后重试",
+                    "warning"
+                )
+                return
             end
+
+            strikeAdRequestPending_ = true
+            ActivityController.UnlockExtraStrike(item.id, function(response)
+                if sequence ~= strikeAdSequence_ then return end
+                strikeAdRequestPending_ = false
+                if response and response.ok then
+                    Toast("额外挑战次数已解锁", "success")
+                else
+                    Toast((response and response.reason) or "额外次数解锁失败", "warning")
+                end
+            end)
+        end
+
+        strikeAdFinish_ = Finish
+        local accepted = sdk:ShowRewardVideoAd(function(result)
+            callbackFired = true
+            Finish(result)
         end)
-        if accepted == false then Toast("广告暂不可用，请稍后重试", "warning") end
+        if accepted == false and not callbackFired then
+            Finish({ success = false, msg = "广告展示请求未受理" })
+        end
     end
 
     return UI.Panel {
@@ -830,7 +890,7 @@ end
 local function BuildStrikeScene(item, mode)
     mode = mode or "strike"
     local isBoss = mode == "boss"
-    local width, height = 1080, 1560
+    local width, height = 1080, math.max(980, UILayout.ContentHeight())
     -- 角色与木桩整体居中：木桩在画面中央，角色在其左侧面向木桩
     local playerX, playerY = 170, 900
     local stumpX, stumpY = 390, 880
@@ -1040,6 +1100,14 @@ local function FinishBossScene()
     end)
 end
 
+function ActivityView.UpdateAd(dt)
+    if not strikeAdInFlight_ or not strikeAdFinish_ then return end
+    strikeAdElapsed_ = strikeAdElapsed_ + math.max(0, tonumber(dt) or 0)
+    if strikeAdElapsed_ >= STRIKE_AD_WATCHDOG_SECONDS then
+        strikeAdFinish_({ success = false, msg = "广告响应超时，请稍后重试" })
+    end
+end
+
 -- ===== 每帧更新：自动攻击 + 伤害检测 + 倒计时 + 动画 =====
 function ActivityView.Update(dt)
     if bossActive_ then
@@ -1140,6 +1208,28 @@ function ActivityView.ListChildren(signinCards, strikeCards)
     return children
 end
 
+local function WrapPage(root)
+    local pageTab = activityTab_
+    local pageScene = sceneMode_
+    return {
+        GetRoot = function() return root end,
+        Update = function()
+            if ActivityView.IsStriking() or bossActive_ then return true end
+            if activityTab_ ~= pageTab then return false end
+            if sceneMode_ ~= pageScene then return false end
+            return false
+        end,
+        Destroy = function()
+            if root and root.Destroy then root:Destroy() end
+        end,
+    }
+end
+
+function ActivityView.Update()
+    if ActivityView.IsStriking() then return true end
+    return false
+end
+
 function ActivityView.BuildPage()
     local view = CurrentView()
     if not bossActive_ then
@@ -1159,7 +1249,7 @@ function ActivityView.BuildPage()
             ResetScene()
         else
             bossLastHp_ = challenge.sessionHp or challenge.sessionMaxHp or 0
-            return UI.Panel {
+            return WrapPage(UI.Panel {
                 width = "100%", height = "100%", flexShrink = 0, position = "relative",
                 children = {
                     BuildStrikeScene(challenge, "boss"),
@@ -1185,7 +1275,7 @@ function ActivityView.BuildPage()
                         end,
                     },
                 },
-            }
+            })
         end
     end
 
@@ -1195,7 +1285,7 @@ function ActivityView.BuildPage()
             if item.id == strikeId_ then active = item end
         end
         if not active then strikeId_ = nil else
-            return UI.Panel {
+            return WrapPage(UI.Panel {
                 width = "100%", height = "100%", flexShrink = 0, position = "relative",
                 children = {
                     BuildStrikeScene(active, "strike"),
@@ -1225,7 +1315,7 @@ function ActivityView.BuildPage()
                         end,
                     },
                 },
-            }
+            })
         end
     end
 
@@ -1234,7 +1324,7 @@ function ActivityView.BuildPage()
     local strikeCards = {}
     for _, item in ipairs(view.strike or {}) do strikeCards[#strikeCards + 1] = StrikeCard(item) end
 
-    return UI.Panel {
+    return WrapPage(UI.Panel {
         width = "100%", height = "100%", flexShrink = 0, position = "relative",
         children = {
             UI.Panel {
@@ -1265,10 +1355,15 @@ function ActivityView.BuildPage()
                 },
             },
         },
-    }
+    })
 end
 
 function ActivityView.Reset()
+    strikeAdSequence_ = strikeAdSequence_ + 1
+    strikeAdInFlight_ = false
+    strikeAdRequestPending_ = false
+    strikeAdElapsed_ = 0
+    strikeAdFinish_ = nil
     strikeId_ = nil
     strikeRemaining_ = 0
     strikeTimer_ = 0

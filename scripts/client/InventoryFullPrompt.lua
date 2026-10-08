@@ -15,6 +15,10 @@ local InventoryFullPrompt = {}
 
 local adInFlight_ = false
 local requestPending_ = false
+local sequence_ = 0
+local adElapsed_ = 0
+local adFinish_ = nil
+local AD_WATCHDOG_SECONDS = 45
 
 local function Toast(message, variant)
     if UI.Toast and UI.Toast.Show then
@@ -46,13 +50,25 @@ local function ExpandByAd(onDone)
         return
     end
 
+    local sdk = _G["sdk"]
+    if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
+        Toast("广告暂不可用，请稍后重试", "warning")
+        if onDone then onDone(false) end
+        return
+    end
+
     adInFlight_ = true
+    adElapsed_ = 0
+    sequence_ = sequence_ + 1
+    local sequence = sequence_
     local completed = false
     local callbackFired = false
     local function finish(result)
-        if completed then return end
+        if completed or sequence ~= sequence_ then return end
         completed = true
         adInFlight_ = false
+        adElapsed_ = 0
+        adFinish_ = nil
         if not result or result.success ~= true then
             local message = result and result.msg == "embed manual close"
                 and "需完整观看广告才能解锁格子"
@@ -63,6 +79,7 @@ local function ExpandByAd(onDone)
         end
         requestPending_ = true
         ServerClient.ExpandInventoryByAd(function(response)
+            if sequence ~= sequence_ then return end
             requestPending_ = false
             if response and response.ok then
                 local gain = InventoryCapacity.PerAd()
@@ -74,12 +91,12 @@ local function ExpandByAd(onDone)
             end
         end)
     end
+    adFinish_ = finish
 
-    local accepted = _G["sdk"] and _G["sdk"].ShowRewardVideoAd
-        and _G["sdk"]:ShowRewardVideoAd(function(result)
-            callbackFired = true
-            finish(result)
-        end)
+    local accepted = sdk:ShowRewardVideoAd(function(result)
+        callbackFired = true
+        finish(result)
+    end)
     if accepted == false and not callbackFired then
         finish({ success = false, msg = "广告展示请求未受理" })
     end
@@ -125,6 +142,22 @@ function InventoryFullPrompt.Show(options)
             return true
         end,
     }
+end
+
+function InventoryFullPrompt.Update(dt)
+    if not adInFlight_ or not adFinish_ then return end
+    adElapsed_ = adElapsed_ + math.max(0, tonumber(dt) or 0)
+    if adElapsed_ >= AD_WATCHDOG_SECONDS then
+        adFinish_({ success = false, msg = "广告响应超时，请稍后重试" })
+    end
+end
+
+function InventoryFullPrompt.Reset()
+    sequence_ = sequence_ + 1
+    adInFlight_ = false
+    requestPending_ = false
+    adElapsed_ = 0
+    adFinish_ = nil
 end
 
 function InventoryFullPrompt.ExpandByAd(onDone)

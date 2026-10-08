@@ -3,6 +3,7 @@ local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
 local RewardClaimDefinitions = require("shared.RewardClaimDefinitions")
 local ChallengeDefinitions = require("shared.ChallengeDefinitions")
+local CampaignDefinitions = require("shared.CampaignDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
 local Contracts = require("shared.GameStateContracts")
@@ -162,6 +163,10 @@ function Persistence.NewInitialState(now)
         abyss = AbyssDefinitions.NewState(),
         rewardClaims = RewardClaimDefinitions.NewState(),
         challenges = ChallengeDefinitions.NewState(),
+        campaign = CampaignDefinitions.NewState(),
+        seasonRewardWeekKey = 0,
+        seasonTitle = "",
+        seasonFrame = "",
         quests = {
             newbie = { claimed = {} },
             daily = { dayKey = 0, progress = {}, claimed = {} },

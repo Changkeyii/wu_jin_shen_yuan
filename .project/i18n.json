@@ -43,7 +43,6 @@
     "SendEvent", "SubscribeToEvent", "UnsubscribeFromEvent",
     "SendRemoteEvent", "RegisterRemoteEvent",
     "SetAttribute", "GetAttribute", "HasAttribute",
-    "SetStyle",
     "CreateScriptObject",
     "print", "error",
     "log:Write", "log:WriteRaw",
@@ -56,12 +55,13 @@
 
   "content_excludes": [
     { "name": "url",       "pattern": "^https?://" },
-    { "name": "file_ext",  "pattern": "\\.(meta|lua|xml|png|hlsl|glsl|ani|jpg|jpeg|mdl|dds|json|txt|blendspace|wav|ttf|otf|fsm|tmx|sh|scml|tga|sdf|pex|ogg|mp3|mp4|ktx|effect|prefab|lodgroup|material|fbx|cube)$" },
+    { "name": "project_path", "pattern": "^(?:[Aa]ssets|[Ss]cripts)/.*\\.[A-Za-z][A-Za-z0-9]*$" },
+    { "name": "file_ext",  "pattern": "^(?!.*(?:[　-〿＀-￯]|\\\\[nrt]|\\s)).*\\.(meta|lua|xml|png|hlsl|glsl|ani|jpg|jpeg|mdl|dds|json|txt|blendspace|wav|ttf|otf|fsm|tmx|sh|scml|tga|sdf|pex|ogg|mp3|mp4|ktx|effect|prefab|lodgroup|material|fbx|cube)$" },
     { "name": "log_tag",   "pattern": "^\\[[A-Za-z0-9_]+\\]" },
     { "name": "rel_path",  "pattern": "^\\.{1,2}/" },
     { "name": "abs_path",  "pattern": "^[A-Za-z]:[/\\\\]" },
-    { "name": "dir_sep",   "pattern": "/[^/]+/" },
-    { "name": "path_ext",  "pattern": "/.*\\.[a-zA-Z][a-zA-Z0-9]*$" }
+    { "name": "dir_sep",   "pattern": "^(?=.*(?<!\\\\)[A-Za-z])(?!.*(?:[　-〿＀-￯]|\\\\[nrt]|\\s)).*/[^/]+/" },
+    { "name": "path_ext",  "pattern": "^(?!.*(?:[　-〿＀-￯]|\\\\[nrt]|\\s)).*/.*\\.[a-zA-Z][a-zA-Z0-9]*$" }
   ],
 
   "file_exts": [".lua", ".json", ".xml"],

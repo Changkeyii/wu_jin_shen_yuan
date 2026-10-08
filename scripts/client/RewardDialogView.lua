@@ -148,7 +148,7 @@ function RewardDialogView.BuildOptions(options)
         onPresented = function()
             AudioController.PlayFeedback(options.sound or "reward")
         end,
-        dialogHeight = 1160,
+        dialogHeight = options.dialogHeight or math.min(1160, math.max(760, math.floor((GameTheme.CONFIG.DynamicDesignHeight and GameTheme.CONFIG.DynamicDesignHeight() or 1920) * 0.72))),
         closeOnOverlay = false,
         showClose = options.showClose == true,
         cancelText = options.cancelText,

@@ -40,6 +40,7 @@ local WISH_POOL_SCHEMA = Definitions.WISH_POOL_SCHEMA
 local ABYSS_SCHEMA = Definitions.ABYSS_SCHEMA
 local REWARD_CLAIMS_SCHEMA = Definitions.REWARD_CLAIMS_SCHEMA
 local CHALLENGES_SCHEMA = Definitions.CHALLENGES_SCHEMA
+local CAMPAIGN_SCHEMA = Definitions.CAMPAIGN_SCHEMA
 local LOADOUT_BACKUP_SCHEMA = Definitions.LOADOUT_BACKUP_SCHEMA
 local SET_PROGRESS_SCHEMA = Definitions.SET_PROGRESS_SCHEMA
 local STATS_SCHEMA = Definitions.STATS_SCHEMA
@@ -158,6 +159,7 @@ PERSISTED_SCHEMA = {
         "abyss",
         "rewardClaims",
         "challenges",
+        "campaign",
     },
     fields = {
         schemaVersion = { type = "integer", enum = { GameStateSchema.VERSION } },
@@ -265,8 +267,12 @@ PERSISTED_SCHEMA = {
         abyss = ABYSS_SCHEMA,
         rewardClaims = REWARD_CLAIMS_SCHEMA,
         challenges = CHALLENGES_SCHEMA,
+        campaign = CAMPAIGN_SCHEMA,
         -- 新手剧情引导进度（每次登录由服务端重置，测试期每次进入都触发）
         tutorial = TUTORIAL_SCHEMA,
+        seasonRewardWeekKey = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
+        seasonTitle = { type = "string", minLength = 0, maxLength = 32 },
+        seasonFrame = { type = "string", minLength = 0, maxLength = 32 },
     },
 }
 
@@ -344,7 +350,11 @@ local SNAPSHOT_VALUE_SCHEMAS = {
     abyss = ABYSS_SCHEMA,
     rewardClaims = REWARD_CLAIMS_SCHEMA,
     challenges = CHALLENGES_SCHEMA,
+    campaign = CAMPAIGN_SCHEMA,
     tutorial = TUTORIAL_SCHEMA,
+    seasonRewardWeekKey = PERSISTED_VALUE_SCHEMAS.seasonRewardWeekKey,
+    seasonTitle = PERSISTED_VALUE_SCHEMAS.seasonTitle,
+    seasonFrame = PERSISTED_VALUE_SCHEMAS.seasonFrame,
 }
 
 local SNAPSHOT_ENVELOPE_SCHEMAS = {
@@ -397,7 +407,7 @@ local SNAPSHOT_REQUIRED_FIELDS = {
     "logs", "currentEvent", "recentDamage", "stats", "nextExp",
     "displayedPower", "recommendedPower", "nextChapterRecommendedPower",
     "powerRatio", "headroomFloors", "difficultyLabel", "bossScore", "eliteScore",
-    "estimatedEasyFloor", "wishPool", "abyss", "rewardClaims", "challenges",
+    "estimatedEasyFloor", "wishPool", "abyss", "rewardClaims", "challenges", "campaign",
 }
 
 

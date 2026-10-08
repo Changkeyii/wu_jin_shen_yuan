@@ -675,13 +675,28 @@ function Catalog.GetItemPower(item)
     if not item.equipmentId and not item.slot then
         return item.quantity or 1
     end
+    local cacheKey = table.concat({
+        tostring(item.id or ""),
+        tostring(item.equipmentId or ""),
+        tostring(item.enhance or 0),
+        tostring(item.star or 0),
+        tostring(item.statVersion or 0),
+        tostring(item.budget or ""),
+        tostring(item.rarity or ""),
+    }, ":")
+    if item._powerCacheKey == cacheKey and item._powerCacheValue ~= nil then
+        return item._powerCacheValue
+    end
     if (tonumber(item.statVersion) or 0) >= 4 then
         local budget = BigNumber.IsBigNumber(item.budgetBig)
             and item.budgetBig or BigNumber.FromNumber(item.budget)
         local power = BigNumber.Floor(BigNumber.MultiplyScalar(budget,
             RewardPolicy.EnhanceMultiplier(item.enhance or 0)
                 * RewardPolicy.StarMultiplier(item.star or 0)))
-        return BigNumber.ToNumber(power) or power
+        local value = BigNumber.ToNumber(power) or power
+        item._powerCacheKey = cacheKey
+        item._powerCacheValue = value
+        return value
     end
     local stats = Catalog.GetItemEffectiveStats(item)
     local base = stats.atk * 7
@@ -692,7 +707,10 @@ function Catalog.GetItemPower(item)
         + stats.atkSpeed * 650
     -- Legacy-only compatibility value. V5 generated stats already include the
     -- quality multiplier, so it must never be multiplied here again.
-    return math.floor(base)
+    local value = math.floor(base)
+    item._powerCacheKey = cacheKey
+    item._powerCacheValue = value
+    return value
 end
 
 function Catalog.CompareItemPower(left, right)
@@ -797,8 +815,31 @@ local function applySetTierBonuses(stats, state, setId, count)
     end
 end
 
+local function EquipmentRevision(state)
+    local equipped = state.equipped or {}
+    local parts = {
+        tostring(state.vipLevel or 0),
+        tostring(state.maxFloor or 1),
+        tostring(state.permanentBonus or 0),
+        tostring(#(state.inventory or {})),
+    }
+    for slot, itemId in pairs(equipped) do
+        parts[#parts + 1] = tostring(slot) .. "=" .. tostring(itemId)
+    end
+    table.sort(parts)
+    return table.concat(parts, "|")
+end
+
 function Catalog.CalculateStats(state, options)
     options = type(options) == "table" and options or {}
+    local revision = EquipmentRevision(state)
+    if not options.skipPowerEvaluation
+        and state._statsCache
+        and state._statsCache.revision == revision
+        and state._statsCache.value
+    then
+        return state._statsCache.value
+    end
     local permanentBonus = math.max(0, state.permanentBonus or 0)
     -- The character core is 15% of the same-floor rare baseline and follows
     -- highest reached progression, never the currently selected challenge.
@@ -897,6 +938,9 @@ function Catalog.CalculateStats(state, options)
     stats.eliteScore = evaluation.eliteScore or 0
     stats.dpsSafe = evaluation.dpsSafe or 0
     stats.ehp = evaluation.ehp or evaluation.effectiveHp or stats.hp
+    if not options.skipPowerEvaluation then
+        state._statsCache = { revision = revision, value = stats }
+    end
     return stats
 end
 

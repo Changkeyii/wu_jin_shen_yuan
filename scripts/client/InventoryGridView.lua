@@ -77,9 +77,7 @@ local function CreateRow(context)
     row._boundItems = {}
     row._context = context
     row._cards = {}
-    -- BackpackItemSlot is declarative and has no SetItem/Rebind API. Keep a
-    -- fixed five-slot row object; bind only replaces the slot subtree, never
-    -- the pooled VirtualList row itself.
+    -- Keep a fixed five-slot row object; bind reuses cards via Rebind.
     for slotIndex = 1, COLUMN_COUNT do
         row._cards[slotIndex] = nil
     end
@@ -90,15 +88,30 @@ local function BindRow(row, rowItems)
     row._boundItems = rowItems or {}
     for slotIndex = 1, COLUMN_COUNT do
         local oldCard = row._cards[slotIndex]
-        if oldCard then
+        local item = row._boundItems[slotIndex]
+        if oldCard and item and oldCard.Rebind then
+            local rebound = oldCard:Rebind(item, {
+                selected = row._context.getSelectedInventoryId() == item.id,
+                showLockButton = item.equipmentId ~= nil,
+                amountText = ((item.quantity or 1) > 1 or item.category == "wishjar")
+                    and ("x" .. tostring(item.quantity or 1)) or nil,
+            })
+            row._cards[slotIndex] = rebound or oldCard
+        elseif oldCard and not item then
             row:RemoveChild(oldCard)
             oldCard:Destroy()
             row._cards[slotIndex] = nil
-        end
-        local card = BuildCard(row._context, row, slotIndex, row._boundItems[slotIndex])
-        if card then
-            row._cards[slotIndex] = card
-            row:AddChild(card)
+        elseif item then
+            if oldCard then
+                row:RemoveChild(oldCard)
+                oldCard:Destroy()
+                row._cards[slotIndex] = nil
+            end
+            local card = BuildCard(row._context, row, slotIndex, item)
+            if card then
+                row._cards[slotIndex] = card
+                row:AddChild(card)
+            end
         end
     end
 end

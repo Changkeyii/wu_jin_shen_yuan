@@ -17,6 +17,9 @@ function IdleRuntimeService.New(options)
         rng = options.rng,
         elapsed = {},
         pending = {},
+        combatPlayers = {},
+        idlePlayers = {},
+        pendingTimeoutPlayers = {},
     }, IdleRuntimeService)
 end
 
@@ -29,6 +32,9 @@ end
 function IdleRuntimeService:Remove(userId)
     self.elapsed[userId] = nil
     self.pending[userId] = nil
+    self.combatPlayers[userId] = nil
+    self.idlePlayers[userId] = nil
+    self.pendingTimeoutPlayers[userId] = nil
 end
 
 -- 事件超时：服务端权威地按 skip 结算，不会代替玩家花费金币。
@@ -133,16 +139,26 @@ end
 function IdleRuntimeService:Update(timeStep)
     if type(timeStep) ~= "number" or timeStep <= 0 then return end
     local online = {}
+    self.combatPlayers = {}
+    self.idlePlayers = {}
+    self.pendingTimeoutPlayers = {}
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         online[userId] = true
         local state = self.profileService:GetState(userId)
+        if state and state.pendingEvent then
+            self.pendingTimeoutPlayers[userId] = true
+        elseif state and state.autoRun and state.currentMonster
+            and not state.pendingStoryGate and not state.pendingEvent then
+            self.combatPlayers[userId] = true
+        else
+            self.idlePlayers[userId] = true
+        end
         -- 超时结算交互事件：玩家未选择时服务端强制跳过
         if state and state.pendingEvent and not self.pending[userId] then
             self:_enqueueEventTimeout(userId, state.pendingEvent)
         end
 
-        if state and state.autoRun and state.currentMonster
-            and not state.pendingStoryGate and not state.pendingEvent then
+        if self.combatPlayers[userId] then
             local elapsed =
                 (self.elapsed[userId] or 0)
                 + timeStep

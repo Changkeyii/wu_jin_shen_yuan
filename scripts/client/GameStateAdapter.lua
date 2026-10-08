@@ -79,6 +79,7 @@ local function MarkDirtyForKey(key)
         wishPool = { "wish", "inventory" },
         abyss = { "abyss", "inventory" },
         challenges = { "challenge" },
+        campaign = { "campaign", "quest" },
         marketListings = { "market" },
         tutorial = { "tutorial" },
         pendingStoryGate = { "tutorial", "combat" },
@@ -86,6 +87,9 @@ local function MarkDirtyForKey(key)
         pendingEvent = { "combat" },
         pendingEquipDecision = { "equipment", "combat" },
         playerNickname = { "player", "equipment" },
+        seasonTitle = { "player", "equipment" },
+        seasonFrame = { "player", "equipment" },
+        seasonRewardWeekKey = { "player" },
         isAdmin = { "admin" },
         logs = { "logs" },
     }
@@ -161,6 +165,13 @@ local function MarkDirtyForEvent(event)
         story_skipped = { "tutorial", "combat" },
         tutorial_step = { "tutorial" },
         tutorial_completed = { "tutorial" },
+        campaign_stage_completed = { "campaign", "quest", "player" },
+        campaign_stage_clear = { "campaign", "quest", "player" },
+        campaign_chapter_completed = { "campaign", "quest" },
+        campaign_chapter_clear = { "campaign", "quest" },
+        campaign_star_earned = { "campaign", "quest" },
+        campaign_battle_clear = { "campaign", "quest" },
+        campaign_boss_clear = { "campaign", "quest" },
         event_pending = { "combat" },
         event_resolved = { "combat" },
         equip_decision_applied = { "equipment", "combat" },
@@ -511,6 +522,7 @@ local function EmptyView()
         abyss = AbyssDefinitions.NewState(),
         rewardClaims = require("shared.RewardClaimDefinitions").NewState(),
         challenges = ChallengeDefinitions.NewState(),
+        campaign = require("shared.CampaignDefinitions").NewState(),
         exp = 0,
         nextExp = 100,
         gold = LargeNumber.Zero(),
@@ -561,13 +573,26 @@ local function EmptyView()
     }
 end
 
+local function ShallowCopy(source)
+    local copy = {}
+    for key, value in pairs(source or {}) do copy[key] = value end
+    return copy
+end
+
+local function NeedsInventoryProjection(domains)
+    return not domains or domains.all or domains.inventory or domains.equipment or domains.wish or domains.abyss
+end
+
 local function RebuildView()
     if not authoritative_ then
         view_ = EmptyView()
         return view_
     end
 
-    local nextView = DeepCopy(authoritative_)
+    local reuseInventory = view_
+        and view_.itemById
+        and not NeedsInventoryProjection(dirtyDomains_)
+    local nextView = ShallowCopy(authoritative_)
     nextView.page = page_
     nextView.connectionState = connectionState_
     nextView.readOnly = connectionState_ ~= "ready"
@@ -576,8 +601,18 @@ local function RebuildView()
     nextView.offlineSeconds = nextView.pendingOfflineSeconds
     nextView.stepTimer = nextView.stepTimer or 0
     nextView.logs = nextView.logs or {}
-    nextView.inventory = ProjectInventory(nextView.inventory or {})
-    nextView.overflowLoot = ProjectInventory(nextView.overflowLoot or {})
+    if reuseInventory then
+        nextView.inventory = view_.inventory
+        nextView.overflowLoot = view_.overflowLoot
+        nextView.itemById = view_.itemById
+        nextView.equipped = view_.equipped
+        nextView.equippedSlotByItemId = view_.equippedSlotByItemId
+        nextView.equipmentInventoryCount = view_.equipmentInventoryCount
+        nextView.uiFlags = view_.uiFlags
+    else
+        nextView.inventory = ProjectInventory(nextView.inventory or {})
+        nextView.overflowLoot = ProjectInventory(nextView.overflowLoot or {})
+    end
     nextView.lootStash = nextView.lootStash or {}
     nextView.marketListings = nextView.marketListings or {}
     nextView.equipmentInventoryCount = #nextView.inventory
@@ -611,29 +646,31 @@ local function RebuildView()
     end
     nextView.difficultyLabel = nextView.difficultyLabel or "待评估"
 
-    if nextView.consumables and nextView.consumables.healthPotion then
-        nextView.inventory[#nextView.inventory + 1] = {
-            id = "consumable:healthPotion",
-            name = "生命药水",
-            category = "consumable",
-            rarity = "blue",
-            quantity = nextView.consumables.healthPotion,
-            desc = "战斗补给，由服务端道具仓储管理。",
-        }
-    elseif nextView.consumables then
-        for _, item in ipairs(nextView.consumables) do
-            local projected = DeepCopy(item)
-            projected.id = projected.id or projected.itemId or ("consumable:" .. tostring(projected.name or #nextView.inventory + 1))
-            projected.category = projected.category or "consumable"
-            projected.rarity = projected.rarity or "blue"
-            projected.quantity = projected.quantity or projected.count or 0
-            nextView.inventory[#nextView.inventory + 1] = projected
+    if not reuseInventory then
+        if nextView.consumables and nextView.consumables.healthPotion then
+            nextView.inventory[#nextView.inventory + 1] = {
+                id = "consumable:healthPotion",
+                name = "生命药水",
+                category = "consumable",
+                rarity = "blue",
+                quantity = nextView.consumables.healthPotion,
+                desc = "战斗补给，由服务端道具仓储管理。",
+            }
+        elseif nextView.consumables then
+            for _, item in ipairs(nextView.consumables) do
+                local projected = DeepCopy(item)
+                projected.id = projected.id or projected.itemId or ("consumable:" .. tostring(projected.name or #nextView.inventory + 1))
+                projected.category = projected.category or "consumable"
+                projected.rarity = projected.rarity or "blue"
+                projected.quantity = projected.quantity or projected.count or 0
+                nextView.inventory[#nextView.inventory + 1] = projected
+            end
         end
     end
 
     -- 许愿券是背包道具（可堆叠）：由服务端 wishPool.tickets 权威计数投影展示。
     local wishTickets = nextView.wishPool and nextView.wishPool.tickets or 0
-    if wishTickets > 0 then
+    if not reuseInventory and wishTickets > 0 then
         nextView.inventory[#nextView.inventory + 1] = {
             id = "wish_ticket",
             name = "许愿券",
@@ -646,7 +683,7 @@ local function RebuildView()
     end
 
     local abyssTickets = nextView.abyss and nextView.abyss.tickets or 0
-    if abyssTickets > 0 then
+    if not reuseInventory and abyssTickets > 0 then
         nextView.inventory[#nextView.inventory + 1] = {
             id = "abyss_ticket",
             name = "深渊票",
@@ -661,7 +698,7 @@ local function RebuildView()
     -- 许愿池罐子是背包道具（可开启）：投影为 wishjar 分类道具。
     -- 服务端权威库存仍在 wishPool.jars，开罐命令由服务端校验扣除。
     local wishPoolJars = nextView.wishPool and nextView.wishPool.jars
-    if type(wishPoolJars) == "table" then
+    if not reuseInventory and type(wishPoolJars) == "table" then
         for jarId, count in pairs(wishPoolJars) do
             local jar = WishPoolDefinitions.ResolveJar(jarId)
             if jar and count > 0 then
@@ -680,6 +717,7 @@ local function RebuildView()
         end
     end
 
+    if not reuseInventory then
     for _, item in ipairs(nextView.inventory) do
         item.rawName = item.rawName or item.name
         item.name = ItemPresentation.DisplayName(item, "未知道具")
@@ -763,6 +801,7 @@ local function RebuildView()
     end
     nextView.uiFlags.betterUnequippedSlots = betterUnequippedSlots
     nextView.uiFlags.hasBetterUnequipped = next(betterUnequippedSlots) ~= nil
+    end
     -- 许愿池展示所需的日切只影响客户端文案，不改变服务端权威计数。
     nextView.wishPool = nextView.wishPool or {
         tickets = 0, jars = {}, adDayKey = 0, adUsed = 0, totalWishes = 0,
@@ -773,13 +812,27 @@ local function RebuildView()
     nextView.wishPool.displayAdUsed = nextView.wishPool.adDayKey == wishDayKey
         and (nextView.wishPool.adUsed or 0) or 0
     nextView.abyss = nextView.abyss or AbyssDefinitions.NewState()
-    nextView.abyssView = AbyssDefinitions.BuildView(nextView)
+    if not dirtyDomains_ or dirtyDomains_.all or dirtyDomains_.abyss or not (view_ and view_.abyssView) then
+        nextView.abyssView = AbyssDefinitions.BuildView(nextView)
+    else
+        nextView.abyssView = view_.abyssView
+    end
     nextView.challenges = nextView.challenges or ChallengeDefinitions.NewState()
-    nextView.challengesView = ChallengeDefinitions.BuildView(nextView, ServerClock.Now())
-    -- 任务系统展示视图（进度/状态/奖励），服务端权威判定一致。
-    nextView.questsView = QuestDefinitions.BuildView(nextView, ServerClock.DayKey(ServerClock.Now()))
-    -- 活动系统展示视图（签到/木桩/次数/红点）。
-    nextView.activitiesView = ActivityDefinitions.BuildView(nextView, ServerClock.Now())
+    if not dirtyDomains_ or dirtyDomains_.all or dirtyDomains_.challenge or not (view_ and view_.challengesView) then
+        nextView.challengesView = ChallengeDefinitions.BuildView(nextView, ServerClock.Now())
+    else
+        nextView.challengesView = view_.challengesView
+    end
+    if not dirtyDomains_ or dirtyDomains_.all or dirtyDomains_.quest or dirtyDomains_.campaign or not (view_ and view_.questsView) then
+        nextView.questsView = QuestDefinitions.BuildView(nextView, ServerClock.DayKey(ServerClock.Now()))
+    else
+        nextView.questsView = view_.questsView
+    end
+    if not dirtyDomains_ or dirtyDomains_.all or dirtyDomains_.activity or not (view_ and view_.activitiesView) then
+        nextView.activitiesView = ActivityDefinitions.BuildView(nextView, ServerClock.Now())
+    else
+        nextView.activitiesView = view_.activitiesView
+    end
     view_ = nextView
     return view_
 end
@@ -838,6 +891,38 @@ function GameStateAdapter.ApplyDelta(delta)
     MarkDirtyForEvents(delta.events)
     if next(dirtyDomains_) == nil then MarkDirty("meta") end
     if changes.inventory ~= nil then authoritative_.inventory = ProjectInventory(changes.inventory); changes.inventory = nil end
+    if changes.inventoryPatch ~= nil then
+        local patch = changes.inventoryPatch
+        authoritative_.inventory = authoritative_.inventory or {}
+        if type(patch.removed) == "table" then
+            local removed = {}
+            for _, itemId in ipairs(patch.removed) do removed[tostring(itemId)] = true end
+            local kept = {}
+            for _, item in ipairs(authoritative_.inventory) do
+                if not removed[tostring(item.id)] then kept[#kept + 1] = item end
+            end
+            authoritative_.inventory = kept
+        end
+        if type(patch.updated) == "table" then
+            local byId = {}
+            for _, item in ipairs(authoritative_.inventory) do byId[tostring(item.id)] = item end
+            for _, item in ipairs(patch.updated) do
+                local current = byId[tostring(item.id)]
+                if current then
+                    for key, value in pairs(item) do current[key] = DeepCopy(value) end
+                else
+                    authoritative_.inventory[#authoritative_.inventory + 1] = ProjectEquipment(item)
+                end
+            end
+        end
+        if type(patch.added) == "table" then
+            for _, item in ipairs(patch.added) do
+                authoritative_.inventory[#authoritative_.inventory + 1] = ProjectEquipment(item)
+            end
+        end
+        changes.inventoryPatch = nil
+        MarkDirty("inventory")
+    end
     if changes.overflowLoot ~= nil then authoritative_.overflowLoot = ProjectInventory(changes.overflowLoot); changes.overflowLoot = nil end
     if changes.lootStash ~= nil then authoritative_.lootStash = DeepCopy(changes.lootStash); changes.lootStash = nil end
     if changes.equipped ~= nil then authoritative_.equipped = changes.equipped; changes.equipped = nil end

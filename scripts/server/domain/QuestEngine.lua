@@ -17,10 +17,16 @@ local function serverDayKey(now)
     return math.floor(((tonumber(now) or PlayerTransition.Now()) + TIMEZONE_OFFSET_SECONDS) / DAY_SECONDS)
 end
 
+local function serverWeekKey(now)
+    local dayKey = serverDayKey(now)
+    return math.floor((dayKey + 3) / 7)
+end
+
 function QuestEngine.NewQuests()
     return {
         newbie = { claimed = {} },
         daily = { dayKey = 0, progress = {}, claimed = {} },
+        weekly = { weekKey = 0, progress = {}, claimed = {} },
         achievement = { claimed = {} },
         questStats = {
             monster_kill = 0,
@@ -32,6 +38,12 @@ function QuestEngine.NewQuests()
             sell = 0,
             floor_advance = 0,
             abyss_run = 0,
+            campaign_stage_clear = 0,
+            campaign_chapter_clear = 0,
+            campaign_star_earned = 0,
+            campaign_battle_clear = 0,
+            campaign_boss_clear = 0,
+            strike_record = 0,
         },
     }
 end
@@ -55,6 +67,17 @@ function QuestEngine.EnsureDailyReset(state, now)
         daily.progress = {}
         daily.claimed = {}
     end
+    local weekly = state.quests.weekly
+    if type(weekly) ~= "table" then
+        weekly = { weekKey = 0, progress = {}, claimed = {} }
+        state.quests.weekly = weekly
+    end
+    local weekKey = serverWeekKey(now)
+    if weekly.weekKey ~= weekKey then
+        weekly.weekKey = weekKey
+        weekly.progress = {}
+        weekly.claimed = {}
+    end
 end
 
 -- 玩法结算处调用：累计 questStats（新手/成就）与当日 daily.progress（每日任务）。
@@ -68,6 +91,10 @@ function QuestEngine.Track(state, metric, amount, now)
     local daily = state.quests.daily
     daily.progress = daily.progress or {}
     daily.progress[metric] = (daily.progress[metric] or 0) + amount
+    local weekly = state.quests.weekly or { weekKey = 0, progress = {}, claimed = {} }
+    state.quests.weekly = weekly
+    weekly.progress = weekly.progress or {}
+    weekly.progress[metric] = (weekly.progress[metric] or 0) + amount
 end
 
 -- 进度/完成/领取判定统一走 shared.QuestDefinitions 的只读实现（与客户端展示一致）。
@@ -89,6 +116,13 @@ local function MarkClaimed(state, def)
         local daily = state.quests.daily
         daily.claimed = daily.claimed or {}
         daily.claimed[def.id] = true
+        return
+    end
+    if def.type == "weekly" then
+        local weekly = state.quests.weekly or { weekKey = 0, progress = {}, claimed = {} }
+        state.quests.weekly = weekly
+        weekly.claimed = weekly.claimed or {}
+        weekly.claimed[def.id] = true
         return
     end
     local bucket = def.type == "newbie" and state.quests.newbie or state.quests.achievement

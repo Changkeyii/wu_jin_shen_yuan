@@ -21,10 +21,11 @@ local function Toast(message, variant)
 end
 
 local function OpenBoard(board)
-    board = board == "damage" and "damage" or (board == "boss" and "boss" or "power")
+    board = board == "damage" and "damage" or (board == "boss" and "boss" or (board == "season" and "season" or "power"))
     if inFlight_ then return end
     inFlight_ = true
     currentBoard_ = board
+    local queryBoard = board == "season" and "power" or board
     ServerClient.GetLeaderboard(function(response)
         inFlight_ = false
         if not response or not response.ok then
@@ -47,7 +48,7 @@ local function OpenBoard(board)
                 end,
             }
         )
-    end, board)
+    end, queryBoard)
 end
 
 function LeaderboardController.Open()

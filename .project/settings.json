@@ -25,14 +25,14 @@
       "enabled": true,
       "max_players": 4,
       "background_match": false,
-      "persistent_world": {
-        "enabled": true
-      },
       "match_info": {
         "desc_name": "free_match_with_ai",
         "immediately_start": true,
         "match_timeout": 0,
         "player_number": 1
+      },
+      "persistent_world": {
+        "enabled": true
       }
     },
     "ad": {
@@ -48,7 +48,7 @@
         }
       ],
       "top_on_placements": [],
-      "synced_at": "2026-08-19T02:23:30.952Z"
+      "synced_at": "2026-08-25T02:49:26.732Z"
     }
   }
 }

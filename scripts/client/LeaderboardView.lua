@@ -18,13 +18,14 @@ local TABS = {
     { id = "power", name = "战力榜", scoreLabel = "战力" },
     { id = "damage", name = "伤害榜", scoreLabel = "15秒伤害" },
     { id = "boss", name = "Boss榜", scoreLabel = "Boss伤害" },
-    { id = "season", name = "赛季榜", coming = true, scoreLabel = "赛季" },
+    { id = "season", name = "赛季榜", coming = false, scoreLabel = "本周战力" },
 }
 
 local BOARD_META = {
     power = { scoreLabel = "战力", empty = "暂无玩家上榜" },
     damage = { scoreLabel = "15秒伤害", empty = "暂无打桩成绩，去每日补给打桩即可上榜" },
     boss = { scoreLabel = "Boss伤害", empty = "暂无 Boss 成绩，去热门活动挑战深渊 Boss" },
+    season = { scoreLabel = "本周战力", empty = "本周战力榜周末结算：前 100 名发放称号、头像框与荣誉币" },
 }
 
 -- 排名数字：用清晰文本替代 VIP 艺术字素材（艺术字难辨认）

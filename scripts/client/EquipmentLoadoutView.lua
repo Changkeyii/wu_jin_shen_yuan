@@ -41,6 +41,7 @@ function EquipmentLoadoutView.Build(context)
     local game = state.game
     local selectedInventoryId = state.getSelectedInventoryId()
     local selectedSlot = state.getSelectedSlot()
+    local pageSlot = selectedSlot
     local SetSelectedInventoryId = state.setSelectedInventoryId
     local SetSelectedSlot = state.setSelectedSlot
     local GetEquipmentScrollY = state.getEquipmentScrollY
@@ -721,7 +722,7 @@ function EquipmentLoadoutView.Build(context)
             and TutorialController.GetStep
             and TutorialController.GetStep() == 2
         local currentItem = row._boundItems[slotIndex] or item
-        local active = selectedCandidate and selectedCandidate.id == currentItem.id
+        local active = (state.getSelectedInventoryId() or selectedInventoryId) == currentItem.id
         local card = EquipmentItemSlot.Build(slotContext, currentItem, {
             -- 构造时写入 id，避免后写 props.id 导致引导层找不到。
             id = "tutorialCandidate:" .. tostring(currentItem.id),
@@ -782,6 +783,22 @@ function EquipmentLoadoutView.Build(context)
                 ShowItemTips(currentItem, bounds, { source = "equipment" })
             end,
         })
+        local builtRebind = card.Rebind
+        function card:Rebind(nextItem)
+            if not nextItem then return self end
+            local tutorialNow = TutorialController.IsActive
+                and TutorialController.IsActive()
+                and TutorialController.GetStep
+                and TutorialController.GetStep() == 2
+            return builtRebind(self, nextItem, {
+                id = "tutorialCandidate:" .. tostring(nextItem.id),
+                active = state.getSelectedInventoryId() == nextItem.id,
+                clickable = true,
+                detailText = "战力 " .. ItemPowerText(nextItem),
+                tutorialHighlight = tutorialNow == true,
+                itemTips = tutorialNow ~= true,
+            })
+        end
         return card
     end
 
@@ -1041,7 +1058,12 @@ function EquipmentLoadoutView.Build(context)
         backgroundFit = "sliced",
         backgroundSlice = { 12, 12, 12, 12 },
         children = {
-            Txt(playerNickname, 27, C.text, {
+            Txt((function()
+                local title = type(game.seasonTitle) == "string" and game.seasonTitle or ""
+                local nick = tostring(playerNickname or "冒险者")
+                if title ~= "" then return title .. " · " .. nick end
+                return nick
+            end)(), 27, C.text, {
                 position = "absolute",
                 left = 180,
                 top = 8,
@@ -1053,7 +1075,18 @@ function EquipmentLoadoutView.Build(context)
                 textStroke = { width = 2, color = "#000000" },
             }),
             UI.Panel { position = "absolute", left = 292, top = 98, width = 276, height = 430, backgroundImage = characterPortrait, backgroundFit = "contain", pointerEvents = "none", opacity = 0.98 },
-            UI.Panel { position = "absolute", left = 278, top = 84, width = 304, height = 458, borderWidth = 2, borderColor = { 50, 196, 255, 120 }, backgroundColor = { 12, 42, 82, 55 }, pointerEvents = "none" },
+            UI.Panel {
+                position = "absolute", left = 278, top = 84, width = 304, height = 458,
+                borderWidth = (game.seasonFrame and game.seasonFrame ~= "") and 5 or 2,
+                borderColor = (game.seasonFrame == "黄金头像框" and C.gold)
+                    or (game.seasonFrame == "紫晶头像框" and { 176, 96, 255, 255 })
+                    or (game.seasonFrame == "蓝钢头像框" and { 80, 170, 255, 255 })
+                    or (game.seasonFrame == "青钢头像框" and { 72, 196, 168, 255 })
+                    or (game.seasonFrame == "灰钢头像框" and { 168, 184, 204, 255 })
+                    or { 50, 196, 255, 120 },
+                backgroundColor = { 12, 42, 82, 55 },
+                pointerEvents = "none",
+            },
             CompactTxt((function()
                 local powerValue = game.displayedPower or (game.stats and game.stats.power) or nil
                 if powerValue == nil then return "战力 待评估" end
@@ -1225,7 +1258,29 @@ function EquipmentLoadoutView.Build(context)
         },
     }
     equipmentPageScrollView.state.scrollY = math.max(0, GetEquipmentPageScrollY() or 0)
-    return equipmentPageScrollView
+    return {
+        GetRoot = function() return equipmentPageScrollView end,
+        Update = function(_, nextGame)
+            if nextGame then
+                state.game = nextGame
+                game = nextGame
+            end
+            local nextSlot = state.getSelectedSlot()
+            if nextSlot ~= pageSlot then return false end
+            local nextSelected = state.getSelectedInventoryId()
+            if nextSelected ~= selectedInventoryId then return false end
+            if equipmentListScrollView and equipmentListScrollView.scrollView_ then
+                GridVirtualList.UpdateData(equipmentListScrollView, CollectSlotCandidates(nextSlot), { columns = 4 })
+                return true
+            end
+            return false
+        end,
+        Destroy = function()
+            if equipmentPageScrollView and equipmentPageScrollView.Destroy then
+                equipmentPageScrollView:Destroy()
+            end
+        end,
+    }
 end
 
 return EquipmentLoadoutView

@@ -154,6 +154,48 @@ local T = {
         metric = "decompose", target = 3,
         reward = { goldScenes = 12, expScenes = 0, fragments = 35 },
     },
+    daily_campaign_stage_1 = {
+        id = "daily_campaign_stage_1", type = "daily",
+        title = "万灵回响", desc = "今日完成 1 个剧情 Stage",
+        metric = "campaign_stage_clear", target = 1,
+        reward = { goldScenes = 12, expScenes = 8, fragments = 20 },
+    },
+    weekly_abyss_3 = {
+        id = "weekly_abyss_3", type = "weekly",
+        title = "本周裂隙", desc = "本周完成 3 次深渊",
+        metric = "abyss_run", target = 3,
+        reward = { goldScenes = 40, expScenes = 12, fragments = 80, abyssTickets = 4 },
+    },
+    weekly_campaign_1 = {
+        id = "weekly_campaign_1", type = "weekly",
+        title = "本周记忆", desc = "本周完成 1 个剧情关",
+        metric = "campaign_stage_clear", target = 1,
+        reward = { goldScenes = 30, expScenes = 15, fragments = 40 },
+    },
+    weekly_campaign_stars_6 = {
+        id = "weekly_campaign_stars_6", type = "weekly",
+        title = "本周星辉", desc = "本周获得 6 颗剧情星",
+        metric = "campaign_star_earned", target = 6,
+        reward = { goldScenes = 50, expScenes = 20, fragments = 60 },
+    },
+    weekly_campaign_boss_1 = {
+        id = "weekly_campaign_boss_1", type = "weekly",
+        title = "本周守门", desc = "本周完成 1 次剧情 Boss",
+        metric = "campaign_boss_clear", target = 1,
+        reward = { goldScenes = 45, expScenes = 18, fragments = 70 },
+    },
+    weekly_floor_boss_1 = {
+        id = "weekly_floor_boss_1", type = "weekly",
+        title = "本周登塔", desc = "本周击败 1 只登塔首领",
+        metric = "boss_kill", target = 1,
+        reward = { goldScenes = 35, expScenes = 12, fragments = 50 },
+    },
+    weekly_strike_record_1 = {
+        id = "weekly_strike_record_1", type = "weekly",
+        title = "本周木桩", desc = "本周刷新一次木桩纪录",
+        metric = "strike_record", target = 1,
+        reward = { goldScenes = 20, expScenes = 8, fragments = 30 },
+    },
 
     -- 成就任务（长期，不重置）
     achv_floor_50 = {
@@ -198,9 +240,10 @@ local ALL = {}
 local BY_TYPE = {
     newbie = {},
     daily = {},
+    weekly = {},
     achievement = {},
 }
-local ORDER = { "newbie", "daily", "achievement" }
+local ORDER = { "newbie", "daily", "weekly", "achievement" }
 
 for _, def in pairs(T) do
     ALL[def.id] = def
@@ -242,6 +285,12 @@ QuestDefinitions.COUNTER_METRICS = {
     sell = true,
     floor_advance = true,
     abyss_run = true,
+    campaign_stage_clear = true,
+    campaign_chapter_clear = true,
+    campaign_star_earned = true,
+    campaign_battle_clear = true,
+    campaign_boss_clear = true,
+    strike_record = true,
 }
 
 -- 只读进度判定（服务端权威 QuestEngine 与客户端展示共用，保证两端一致）。
@@ -265,6 +314,10 @@ function QuestDefinitions.CurrentValue(state, def)
         local daily = state.quests and state.quests.daily
         return math.floor(tonumber(daily and daily.progress and daily.progress[def.metric]) or 0)
     end
+    if def.type == "weekly" then
+        local weekly = state.quests and state.quests.weekly
+        return math.floor(tonumber(weekly and weekly.progress and weekly.progress[def.metric]) or 0)
+    end
     return math.floor(tonumber(state.quests and state.quests.questStats and state.quests.questStats[def.metric]) or 0)
 end
 
@@ -275,6 +328,10 @@ function QuestDefinitions.IsClaimed(state, def)
     if def.type == "daily" then
         local daily = quests.daily
         return type(daily) == "table" and daily.claimed and daily.claimed[def.id] == true
+    end
+    if def.type == "weekly" then
+        local weekly = quests.weekly
+        return type(weekly) == "table" and weekly.claimed and weekly.claimed[def.id] == true
     end
     local bucket = def.type == "newbie" and quests.newbie or quests.achievement
     return type(bucket) == "table" and bucket.claimed and bucket.claimed[def.id] == true
@@ -291,8 +348,11 @@ function QuestDefinitions.BuildView(state, today)
     state = type(state) == "table" and state or {}
     today = today or math.floor((os.time() + 8 * 60 * 60) / (24 * 60 * 60))
     local daily = state.quests and state.quests.daily or {}
+    local weekly = state.quests and state.quests.weekly or {}
     local dailyActive = (daily.dayKey or 0) == today
-    local view = { newbie = {}, daily = {}, achievement = {}, dailyActive = dailyActive }
+    local weekKey = math.floor((today + 3) / 7)
+    local weeklyActive = (weekly.weekKey or 0) == weekKey
+    local view = { newbie = {}, daily = {}, weekly = {}, achievement = {}, dailyActive = dailyActive, weeklyActive = weeklyActive }
     for _, questType in ipairs(QuestDefinitions.ORDER) do
         for _, questId in ipairs(QuestDefinitions.SortedIds(questType)) do
             local def = QuestDefinitions.Get(questId)

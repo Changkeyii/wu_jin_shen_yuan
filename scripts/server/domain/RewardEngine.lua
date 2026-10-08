@@ -209,7 +209,13 @@ local function addGeneratedDrop(state, rarityId, isBoss, rng, now, source, event
         end
         return false, nil, false
     end
+    PlayerTransition.DetachInventory(state)
     state.inventory[#state.inventory + 1] = item
+    state.inventoryPatch = {
+        added = { TableUtils.DeepCopy(item) },
+        updated = {},
+        removed = {},
+    }
     if not options or options.trackInLootStash ~= false then
         InventoryState.AddToLootStash(state, item.id)
     end

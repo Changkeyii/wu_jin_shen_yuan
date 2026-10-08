@@ -38,3 +38,36 @@ tools/
 urhox-libs/
 AGENTS.md
 CLAUDE.md
+
+# >>> TapTap Maker AI dev kit (local only) >>>
+.DS_Store
+.agents\skills\custom-lobby/
+.agents\skills\materials/
+.agents\skills\nvg-resolution-mode/
+.agents\skills\online-system-notification/
+.agents\skills\setup-achievements/
+.agents\skills\setup-ads/
+.agents\skills\setup-fsm/
+.agents\skills\skill-creator/
+.agents\skills\sprite-gen/
+.agents\skills\ui-astroon/
+.agents\skills\ui-brawlforge/
+.agents\skills\ui-pixelforge/
+.claude/
+.cli/
+.codex/
+.cursor/
+.emmylua/
+.gemini/
+.installer/
+.maker/
+AGENTS.md
+CLAUDE.md
+engine-docs/
+examples/
+schemas/
+skills/
+templates/
+tools/
+urhox-libs/
+# <<< TapTap Maker AI dev kit (local only) <<<

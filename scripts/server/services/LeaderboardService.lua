@@ -25,6 +25,7 @@ function LeaderboardService.New(options)
         flushing = false,
         loaded = false,
         loading = false,
+        seasonSnapshots = {},
     }
     return setmetatable(instance, LeaderboardService)
 end
@@ -353,15 +354,73 @@ function LeaderboardService:Load()
     end)
 end
 
+function LeaderboardService.WeekKey(now)
+    local dayKey = math.floor(((tonumber(now) or os.time()) + 8 * 3600) / 86400)
+    return math.floor((dayKey + 3) / 7)
+end
+
+local SEASON_REWARD_CAP = MAX_ENTRIES
+
+local function SeasonRewardForRank(rank, weekKey)
+    local title
+    local frame
+    local honor
+    if rank == 1 then
+        title, frame, honor = "深渊霸主", "黄金头像框", 300
+    elseif rank <= 3 then
+        title, frame, honor = "深渊三杰", "紫晶头像框", 180
+    elseif rank <= 10 then
+        title, frame, honor = "深渊十强", "蓝钢头像框", 80
+    elseif rank <= 50 then
+        title, frame, honor = "深渊五十强", "青钢头像框", 40
+    else
+        title, frame, honor = "深渊百强", "灰钢头像框", 20
+    end
+    return {
+        weekKey = weekKey,
+        rank = rank,
+        title = title,
+        frame = frame,
+        honor = honor,
+    }
+end
+
+function LeaderboardService:EnsureSeasonSnapshot(now)
+    local weekKey = LeaderboardService.WeekKey(now)
+    local lastWeek = weekKey - 1
+    if lastWeek < 1 then return {}, weekKey, lastWeek end
+    self.seasonSnapshots = self.seasonSnapshots or {}
+    if not self.seasonSnapshots[lastWeek] then
+        local list = SortedList(self)
+        local snapshot = {}
+        for rank, entry in ipairs(list) do
+            if rank > SEASON_REWARD_CAP then break end
+            snapshot[entry.userId] = SeasonRewardForRank(rank, lastWeek)
+        end
+        self.seasonSnapshots[lastWeek] = snapshot
+        self.log("[Leaderboard] froze season snapshot week=" .. tostring(lastWeek))
+        for key in pairs(self.seasonSnapshots) do
+            if key < lastWeek - 1 then self.seasonSnapshots[key] = nil end
+        end
+    end
+    return self.seasonSnapshots[lastWeek], weekKey, lastWeek
+end
+
+function LeaderboardService:SeasonRewards(now)
+    return self:EnsureSeasonSnapshot(now)
+end
+
 function LeaderboardService:Reset()
     self.entries = {}
     self.pendingWrites = {}
     self.flushing = false
     self.loaded = false
     self.loading = false
+    self.seasonSnapshots = {}
 end
 
 LeaderboardService.MAX_ENTRIES = MAX_ENTRIES
+LeaderboardService.SEASON_REWARD_CAP = SEASON_REWARD_CAP
 LeaderboardService.KEY_POWER = KEY_POWER
 LeaderboardService.KEY_NICK = KEY_NICK
 LeaderboardService.KEY_BLOB = KEY_BLOB

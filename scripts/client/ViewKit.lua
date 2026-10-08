@@ -253,6 +253,16 @@ local function SetImageProgress(fillClip, width, value, maxValue)
     fillClip:SetStyle({ width = math.floor(width * ratio) })
 end
 
+local BUTTON_VARIANTS = {
+    primary = { image = ASSETS.ui.dialogConfirm, fontSize = 20, height = 72 },
+    secondary = { image = ASSETS.ui.buttonBlue, fontSize = 20, height = 68 },
+    danger = { image = ASSETS.ui.inventoryActionRed, fontSize = 20, height = 68 },
+    reward = { image = ASSETS.ui.inventoryActionGold, fontSize = 20, height = 68 },
+    close = { image = ASSETS.ui.dialogClose, fontSize = 18, height = 64 },
+    tab = { image = ASSETS.ui.inventoryTabOff, fontSize = 20, height = 64 },
+    nav = { image = ASSETS.ui.navSelected, fontSize = 22, height = 72 },
+}
+
 local function ImageButton(text, width, height, image, onClick, disabled)
     return UI.Panel {
         width = width,
@@ -264,6 +274,7 @@ local function ImageButton(text, width, height, image, onClick, disabled)
         backgroundImage = image,
         backgroundFit = "sliced",
         backgroundSlice = { 8, 8, 8, 8 },
+        borderRadius = 0,
         onClick = function()
             if not disabled and onClick then onClick() end
         end,
@@ -276,6 +287,27 @@ local function ImageButton(text, width, height, image, onClick, disabled)
             })
         }
     }
+end
+
+local function ActionButton(options)
+    options = options or {}
+    local variant = BUTTON_VARIANTS[options.variant or "primary"] or BUTTON_VARIANTS.primary
+    local height = options.height or variant.height
+    local image = options.image or variant.image
+    local disabled = options.disabled == true or options.state == "disabled"
+    local root = ImageButton(
+        options.text or "",
+        options.width or 240,
+        height,
+        image,
+        options.onClick,
+        disabled
+    )
+    if options.id then
+        root.id = options.id
+        root.props.id = options.id
+    end
+    return root
 end
 
 local function PixelPanel(props)
@@ -381,7 +413,7 @@ local function RewardStrip(props)
     return UI.Panel {
         width = props.width or "100%",
         flexShrink = 0,
-        borderRadius = 10,
+        borderRadius = 0,
         borderWidth = 2,
         borderColor = borderColor,
         backgroundColor = bgColor,
@@ -427,6 +459,8 @@ ViewKit.MagnitudeRatio = MagnitudeRatio
 ViewKit.ImageProgress = ImageProgress
 ViewKit.SetImageProgress = SetImageProgress
 ViewKit.ImageButton = ImageButton
+ViewKit.ActionButton = ActionButton
+ViewKit.BUTTON_VARIANTS = BUTTON_VARIANTS
 ViewKit.PixelPanel = PixelPanel
 ViewKit.SectionTitle = SectionTitle
 ViewKit.BackButton = BackButton

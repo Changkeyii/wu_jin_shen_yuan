@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "p_ew53",
+  "project_id": "m_azc3",
   "author": {
     "id": "162525390"
   },
@@ -8,16 +8,15 @@
   "version": "1.0.1",
   "taptap_publish": {
     "title": "无尽深渊",
-    "description": "<game description>",
+    "description": "无尽深渊挂机录：服务器权威的挂机 RPG，包含装备、深渊挑战、好友、宗门与排行榜系统。",
     "category": "rpg",
     "screen_orientation": "portrait",
     "collection_type": "sce",
-    "trial_note": "<developer's note>",
-    "transparent": false,
+    "trial_note": "测试版本",
     "app_platforms": "1,2",
-    "developer_id": 384520,
-    "app_id": 900564,
-    "miniapp_id": "tapmc3enfyg4fzqnef"
+    "app_id": 917086,
+    "miniapp_id": "tapmchwtwkftmua6ve",
+    "developer_id": 384520
   },
   "assets": {
     "icon": "",
@@ -26,11 +25,11 @@
   },
   "entry@client": "main.lua",
   "entry@server": "server/ServerMain.lua",
-  "metadata": {
-    "updated_at": "2026-08-05T07:42:07.932Z"
-  },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_ew53_1785915727789.png",
-    "generated_at": "2026-08-05T07:42:07.932Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/m_azc3_1787625641901.png",
+    "generated_at": "2026-08-25T02:40:42.069Z"
+  },
+  "metadata": {
+    "updated_at": "2026-08-25T02:40:46.034Z"
   }
 }

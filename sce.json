@@ -1,0 +1,14 @@
+{
+  "engine": "urhox",
+  "runtime": "lua",
+  "entry": "scripts/main.lua",
+  "assets": "assets/",
+  "preview": {
+    "command": "代码工具",
+    "outdir": "dist/"
+  },
+  "meta": {
+    "name": "无尽深渊",
+    "version": "1.0.1"
+  }
+}

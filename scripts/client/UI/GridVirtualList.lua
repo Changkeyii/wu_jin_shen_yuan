@@ -58,15 +58,27 @@ local function BindRow(row, rowItems, columns, createCard)
     row._boundItems = rowItems or {}
     for slotIndex = 1, columns do
         local oldCard = row._cards[slotIndex]
-        if oldCard then
+        local item = row._boundItems[slotIndex]
+        if oldCard and oldCard.Rebind and item then
+            local rebound = oldCard:Rebind(item)
+            row._cards[slotIndex] = rebound or oldCard
+        elseif oldCard and not item then
             row:RemoveChild(oldCard)
             oldCard:Destroy()
             row._cards[slotIndex] = nil
-        end
-        local card = createCard(row, slotIndex, row._boundItems[slotIndex])
-        if card then
-            row._cards[slotIndex] = card
-            row:AddChild(card)
+        else
+            if oldCard then
+                row:RemoveChild(oldCard)
+                oldCard:Destroy()
+                row._cards[slotIndex] = nil
+            end
+            if item then
+                local card = createCard(row, slotIndex, item)
+                if card then
+                    row._cards[slotIndex] = card
+                    row:AddChild(card)
+                end
+            end
         end
     end
     -- 清理超出新列数的残留卡片（数据更新时列数变化不会留下脏卡）

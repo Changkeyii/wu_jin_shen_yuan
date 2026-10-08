@@ -4,6 +4,7 @@ local EquipmentDisposition = require("server.domain.EquipmentDisposition")
 local ServerConfig = require("server.ServerConfig")
 local TrashTalk = require("shared.TrashTalk")
 local PlayerTransition = require("server.domain.PlayerTransition")
+local CampaignEngine = require("server.domain.CampaignEngine")
 
 local GameCommands = {}
 
@@ -86,6 +87,30 @@ function GameCommands.Register(router, services)
             if not snapshot then return false, { code = "PROFILE_NOT_LOADED", reason = "profile is not loaded" } end
             return { status = "applied", revision = snapshot.revision }
         end,
+    })
+
+    router:Register({
+        name = "Game.CampaignPlayStage",
+        schema = {
+            type = "object",
+            required = { "stageId", "action" },
+            allowUnknown = false,
+            fields = {
+                stageId = SAFE_ID_SCHEMA,
+                action = { type = "string", enum = { "complete", "challenge", "sweep", "echo" } },
+            },
+        },
+        rate = ServerConfig.RATES.Encounter,
+        async = true,
+        handler = AsyncMutation(services, "play campaign stage", function(state, payload, now)
+            if payload.action == "sweep" then
+                return CampaignEngine.SweepStage(state, payload.stageId, now)
+            end
+            if payload.action == "echo" then
+                return CampaignEngine.ClaimEcho(state, payload.stageId, now)
+            end
+            return CampaignEngine.PlayStage(state, payload.stageId, payload.action, now)
+        end),
     })
 
     router:Register({

@@ -9,19 +9,26 @@ local MailController = require("client.MailController")
 local QuestController = require("client.QuestController")
 local ActivityController = require("client.ActivityController")
 local StoryBrowserController = require("client.StoryBrowserController")
+local CampaignView = require("client.CampaignView")
 
 local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
 local ASSETS = ViewAssets.ASSETS
 
 local HomeView = {}
+local homeRoot_ = nil
+local homeRefs_ = {}
 
 local function FormalStatCard(label, value, color, icon, width, height)
     local cardW = width or 600
     local cardH = height or 400
     local iconSize = math.floor(cardH * 0.44)
     local textW = math.floor(cardW * 0.623)
-    return UI.Panel {
+    local valueLabel = Kit.Txt(value, 28, color or C.text, {
+        position = "absolute", right = 68, bottom = 66, width = textW,
+        textAlign = "right", textStroke = { width = 2, color = "#000000" },
+    })
+    local card = UI.Panel {
         width = cardW,
         height = cardH,
         position = "relative",
@@ -41,12 +48,11 @@ local function FormalStatCard(label, value, color, icon, width, height)
                 position = "absolute", right = 66, top = 63, width = textW,
                 textAlign = "right", textStroke = { width = 2, color = "#000000" },
             }),
-            Kit.Txt(value, 28, color or C.text, {
-                position = "absolute", right = 68, bottom = 66, width = textW,
-                textAlign = "right", textStroke = { width = 2, color = "#000000" },
-            }),
+            valueLabel,
         },
     }
+    card._valueLabel = valueLabel
+    return card
 end
 
 local function ShowRules(game)
@@ -164,7 +170,7 @@ local function StoryEntry()
         label = "剧情",
         labelColor = C.gold,
         onClick = function()
-            StoryBrowserController.Show()
+            CampaignView.Show()
         end,
     }
 end
@@ -314,16 +320,28 @@ function HomeView.Build(context)
 
     -- 中间区域可能比设计高度矮（如 iPad 短屏）：首页内容放进垂直滚动容器，
     -- 短屏时可滚动查看完整内容，避免超出屏幕被裁剪。
+    local atkCard = FormalStatCard("攻击", Kit.FormatInt(stats.atkBig or stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH)
+    local defCard = FormalStatCard("防御", Kit.FormatInt(stats.defBig or stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH)
+    local critCard = FormalStatCard("暴击", Kit.FormatPercent(stats.crit), C.gold, ASSETS.ui.statCrit, statCardW, statCardH)
+    local speedCard = FormalStatCard("攻速", string.format("%.1f", stats.atkSpeed), C.mp, ASSETS.ui.statSpeed, statCardW, statCardH)
+    local hpCard = FormalStatCard("生命", Kit.FormatInt(game.hpBig or game.hp) .. "/" .. Kit.FormatInt(game.playerMaxHp or stats.hpBig or stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH)
+    local powerCard = FormalStatCard("战力", (game.displayedPower or stats.power) and Kit.FormatInt(game.displayedPower or stats.power) or "待评估", C.gold, ASSETS.ui.statPower, statCardW, statCardH)
+    homeRefs_.atk = atkCard._valueLabel
+    homeRefs_.def = defCard._valueLabel
+    homeRefs_.crit = critCard._valueLabel
+    homeRefs_.speed = speedCard._valueLabel
+    homeRefs_.hp = hpCard._valueLabel
+    homeRefs_.power = powerCard._valueLabel
     local statGrid = UI.Panel {
         width = statGridW, height = statGridH, flexShrink = 0,
         marginTop = -16, position = "relative",
         children = {
-            UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("攻击", Kit.FormatInt(stats.atkBig or stats.atk), C.primary, ASSETS.ui.statAtk, statCardW, statCardH) } },
-            UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { FormalStatCard("防御", Kit.FormatInt(stats.defBig or stats.def), C.textSecondary, ASSETS.ui.statDef, statCardW, statCardH) } },
-            UI.Panel { position = "absolute", left = 0, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("暴击", Kit.FormatPercent(stats.crit), C.gold, ASSETS.ui.statCrit, statCardW, statCardH) } },
-            UI.Panel { position = "absolute", left = statCardW + statGapX, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { FormalStatCard("攻速", string.format("%.1f", stats.atkSpeed), C.mp, ASSETS.ui.statSpeed, statCardW, statCardH) } },
-            UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("生命", Kit.FormatInt(game.hpBig or game.hp) .. "/" .. Kit.FormatInt(game.playerMaxHp or stats.hpBig or stats.hp), C.hp, ASSETS.ui.statHp, statCardW, statCardH) } },
-            UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { FormalStatCard("战力", (game.displayedPower or stats.power) and Kit.FormatInt(game.displayedPower or stats.power) or "待评估", C.gold, ASSETS.ui.statPower, statCardW, statCardH) } },
+            UI.Panel { position = "absolute", left = 0, top = 0, width = statCardW, height = statCardH, children = { atkCard } },
+            UI.Panel { position = "absolute", left = statCardW + statGapX, top = 0, width = statCardW, height = statCardH, children = { defCard } },
+            UI.Panel { position = "absolute", left = 0, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { critCard } },
+            UI.Panel { position = "absolute", left = statCardW + statGapX, top = statCardH + statRowGapY, width = statCardW, height = statCardH, children = { speedCard } },
+            UI.Panel { position = "absolute", left = 0, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { hpCard } },
+            UI.Panel { position = "absolute", left = statCardW + statGapX, top = (statCardH + statRowGapY) * 2, width = statCardW, height = statCardH, children = { powerCard } },
         },
     }
 
@@ -372,7 +390,7 @@ function HomeView.Build(context)
         backgroundColor = { 6, 16, 38, 150 },
         borderWidth = 2,
         borderColor = { 80, 190, 255, 140 },
-        borderRadius = 22,
+        borderRadius = 0,
         boxShadow = {
             color = { 50, 170, 255, 80 },
             offsetX = 0, offsetY = 0, blurRadius = 12,
@@ -400,7 +418,7 @@ function HomeView.Build(context)
         },
     }
 
-    return UI.Panel {
+    homeRoot_ = UI.Panel {
         width = "100%", height = "100%", position = "relative",
         children = {
             UI.ScrollView {
@@ -422,6 +440,32 @@ function HomeView.Build(context)
             sideEntryBar,
         },
     }
+    return {
+        GetRoot = function() return homeRoot_ end,
+        Update = function(_, nextGame)
+            HomeView.Update(nextGame)
+            return true
+        end,
+        Destroy = function()
+            homeRoot_ = nil
+            homeRefs_ = {}
+        end,
+    }
+end
+
+function HomeView.Update(game)
+    game = game or {}
+    local stats = game.stats or {}
+    if homeRefs_.atk then homeRefs_.atk:SetText(Kit.FormatInt(stats.atkBig or stats.atk)) end
+    if homeRefs_.def then homeRefs_.def:SetText(Kit.FormatInt(stats.defBig or stats.def)) end
+    if homeRefs_.crit then homeRefs_.crit:SetText(Kit.FormatPercent(stats.crit)) end
+    if homeRefs_.speed then homeRefs_.speed:SetText(string.format("%.1f", stats.atkSpeed or 1)) end
+    if homeRefs_.hp then
+        homeRefs_.hp:SetText(Kit.FormatInt(game.hpBig or game.hp) .. "/" .. Kit.FormatInt(game.playerMaxHp or stats.hpBig or stats.hp))
+    end
+    if homeRefs_.power then
+        homeRefs_.power:SetText((game.displayedPower or stats.power) and Kit.FormatInt(game.displayedPower or stats.power) or "待评估")
+    end
 end
 
 return HomeView

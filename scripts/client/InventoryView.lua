@@ -55,6 +55,13 @@ local function CreateInventoryView(context)
     local selectedInventoryId = context.getSelectedInventoryId()
     local selectedSlot = context.getSelectedSlot()
     local selectedCategory = context.getSelectedCategory()
+    local pageRefs = {
+        category = selectedCategory,
+        selectedId = selectedInventoryId,
+        empty = false,
+        grid = nil,
+        detailHost = nil,
+    }
     local SetSelectedInventoryId = context.setSelectedInventoryId
     local SetSelectedSlot = context.setSelectedSlot
     local SetSelectedCategory = context.setSelectedCategory
@@ -890,6 +897,9 @@ local function CreateInventoryPage()
         },
     }
 
+    pageRefs.category = selectedCategory
+    pageRefs.selectedId = selectedInventoryId
+    pageRefs.empty = #items == 0
     if #items == 0 then
         pageChildren[#pageChildren + 1] = UI.Panel {
             width = "100%",
@@ -923,12 +933,16 @@ local function CreateInventoryPage()
             },
         }
     else
-        pageChildren[#pageChildren + 1] = UI.Panel {
+        local detailHost = UI.Panel {
             width = "100%",
             height = 500,
             flexShrink = 0,
             children = { CreateSelectedItemDetail() },
         }
+        pageRefs.detailHost = detailHost
+        pageChildren[#pageChildren + 1] = detailHost
+        local grid = InventoryGridView.Build(context, items)
+        pageRefs.grid = grid
         pageChildren[#pageChildren + 1] = UI.Panel {
             width = "100%",
             flexGrow = 1,
@@ -936,13 +950,11 @@ local function CreateInventoryPage()
             minHeight = 240,
             flexShrink = 1,
             overflow = "hidden",
-            children = {
-                InventoryGridView.Build(context, items),
-            },
+            children = { grid },
         }
     end
 
-    return UI.Panel {
+    local root = UI.Panel {
         width = "100%",
         height = "100%",
         paddingLeft = 24,
@@ -952,6 +964,8 @@ local function CreateInventoryPage()
         gap = 14,
         children = pageChildren,
     }
+    root._pageRefs = pageRefs
+    return root
 end
 
     return CreateInventoryPage
@@ -959,7 +973,37 @@ end
 
 function InventoryView.BuildInventoryPage(context)
     local buildInventoryPage = CreateInventoryView(context)
-    return buildInventoryPage()
+    local root = buildInventoryPage()
+    return {
+        GetRoot = function() return root end,
+        Update = function(_, nextGame)
+            if nextGame then context.game = nextGame end
+            local refs = root and root._pageRefs
+            if not refs then return false end
+            local nextCategory = context.getSelectedCategory()
+            if nextCategory ~= refs.category then return false end
+            local items = {}
+            for _, item in ipairs((context.game and context.game.inventory) or {}) do
+                if (nextCategory == "all" or item.category == nextCategory)
+                    and (not item.equipmentId or EquipmentQuickFilter.Matches("bag", item))
+                then
+                    items[#items + 1] = item
+                end
+            end
+            InventoryView.SortByRarityAndPower(items)
+            local empty = #items == 0
+            if empty ~= refs.empty then return false end
+            if empty then return true end
+            if refs.grid then InventoryGridView.UpdateData(refs.grid, items) end
+            if context.getSelectedInventoryId() ~= refs.selectedId then
+                return false
+            end
+            return true
+        end,
+        Destroy = function()
+            if root and root.Destroy then root:Destroy() end
+        end,
+    }
 end
 
 

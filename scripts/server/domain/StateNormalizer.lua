@@ -12,6 +12,7 @@ local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
 local RewardClaimDefinitions = require("shared.RewardClaimDefinitions")
 local ChallengeDefinitions = require("shared.ChallengeDefinitions")
+local CampaignDefinitions = require("shared.CampaignDefinitions")
 
 local StateNormalizer = {}
 
@@ -448,6 +449,8 @@ local QUEST_COUNTER_METRICS = {
     "monster_kill", "elite_kill", "boss_kill",
     "item_pickup", "chest_open", "decompose", "sell", "floor_advance",
     "abyss_run",
+    "campaign_stage_clear", "campaign_chapter_clear", "campaign_star_earned",
+    "campaign_battle_clear", "campaign_boss_clear", "strike_record",
 }
 
 local function sanitizeQuestCounters(value)
@@ -509,12 +512,18 @@ local function sanitizeQuests(value)
     local rawNewbie = type(value.newbie) == "table" and value.newbie or {}
     local rawDaily = type(value.daily) == "table" and value.daily or {}
     local rawAchievement = type(value.achievement) == "table" and value.achievement or {}
+    local rawWeekly = type(value.weekly) == "table" and value.weekly or {}
     return {
         newbie = { claimed = sanitizeQuestClaimed(rawNewbie.claimed) },
         daily = {
             dayKey = math.max(0, TableUtils.ToInteger(rawDaily.dayKey, 0)),
             progress = sanitizeQuestCounters(rawDaily.progress),
             claimed = sanitizeQuestClaimed(rawDaily.claimed),
+        },
+        weekly = {
+            weekKey = math.max(0, TableUtils.ToInteger(rawWeekly.weekKey, 0)),
+            progress = sanitizeQuestCounters(rawWeekly.progress),
+            claimed = sanitizeQuestClaimed(rawWeekly.claimed),
         },
         achievement = { claimed = sanitizeQuestClaimed(rawAchievement.claimed) },
         questStats = sanitizeQuestCounters(value.questStats),
@@ -895,7 +904,11 @@ function StateNormalizer.Normalize(rawState, now)
         abyss = sanitizeAbyss(rawState.abyss),
         rewardClaims = sanitizeRewardClaims(rawState.rewardClaims),
         challenges = sanitizeChallenges(rawState.challenges),
+        campaign = CampaignDefinitions.Sanitize(rawState.campaign),
         tutorial = sanitizeTutorial(rawState.tutorial),
+        seasonRewardWeekKey = clampInteger(rawState.seasonRewardWeekKey, 0, LargeNumber.MAX_SAFE_INTEGER, 0),
+        seasonTitle = type(rawState.seasonTitle) == "string" and string.sub(rawState.seasonTitle, 1, 32) or "",
+        seasonFrame = type(rawState.seasonFrame) == "string" and string.sub(rawState.seasonFrame, 1, 32) or "",
     }
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}

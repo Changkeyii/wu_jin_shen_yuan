@@ -73,8 +73,11 @@ GameStateContracts.PERSISTED_FIELDS = {
     "abyss",
     "rewardClaims",
     "challenges",
-    -- 序章进度需持久化，避免会话内重连后客户端永远停在 step=1。
+    "campaign",
     "tutorial",
+    "seasonRewardWeekKey",
+    "seasonTitle",
+    "seasonFrame",
 }
 
 GameStateContracts.SNAPSHOT_FIELDS = {
@@ -141,7 +144,11 @@ GameStateContracts.SNAPSHOT_FIELDS = {
     "abyss",
     "rewardClaims",
     "challenges",
+    "campaign",
     "tutorial",
+    "seasonRewardWeekKey",
+    "seasonTitle",
+    "seasonFrame",
 }
 
 GameStateContracts.DELTA_FIELD_SET = {}

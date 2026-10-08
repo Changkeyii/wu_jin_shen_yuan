@@ -670,6 +670,16 @@ function ServerClient.DecideEquip(action, itemId, callback)
     return ServerClient.Send("Game.DecideEquip", payload, callback)
 end
 function ServerClient.UndoEquip(callback) return ServerClient.Send("Game.UndoEquip", {}, callback) end
+function ServerClient.CampaignPlayStage(stageId, action, callback)
+    local resolved = "complete"
+    if action == "challenge" or action == "sweep" or action == "echo" then
+        resolved = action
+    end
+    return ServerClient.Send("Game.CampaignPlayStage", {
+        stageId = tostring(stageId),
+        action = resolved,
+    }, callback)
+end
 function ServerClient.AdvanceStory(action, storyId, lineIndex, callback)
     local payload = { action = action }
     if storyId ~= nil then payload.storyId = storyId end

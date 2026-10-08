@@ -54,8 +54,9 @@ function CommonPromptDialog.Present(options, finish)
     local pages = options.pages or options.storyLines
     local pageIndex = 1
     local maxPageReached = 1
+    local designH = GameTheme.CONFIG.DynamicDesignHeight and GameTheme.CONFIG.DynamicDesignHeight() or 1920
     local dialogWidth = options.dialogWidth or 900
-    local dialogHeight = options.dialogHeight or 760
+    local dialogHeight = options.dialogHeight or math.min(760, math.max(560, math.floor(designH * 0.62)))
     local buttonWidth = 300
     local buttonGap = options.buttonGap or 80
     local buttonTop = options.buttonTop or (dialogHeight - 96)

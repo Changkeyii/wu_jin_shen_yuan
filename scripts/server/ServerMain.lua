@@ -271,25 +271,20 @@ local function SendSnapshot(userId, snapshotEvents)
         chunks[#chunks + 1] = currentItems
         currentItems = {}
     end
+    local currentBytes = 0
+    local headerReserve = 4096
     for _, item in ipairs(inventory) do
-        local candidate = {}
-        for index, currentItem in ipairs(currentItems) do candidate[index] = currentItem end
-        candidate[#candidate + 1] = item
-        local probe = BuildSnapshotChunkPayload(
-            transferId,
-            snapshot.revision,
-            #chunks + 1,
-            1,
-            candidate,
-            #chunks == 0 and snapshot or nil,
-            #chunks == 0 and networkEvents or nil
-        )
-        local probeJson = cjson.encode(probe)
-        if #currentItems > 0 and #probeJson > maxChunkBytes then
+        local encoded = cjson.encode(item)
+        local itemBytes = #encoded + 8
+        if #currentItems > 0 and (currentBytes + itemBytes + headerReserve) > maxChunkBytes then
             FlushChunk()
-            currentItems[#currentItems + 1] = item
-        else
-            currentItems = candidate
+            currentBytes = 0
+        end
+        currentItems[#currentItems + 1] = item
+        currentBytes = currentBytes + itemBytes
+        if #currentItems >= 24 then
+            FlushChunk()
+            currentBytes = 0
         end
     end
     if #currentItems > 0 or #chunks == 0 then FlushChunk() end
@@ -337,7 +332,7 @@ local function SendDelta(userId, domainDelta)
         return SendSnapshot(userId) ~= nil
     end
     local inventoryChanged = domainDelta.inventoryChanged == true or domainDelta.equippedChanged == true
-    if inventoryChanged then
+    if inventoryChanged and (domainDelta.forceSnapshot == true or #(state.inventory or {}) > 180) then
         return SendSnapshot(userId, networkEvents) ~= nil
     end
     local delta = GameStateSchema.BuildDelta(state.revision, changes, {
@@ -416,6 +411,33 @@ FinalizeReady = function(entry)
     if session.ban then DisconnectBanned(entry.uid, session.ban); return end
     profileService_:MarkReady(entry.uid, entry.generation)
     idleService_:Reset(entry.uid)
+    do
+        local session = profileService_:GetSession(entry.uid)
+        local state = session and session.state
+        if state and leaderboardService_ then
+            local rewards, _, lastWeek = leaderboardService_:SeasonRewards(os.time())
+            local settledWeek = math.max(0, math.floor(tonumber(state.seasonRewardWeekKey) or 0))
+            if lastWeek >= 1 and settledWeek < lastWeek then
+                local reward = rewards[entry.uid]
+                if reward then
+                    MailEngine.Create(state, {
+                        type = "reward",
+                        title = "赛季结算奖励",
+                        sender = "深渊理事会",
+                        body = string.format("上周战力榜第 %d 名。获得称号「%s」、头像框「%s」。荣誉币已随附件发放。", reward.rank, reward.title, reward.frame),
+                        reason = "season_settle",
+                        bizOrderId = "season:" .. tostring(reward.weekKey) .. ":" .. tostring(entry.uid),
+                        attachments = {
+                            { kind = "currency", currency = "gold", count = reward.honor },
+                        },
+                    }, os.time())
+                    state.seasonTitle = reward.title
+                    state.seasonFrame = reward.frame
+                end
+                state.seasonRewardWeekKey = lastWeek
+            end
+        end
+    end
     SendStatus(entry.connection, "syncing", ErrorCodes.OK, "applying queued operations")
     adminService_:ProcessInbox(entry.uid, function(result)
         if not registry_:IsCurrent(entry) then return end
@@ -569,6 +591,7 @@ local function HandleUpdate(eventType, eventData)
     marketService_:Tick()
     if mailService_ then mailService_:Update(timeStep) end
     if profileService_ then profileService_:CheckpointPlayTime(timeStep, 30) end
+    if leaderboardService_ then leaderboardService_:EnsureSeasonSnapshot(os.time()) end
 end
 
 local function InitializeServices()
