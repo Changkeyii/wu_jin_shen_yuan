@@ -11,6 +11,7 @@ local Video = require("urhox-libs/Video")
 local GameTheme = require("client.Theme")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
+local UILayout = require("client.UI.UILayout")
 local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
 local DialogCoordinator = require("client.DialogCoordinator")
@@ -130,7 +131,7 @@ local STEP_LINES = {
     [4] = {
         title = "百炼成钢",
         lines = {
-            "碎片已经在手。强化你身上的武器，让它真正属于这场战斗。",
+            "分解得到的碎片可用于强化。这次教学武器的首次强化，由塔灵免费助你完成。",
             "记住：你的名字可以被忘记，但你的锋芒不会。",
             "按塔灵的指引，完成一次强化。",
         },
@@ -476,6 +477,10 @@ end
 local function RefreshInputWhitelist()
     ClearAllowedWidgets()
     if not active_ or not root_ then return end
+    AllowWidget(FindGuideWidgetById("recoveryAccess"))
+    AllowWidget(FindGuideWidgetById("stageLoadingRetry"))
+    require("client.UI.DialogSettingsAccess").AllowInTree(root_, AllowWidget)
+    AllowWidget(FindGuideWidgetById("recoverySettingsPanel"))
     if phase_ == "cg" then
         AllowWidget(FindGuideWidgetById("tutorialCgSkip"))
         return
@@ -927,7 +932,7 @@ local function RemoveLayer()
     end
     videoPlayer_ = nil
     ClearGuideLocks()
-    if layer_ and root_ then root_:RemoveChild(layer_) end
+    if layer_ then layer_:Destroy() end
     layer_ = nil
 end
 
@@ -968,10 +973,11 @@ ShowGuide = function(text, showNext, buttonText)
             },
         }
     end
+    local inset = UILayout.OverlayInsets()
     guideHint_ = UI.Panel {
         id = "tutorialGuideHint",
         position = "absolute",
-        left = 40, top = 24, right = 40,
+        left = inset.left, top = inset.top, right = inset.right,
         height = 236,
         zIndex = LAYER_Z + 60,
         clickable = true,
@@ -1103,6 +1109,7 @@ local function ShowDialog(stepData, onConfirm)
             },
         },
     }
+    require("client.UI.DialogSettingsAccess").Attach(layer_, false, { right = 30, top = 777, marginTop = 0 })
     root_:AddChild(layer_)
     RefreshInputWhitelist()
 end
@@ -1213,6 +1220,7 @@ ShowStepIntro = function()
     guideRetryPending_ = false
     guideRetryCount_ = 0
     local stepData = STEP_LINES[step_] or STEP_LINES[1]
+    LoadingController.PrefetchTutorial(step_)
     ShowDialog(stepData, function()
         -- 确认后：进入引导子步骤（每一步详细的点击指引 + 目标高亮）
         phase_ = "guide"
@@ -1223,29 +1231,40 @@ ShowStepIntro = function()
             end
         end
         local targetPage = stepData.page
-        if targetPage then
-            require("client.NavigationController").SwitchPage(targetPage, { tutorial = true })
-        end
+        local expectedStep = step_
         RemoveLayer()
-        layer_ = UI.Panel {
-            position = "absolute",
-            left = 0, top = 0, right = 0, bottom = 0,
-            zIndex = LAYER_Z,
-            clickable = false,
-            pointerEvents = "box-none",
-            children = {},
-        }
-        root_:AddChild(layer_)
-        RegisterGuideListener()
-        guideIndex_ = 1
-        -- 切页后页面控件要下一帧才有稳定布局：强制重试高亮。
-        guideRetryPending_ = true
-        guideRetryCount_ = 0
-        ShowGuideSubStep()
-        -- 教学战斗：自动开启挂机演示（服务端首杀/通关后自动停止，不持续挂机）
-        if stepData.autoRunStart then
-            ServerClient.AutoRun(true)
+        phase_ = "loading"
+        local function BeginGuide()
+            if not active_ or step_ ~= expectedStep then return end
+            phase_ = "guide"
+            layer_ = UI.Panel {
+                position = "absolute",
+                left = 0, top = 0, right = 0, bottom = 0,
+                zIndex = LAYER_Z,
+                clickable = false,
+                pointerEvents = "box-none",
+                children = {},
+            }
+            root_:AddChild(layer_)
+            RegisterGuideListener()
+            guideIndex_ = 1
+            -- 切页后页面控件要下一帧才有稳定布局：强制重试高亮。
+            guideRetryPending_ = true
+            guideRetryCount_ = 0
+            ShowGuideSubStep()
+            -- 教学战斗：自动开启挂机演示（服务端首杀/通关后自动停止，不持续挂机）
+            if stepData.autoRunStart then
+                LoadingController.PrefetchPage("equip")
+                LoadingController.PrefetchPage("bag")
+                ServerClient.AutoRun(true)
+            end
         end
+        if targetPage then
+            require("client.NavigationController").SwitchPage(targetPage, { tutorial = true, onReady = BeginGuide })
+        else
+            BeginGuide()
+        end
+        RefreshInputWhitelist()
     end)
 end
 
@@ -1393,6 +1412,7 @@ end)
 
 --- 评估是否开始新手剧情（登录后调用；已完成则不再触发）。
 function TutorialController.Evaluate()
+    if require("client.RecoveryState").suppressTutorial then return end
     if active_ then return end
     local tutorial = currentTutorial()
     if not tutorial or tutorial.completed then return end
@@ -1421,9 +1441,9 @@ function TutorialController.Evaluate()
     end
     -- 强引导：屏蔽所有非必要弹窗，只放行当前教程必需弹窗。
     ConfigureTutorialDialogs()
-    -- 序章 CG 播放期间后台预加载登塔资源，教学战斗进入登塔无需再转圈加载
-    LoadingController.EnsurePlayAssetsReady()
-    PlayCg()
+    -- CG/对话期间只在后台下载下一阶段，不抢占前景菊花或解码全部战斗帧。
+    LoadingController.PrefetchTutorial(step_)
+    if step_ == 1 then PlayCg() else ShowStepIntro() end
     return true
 end
 
@@ -1556,6 +1576,13 @@ end
 --- 2) 切页后布局未就绪时的重试。
 function TutorialController.Update(dt)
     if not active_ then return end
+    if guideHint_ and guideHint_.parent then
+        local inset = UILayout.OverlayInsets()
+        local props = guideHint_.props
+        if props.top ~= inset.top or props.left ~= inset.left or props.right ~= inset.right then
+            guideHint_:SetStyle({ top = inset.top, left = inset.left, right = inset.right })
+        end
+    end
     -- 首杀掉落后延后进入第二步对话，避免盖住飞入表现。
     TryFlushPendingStepIntro(dt)
     -- 状态机兜底：若服务端 tutorial.step 已推进，但客户端仍停在 step1，强制跟上。

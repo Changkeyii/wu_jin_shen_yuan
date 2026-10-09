@@ -17,6 +17,8 @@ local state_ = IDLE
 local sequence_ = 0
 local dialogKey_ = nil
 local loginGuideShown_ = false
+local shownSeconds_, retryElapsed_, retryDelay_ = nil, 0, 0
+local pollElapsed_ = 0
 local loginFlowPending_ = false
 local showActionResult_ = nil
 local onLoginFlowCompleted_ = nil
@@ -37,7 +39,12 @@ local function ExtractReward(response)
     return nil
 end
 
-local function CompleteLoginFlow()
+local function CompleteLoginFlow(retry)
+    if retry == true then
+        loginGuideShown_ = false
+        retryDelay_ = math.min(30, math.max(5, retryDelay_ * 2))
+        retryElapsed_ = 0
+    end
     if not loginFlowPending_ then return end
     loginFlowPending_ = false
     if onLoginFlowCompleted_ then onLoginFlowCompleted_() end
@@ -83,7 +90,7 @@ function OfflineClaimController.Collect(onCompleted)
         state_ = IDLE
         print("[OfflineClaim] loading dialog rejected sequence=" .. tostring(sequence))
         UI.Toast.Show("当前有其他弹窗，请稍后重试", { duration = 1.8, variant = "info", position = "bottom" })
-        CompleteLoginFlow()
+        CompleteLoginFlow(true)
         return
     end
 
@@ -96,7 +103,7 @@ function OfflineClaimController.Collect(onCompleted)
             print("[OfflineClaim] preview failed sequence=" .. tostring(sequence)
                 .. " code=" .. tostring(response and response.code))
             ActionResult(response)
-            CompleteLoginFlow()
+            CompleteLoginFlow(true)
             return
         end
         local data = response.data or {}
@@ -106,7 +113,7 @@ function OfflineClaimController.Collect(onCompleted)
             state_ = IDLE
             print("[OfflineClaim] invalid preview response sequence=" .. tostring(sequence))
             ActionResult({ ok = false, reason = "服务器返回的离线预览无效" })
-            CompleteLoginFlow()
+            CompleteLoginFlow(true)
             return
         end
 
@@ -132,7 +139,7 @@ function OfflineClaimController.Collect(onCompleted)
                         DialogCoordinator.ReleaseReservation(rewardReservation)
                         print("[OfflineClaim] claim failed sequence=" .. tostring(sequence)
                             .. " code=" .. tostring(claimResponse and claimResponse.code))
-                        CompleteLoginFlow()
+                        CompleteLoginFlow(true)
                         return
                     end
                     print("[OfflineClaim] claim completed sequence=" .. tostring(sequence))
@@ -162,6 +169,7 @@ function OfflineClaimController.Collect(onCompleted)
                 if sequence ~= sequence_ then return end
                 dialogKey_ = nil
                 state_ = IDLE
+                CompleteLoginFlow(false)
                 print("[OfflineClaim] preview closed sequence=" .. tostring(sequence))
             end,
             loginFlowPending_
@@ -172,7 +180,7 @@ function OfflineClaimController.Collect(onCompleted)
             state_ = IDLE
             print("[OfflineClaim] preview dialog rejected sequence=" .. tostring(sequence))
             UI.Toast.Show("当前有其他弹窗，请稍后重试", { duration = 1.8, variant = "info", position = "bottom" })
-            CompleteLoginFlow()
+            CompleteLoginFlow(true)
             return
         end
         print("[OfflineClaim] preview dialog queued sequence=" .. tostring(sequence))
@@ -183,7 +191,10 @@ function OfflineClaimController.ShowLoginGuide(options)
     options = options or {}
     local game = GameStateAdapter.GetViewState()
     if (game.pendingOfflineSeconds or 0) < GameStatePolicy.OFFLINE_MIN_SECONDS then return false end
+    if loginGuideShown_ and shownSeconds_ == game.pendingOfflineSeconds then return false end
+    if retryElapsed_ < retryDelay_ then return false end
     loginGuideShown_ = true
+    shownSeconds_ = game.pendingOfflineSeconds
     onLoginGuideClosed_ = options.onClosed
     local shown = CommonPromptDialog.Show {
         kind = "confirm",
@@ -196,7 +207,9 @@ function OfflineClaimController.ShowLoginGuide(options)
             "领取后金币与装备会直接并入当前角色。",
         },
         closeOnOverlay = false,
-        showClose = false,
+        showClose = true,
+        cancelText = "稍后领取",
+        onCancel = function() CompleteLoginFlow(false) end,
         confirmText = "领取离线收益",
         onPresented = options.onPresented,
         onConfirm = function()
@@ -221,8 +234,25 @@ function OfflineClaimController.IsLoginFlowPending()
     return loginFlowPending_
 end
 
+function OfflineClaimController.Update(dt)
+    retryElapsed_ = retryElapsed_ + math.max(0, dt or 0)
+    pollElapsed_ = pollElapsed_ + math.max(0, dt or 0)
+    if pollElapsed_ < 1 then return end
+    pollElapsed_ = 0
+    local game = GameStateAdapter.GetViewState()
+    if (game.pendingOfflineSeconds or 0) < GameStatePolicy.OFFLINE_MIN_SECONDS then
+        loginGuideShown_, shownSeconds_ = false, nil
+        return
+    end
+    if state_ ~= IDLE or loginFlowPending_ or retryElapsed_ < retryDelay_ then return end
+    if game.page ~= "home" or game.connectionState ~= "ready" then return end
+    if game.tutorial and not game.tutorial.completed then return end
+    if require("client.LoadingController").IsActive() then return end
+    OfflineClaimController.ShowLoginGuide()
+end
 function OfflineClaimController.Reset()
     sequence_ = sequence_ + 1
+    shownSeconds_, retryElapsed_, retryDelay_, pollElapsed_ = nil, 0, 0, 0
     if dialogKey_ then DialogCoordinator.CancelByKey(dialogKey_) end
     state_ = IDLE
     dialogKey_ = nil

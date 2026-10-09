@@ -2,6 +2,7 @@ local UI = require("urhox-libs/UI")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local ItemSlotBase = require("client.ItemSlotBase")
 local GridVirtualList = require("client.UI.GridVirtualList")
+local UILayout = require("client.UI.UILayout")
 
 local EquipmentCodexView = {}
 
@@ -52,6 +53,12 @@ end
 
 local CARD_WIDTH = 465
 local CARD_HEIGHT = 330
+
+-- 1080 设计宽度。背景 assetRect/visualOuterRect=1080x1580，无装饰内框，cover。
+-- 标题图 assetRect=992x190，visualOuterRect=(29,4,933,182)，
+-- contentRect=(252,45,488,88)，contain；标题和筛选为固定兄弟层。
+-- 网格 contentRect=(58,298,964,parentHeight-322)，距筛选底边 20。
+local GRID_BOUNDS = { left = 58, right = 58, top = 298, bottom = 24 }
 
 local function ShortenName(value, maxChars)
     local text = tostring(value or "")
@@ -192,10 +199,15 @@ function EquipmentCodexView.Build(context)
         cardHeight = CARD_HEIGHT,
         cardGap = 16,   -- 原行内卡片间距 gap
         rowGap = 16,    -- 原容器行间距 gap
-        -- 原 ScrollView 为 absolute(left=58 top=298 width=976 bottom=24)；
-        -- 设计高度 1920 - 顶栏310 - 底栏170 = 1440，滚动区 ≈ 1440 - 298 - 24 = 1118。
-        -- 仅用于 Yoga 布局完成前的池预创建，实际视口以布局计算为准。
-        viewportHeight = 1118,
+        -- viewportHeight 仅供对象池预热，真正的布局约束必须传给 VirtualList。
+        viewportHeight = math.max(1, UILayout.ContentHeight() - GRID_BOUNDS.top - GRID_BOUNDS.bottom),
+        widgetProps = {
+            id = "codexGrid",
+            position = "absolute",
+            left = GRID_BOUNDS.left, right = GRID_BOUNDS.right,
+            top = GRID_BOUNDS.top, bottom = GRID_BOUNDS.bottom,
+            overflow = "hidden",
+        },
         bounces = true, -- 与原生 ScrollView 默认 bounces=true 一致
         data = definitions,
         createCard = function(row, slotIndex)

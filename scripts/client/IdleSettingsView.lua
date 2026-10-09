@@ -27,6 +27,7 @@ local uiRoot_ = nil
 local setInventoryPolicy_ = nil
 local requestPageRefresh_ = nil
 local actionResult_ = nil
+local recover_ --[[@type function?]]
 
 local function ActionResult(response, successMessage)
     if actionResult_ then return actionResult_(response, successMessage) end
@@ -35,6 +36,14 @@ end
 
 local function RequestPageRefresh()
     if requestPageRefresh_ then requestPageRefresh_() end
+end
+
+-- Text actions keep a 64px touch target without any button image or panel background.
+local function TextAction(text, onClick)
+    return UI.Panel { width = 720, height = 64, flexShrink = 0, clickable = true, onClick = onClick,
+        children = { Kit.CompactTxt(text, 23, C.focus, {
+            width = "100%", height = 64, textAlign = "center", pointerEvents = "none",
+        }) } }
 end
 
 local actionFns_ = {
@@ -49,6 +58,7 @@ local function ShowIdleSettingTip(title, description)
     CommonPromptDialog.Show {
         kind = "rules",
         queueKey = "rule:" .. tostring(title),
+        zIndex = 52000,
         title = title,
         message = description,
         confirmText = "知道了",
@@ -120,7 +130,8 @@ end
 
 local function CloseIdleSettings()
     if idleSettingsOverlay_ and uiRoot_ then
-        uiRoot_:RemoveChild(idleSettingsOverlay_)
+        if idleSettingsOverlay_.Destroy then idleSettingsOverlay_:Destroy()
+        else uiRoot_:RemoveChild(idleSettingsOverlay_) end
     end
     idleSettingsOverlay_ = nil
 end
@@ -192,7 +203,7 @@ local function ShowIdleSettings()
             confirmText = "确认启用",
             danger = true,
             closeOnOverlay = false,
-            zIndex = 2500,
+            zIndex = 52000,
             onCancel = function()
                 if switch then switch.props.value = false end
             end,
@@ -307,6 +318,27 @@ local function ShowIdleSettings()
                 gap = 16,
                 paddingBottom = 32,
                 children = {
+                    Kit.Txt("性能与恢复", 25, C.focus, { width = "100%", height = 42 }),
+                    CreateIdlePolicySwitchRow("省电模式（30帧 / 减少特效）", require("client.PerformanceController").IsPowerSaving(), false,
+                        require("client.PerformanceController").SetPowerSaving),
+                    Kit.ImageButton("解除卡住并返回首页", 720, 72, ASSETS.ui.inventoryActionRed, function()
+                        if recover_ then recover_() end
+                    end),
+                    Kit.CompactTxt("保留装备、资源和进度；停止挂机并重新同步。", 19, C.textSecondary, { width = "100%", height = 32 }),
+                    TextAction("重新连接 / 同步状态", function()
+                        if ServerClient.IsReady() then
+                            require("client.GameView").TryRecoverServer()
+                            ServerClient.RequestSnapshot()
+                        elseif not ServerClient.RetryConnection() then
+                            UI.Toast.Show("网络连接尚未恢复，请检查网络后重试", { position = "bottom", variant = "warning" })
+                        end
+                    end),
+                    TextAction("继续领取已完成广告奖励", function()
+                        CloseIdleSettings()
+                        if not require("client.RewardClaimController").ResumeConfirmed() then
+                            require("client.AdGiftController").Open()
+                        end
+                    end),
                     Kit.Txt("装备处理", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
                     AddSwitch("loot_auto_equip", "刷宝掉落自动装备", "默认关闭。关闭时装备先进入暂存箱；发现更强同部位装备仍会显示非阻塞对比提示，由玩家决定是否穿戴。", lootAutoEquip, function(value)
                         lootAutoEquip = value
@@ -381,7 +413,9 @@ local function ShowIdleSettings()
             },
         },
     }
-    local panel = UI.Panel {
+    -- panel_940x320: visual=(0,0,940,320), content=(14,14,912,292).
+    -- Existing sliced 14px border; body remains inside the established 996px settings frame.
+    local panel = UI.Panel { id = "recoverySettingsPanel",
         position = "relative",
         width = 996,
         height = settingsHeight,
@@ -392,7 +426,7 @@ local function ShowIdleSettings()
         backgroundFit = "sliced",
         backgroundSlice = { 14, 14, 14, 14 },
         children = {
-            Kit.Txt("登塔自动处理设置", 32, C.text, { position = "absolute", left = 90, top = 34, width = 760, height = 48, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
+            Kit.Txt("游戏设置", 32, C.text, { position = "absolute", left = 90, top = 34, width = 760, height = 48, textAlign = "center", textStroke = { width = 2, color = "#000000" } }),
             UI.Panel {
                 position = "absolute",
                 right = 22,
@@ -413,7 +447,7 @@ local function ShowIdleSettings()
         top = 0,
         right = 0,
         bottom = 0,
-        zIndex = 2000,
+        zIndex = 51000,
         pointerEvents = "box-none",
         alignItems = "center",
         justifyContent = "center",
@@ -429,7 +463,7 @@ local function ShowIdleSettings()
                 backgroundFit = "cover",
                 onClick = CloseIdleSettings,
             },
-            panel,
+            require("client.UI.DialogSettingsAccess").Wrap(panel),
         },
     }
     uiRoot_:AddChild(idleSettingsOverlay_)
@@ -443,10 +477,13 @@ function IdleSettingsView.Show(context)
     setInventoryPolicy_ = context.setInventoryPolicy
     requestPageRefresh_ = context.requestPageRefresh
     actionResult_ = context.actionResult
+    recover_ = context.recover
     ShowIdleSettings()
 end
 
 --- 关闭面板（供 GameView 在重建 UI 根节点前调用）。
+function IdleSettingsView.IsOpen() return idleSettingsOverlay_ ~= nil end
+
 function IdleSettingsView.Close()
     CloseIdleSettings()
 end

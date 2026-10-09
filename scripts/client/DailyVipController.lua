@@ -11,7 +11,7 @@ local DailyVipController = {}
 
 local CAMPAIGN_ID = "daily_vip_reminder"
 local MANUAL_QUEUE_KEY = "daily_vip:manual"
-local AD_WATCHDOG_SECONDS = 45
+local AD_WATCHDOG_SECONDS = require("client.RewardVideo").WATCHDOG_SECONDS
 
 local context_ = nil
 local sequence_ = 0
@@ -173,7 +173,7 @@ local function RequestAdReward()
     end
     adFinish_ = Finish
 
-    local accepted = sdk:ShowRewardVideoAd(function(result)
+    local accepted = require("client.RewardVideo").Play(function(result)
         callbackFired = true
         Finish(result)
     end)

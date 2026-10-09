@@ -139,7 +139,13 @@ function RewardClaimEngine.CreateAdOffer(state, spec, now)
     then
         return nil
     end
+    -- New entitlements are scarce; existing pending quotes remain claimable.
+    local floor = tonumber(sourceKey:match("^floor:(%d+)$")) or 0
+    local eligible = source == "campaign" and sourceKey:match(":c%d+:c$") ~= nil
+        or source == "floor_milestone" and floor > 0 and floor % 50 == 0
+    if not eligible then return nil end
     local base = normalizedReward(spec.baseReward)
+    base.exp, base.abyssTickets = 0, 0
     if emptyReward(base) then return nil end
     local extra = {
         gold = LargeNumber.MultiplyRatio(
@@ -153,6 +159,9 @@ function RewardClaimEngine.CreateAdOffer(state, spec, now)
             * RewardClaimDefinitions.AD_EXTRA_MULTIPLIER,
     }
     local claims = ensureState(state)
+    for _, receipt in ipairs(claims.receipts or {}) do
+        if receipt.sourceKey == sourceKey then return nil end
+    end
     for _, pending in ipairs(claims.pending) do
         if pending.sourceKey == sourceKey then
             return pending
@@ -167,7 +176,14 @@ function RewardClaimEngine.CreateAdOffer(state, spec, now)
             table.remove(claims.pending, index)
         end
     end
-    if #claims.pending >= RewardClaimDefinitions.MAX_PENDING then
+    local otherCount, firstOther = 0, nil
+    for _, pending in ipairs(claims.pending) do
+        if pending.source ~= "campaign" then
+            otherCount = otherCount + 1
+            firstOther = firstOther or pending
+        end
+    end
+    if source ~= "campaign" and otherCount >= RewardClaimDefinitions.MAX_OTHER_PENDING then
         local overflow = nil
         for _, pending in ipairs(claims.pending) do
             if pending.sourceKey == "overflow:reward-offers" then
@@ -176,7 +192,7 @@ function RewardClaimEngine.CreateAdOffer(state, spec, now)
             end
         end
         if not overflow then
-            overflow = claims.pending[1]
+            overflow = firstOther
             overflow.source = "task"
             overflow.sourceKey = "overflow:reward-offers"
             overflow.meta = {}
@@ -203,61 +219,60 @@ function RewardClaimEngine.CreateAdOffer(state, spec, now)
     return pending
 end
 
-function RewardClaimEngine.ClaimAdExtra(inputState, rewardId, now)
+-- Validate the entire selection before paying anything. One ad may cover several
+-- offers produced by one settlement (for example multiple level milestones).
+function RewardClaimEngine.ClaimAdExtras(inputState, rewardIds, now)
     now = PlayerTransition.Now(now)
+    if type(rewardIds) ~= "table" or #rewardIds < 1 or #rewardIds > 50 then
+        return PlayerTransition.Failure(inputState, now, "INVALID_REWARD_IDS", "请选择本次奖励")
+    end
+    local selected, seen = {}, {}
     local working = PlayerTransition.Copy(inputState, now)
     local claims = ensureState(working)
-    local index = nil
-    local pending = nil
-    for candidateIndex, candidate in ipairs(claims.pending) do
-        if candidate.id == rewardId then
-            index = candidateIndex
-            pending = candidate
-            break
+    claims.receipts = claims.receipts or {}
+    local replayed = {}
+    for _, id in ipairs(rewardIds) do
+        if type(id) ~= "string" or seen[id] then
+            return PlayerTransition.Failure(inputState, now, "INVALID_REWARD_IDS", "奖励编号重复或无效")
         end
+        seen[id] = true
+        local found
+        for _, offer in ipairs(claims.pending) do if offer.id == id then found = offer; break end end
+        if not found then
+            for _, receipt in ipairs(claims.receipts) do
+                if receipt.id == id then found = receipt; replayed[id] = true; break end
+            end
+        end
+        if not found or (not replayed[id] and found.expiresAt > 0 and found.expiresAt < now) then
+            return PlayerTransition.Failure(inputState, now, "REWARD_OFFER_NOT_FOUND", "该激励奖励已领取或已失效")
+        end
+        selected[#selected + 1] = found
     end
-    if not pending then
-        return PlayerTransition.Failure(
-            inputState,
-            now,
-            "REWARD_OFFER_NOT_FOUND",
-            "该激励奖励已领取或已失效"
-        )
+    -- Remove only selected offers before applying experience, which may create new milestones.
+    for i = #claims.pending, 1, -1 do
+        if seen[claims.pending[i].id] then table.remove(claims.pending, i) end
     end
-    if pending.expiresAt > 0 and pending.expiresAt < now then
-        table.remove(claims.pending, index)
-        return PlayerTransition.Finalize(
-            inputState,
-            working,
-            now,
-            "reward_offer_expired",
-            {},
-            false,
-            false
-        )
-    end
-    local reward = normalizedReward(pending.extraReward)
     local events = {}
-    applyReward(working, reward, events)
-    table.remove(claims.pending, index)
-    events[#events + 1] = PlayerTransition.Event(
-        "reward_ad_extra_claimed",
-        {
-            rewardId = pending.id,
-            source = pending.source,
+    for _, offer in ipairs(selected) do
+        local reward = normalizedReward(offer.extraReward)
+        if not replayed[offer.id] then
+            applyReward(working, reward, events)
+            claims.receipts[#claims.receipts + 1] = TableUtils.DeepCopy(offer)
+            if #claims.receipts > RewardClaimDefinitions.MAX_PENDING then table.remove(claims.receipts, 1) end
+        end
+        local total = normalizedReward(offer.baseReward)
+        addReward(total, reward)
+        events[#events + 1] = PlayerTransition.Event("reward_ad_extra_claimed", {
+            rewardId = offer.id, source = offer.source,
             multiplier = RewardClaimDefinitions.AD_MULTIPLIER,
-            reward = reward,
-        }
-    )
-    return PlayerTransition.Finalize(
-        inputState,
-        working,
-        now,
-        "reward_ad_extra_claimed",
-        events,
-        false,
-        false
-    )
+            reward = reward, totalReward = total,
+        })
+    end
+    return PlayerTransition.Finalize(inputState, working, now, "reward_ad_extra_claimed", events, false, false)
+end
+
+function RewardClaimEngine.ClaimAdExtra(inputState, rewardId, now)
+    return RewardClaimEngine.ClaimAdExtras(inputState, { rewardId }, now)
 end
 
 function RewardClaimEngine.ClaimExclusiveAdGift(

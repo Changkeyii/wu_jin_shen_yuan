@@ -6,6 +6,9 @@ local ItemView = require("client.ItemView")
 local RewardDialogView = require("client.RewardDialogView")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local ItemSort = require("shared.ItemSort")
+local BigNumber = require("shared.BigNumber")
+local LargeNumber = require("shared.LargeNumber")
+local RewardClaimController = require("client.RewardClaimController")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -15,17 +18,21 @@ local OfflineClaimView = {}
 local function BuildRewardCards(value)
     value = value or {}
     local cards = {
-        RewardDialogView.BuildItemCard(ASSETS.items.gold, "金币", "+" .. Kit.FormatInt(value.gold or 0), "epic"),
-        RewardDialogView.BuildItemCard(ASSETS.items.crystal, "经验", "+" .. Kit.FormatInt(value.exp or 0), "advanced"),
-        RewardDialogView.BuildItemCard(ASSETS.items.crystal, "碎片", "+" .. Kit.FormatInt(value.fragments or 0), "rare"),
+        RewardDialogView.DescribeCard(ASSETS.items.gold, "金币", "+" .. Kit.FormatInt(value.gold or 0), "epic"),
+        RewardDialogView.DescribeCard(ASSETS.items.crystal, "经验", "+" .. Kit.FormatInt(value.exp or 0), "advanced"),
+        RewardDialogView.DescribeCard(ASSETS.items.crystal, "碎片", "+" .. Kit.FormatInt(value.fragments or 0), "rare"),
     }
     local equipmentItems = ItemSort.Sort(value.equipmentItems or {})
+    if not BigNumber.IsZero(value.abyssTickets or 0) then
+        RewardDialogView.AddDescriptor(cards, require("shared.AbyssDefinitions").ICON,
+            "深渊票", "+" .. Kit.FormatInt(value.abyssTickets), "epic")
+    end
     for _, item in ipairs(equipmentItems) do
-        cards[#cards + 1] = RewardDialogView.BuildItemCard(
+        cards[#cards + 1] = RewardDialogView.DescribeCard(
             ItemView.ItemImage(item), item.name or "装备", nil, item.rarity, item)
     end
     if (value.equipment or 0) > 0 and #(value.equipmentItems or {}) == 0 then
-        cards[#cards + 1] = RewardDialogView.BuildItemCard(
+        cards[#cards + 1] = RewardDialogView.DescribeCard(
             ASSETS.items.chest, "装备", nil, "rare")
     end
     return cards
@@ -141,8 +148,8 @@ function OfflineClaimView.ShowPreview(quoteToken, value, currentFloor, onClaim, 
         closeRight = 22,
         buttonTop = 1017,
         buttonGap = 120,
-        cancelText = forceClaim and nil or "稍后领取",
-        showClose = not forceClaim,
+        cancelText = "稍后领取",
+        showClose = true,
         confirmText = "确认领取",
         closeOnOverlay = false,
         contentBuilder = function()
@@ -155,6 +162,19 @@ end
 
 function OfflineClaimView.BuildRewardOptions(value, currentFloor, onCompleted)
     value = value or {}
+    local events = RewardClaimController.TakeOfflineEvents()
+    local base = {}; for key, amount in pairs(value) do base[key] = amount end
+    local function AddResources(target, reward)
+        for _, key in ipairs({ "gold", "exp", "fragments", "abyssTickets" }) do
+            local left, right = target[key] or 0, reward[key] or 0
+            if LargeNumber.IsLargeNumber(left) then left = LargeNumber.ToBigNumber(left) end
+            if LargeNumber.IsLargeNumber(right) then right = LargeNumber.ToBigNumber(right) end
+            target[key] = BigNumber.Add(left, right)
+        end
+    end
+    for _, event in ipairs(events) do
+        if (event.kind or event.type) == "level_milestone_reward" then AddResources(base, event.reward or {}) end
+    end
     local lines = {
         "本次实际结算：" .. Kit.FormatDuration(value.processedSeconds or 0),
         "离线期间仅重复挑战第" .. tostring(value.floor or currentFloor or 1) .. "层，不会自动突破楼层。",
@@ -165,17 +185,21 @@ function OfflineClaimView.BuildRewardOptions(value, currentFloor, onCompleted)
     elseif (value.remainingSeconds or 0) > 0 then
         lines[#lines + 1] = "剩余离线时间：" .. Kit.FormatDuration(value.remainingSeconds)
     end
-    return RewardDialogView.BuildOptions {
+    return RewardClaimController.ShowReward({
         priority = 450,
-        queueKey = "offline_reward:" .. tostring(value.processedSeconds or 0) .. ":" .. tostring(value.floor or 1),
+        queueKey = RewardDialogView.NextKey("offline_reward"),
         title = "获得离线奖励",
         message = "离线收益已领取",
         lines = lines,
         confirmText = "确认收取",
-        cards = BuildRewardCards(value),
+        buildCards = function(extra)
+            local total = {}; for key, amount in pairs(base) do total[key] = amount end
+            AddResources(total, extra or {})
+            return BuildRewardCards(total)
+        end,
         onConfirm = onCompleted,
         onCancel = onCompleted,
-    }
+    }, events, true)
 end
 
 function OfflineClaimView.ShowReward(value, currentFloor, onCompleted)

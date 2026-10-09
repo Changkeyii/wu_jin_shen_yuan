@@ -18,6 +18,19 @@ local NavigationController = {}
 
 local context_ = nil
 local refs_ = {}
+local pendingPlayStart_ = false
+local navigationGeneration_ = 0
+
+function NavigationController.OnReady()
+    if not pendingPlayStart_ then return end
+    local game = GameStateAdapter.GetViewState()
+    if game.page ~= "play" then pendingPlayStart_ = false; return end
+    if game.readOnly then return end
+    pendingPlayStart_ = false
+    if not game.autoRun and game.tutorial and game.tutorial.completed then
+        PlayPresentation.SetAutoRun(true)
+    end
+end
 
 local function CurrentGame()
     return GameStateAdapter.GetViewState()
@@ -30,11 +43,14 @@ end
 
 local function PerformSwitch(pageId, options)
     options = options or {}
+    navigationGeneration_ = navigationGeneration_ + 1
+    local generation = navigationGeneration_
     local game = CurrentGame()
     if game.page == "play" and pageId ~= "play" then
         PlayPresentation.ClearCombatPresentation(true)
     end
     local function CompleteSwitch()
+        if generation ~= navigationGeneration_ then return end
         local currentBeforeSwitch = CurrentGame()
         if IsTutorialLocked(currentBeforeSwitch) and options.tutorial ~= true then
             print("[TutorialLock] blocked deferred page switch: "
@@ -45,13 +61,16 @@ local function PerformSwitch(pageId, options)
         local current = CurrentGame()
         AudioController.SetPage(current.page)
         context_.refreshPage()
+        pendingPlayStart_ = pageId == "play" and not IsTutorialLocked(current)
+        NavigationController.OnReady()
         if context_.onPageChanged then context_.onPageChanged(current.page) end
+        if options.onReady then options.onReady() end
     end
     if pageId == "play" then
         LoadingController.EnsurePlayAssetsReady(CompleteSwitch)
         return
     end
-    CompleteSwitch()
+    LoadingController.EnsurePageAssetsReady(pageId, CompleteSwitch)
 end
 
 function NavigationController.Configure(context)
@@ -61,6 +80,11 @@ end
 function NavigationController.SwitchPage(pageId, options)
     options = options or {}
     if not context_ then return false end
+    local recovery = require("client.RecoveryState")
+    if recovery.suppressTutorial and pageId == "play" then
+        recovery.suppressTutorial = false
+        require("client.TutorialController").Evaluate()
+    end
     local game = CurrentGame()
     -- 序章由 TutorialController 独占导航控制；指针锁之外再封死程序化切页。
     if IsTutorialLocked(game) and options.tutorial ~= true then
@@ -68,7 +92,14 @@ function NavigationController.SwitchPage(pageId, options)
             .. " -> " .. tostring(pageId))
         return false
     end
-    if game.page == pageId then return true end
+    if game.page == pageId then
+        navigationGeneration_ = navigationGeneration_ + 1
+        local generation = navigationGeneration_
+        LoadingController.EnsurePageAssetsReady(pageId, function()
+            if generation == navigationGeneration_ and options.onReady then options.onReady() end
+        end)
+        return true
+    end
     ItemTips.Hide("page-switch")
     if game.page == "play" and game.autoRun and context_.isIdleRewardTracking() then
         context_.showIdleRewardSummary(function()
@@ -112,7 +143,7 @@ function NavigationController.Build(game)
         { id = "play", name = "登塔" },
         { id = "market", name = "市场" },
     }
-    -- 管理页入口已改为「邮件入口长按 5 秒」（仅管理员，服务端校验），不再出现在底部导航。
+    -- 管理页入口：首页标题连点 8 次 / 邮件入口长按 5 秒；均校验管理员权限，不放在底部导航。
 
     local navAreaX = 28
     local navAreaW = 1024
@@ -210,6 +241,8 @@ function NavigationController.Build(game)
 end
 
 function NavigationController.Reset()
+    navigationGeneration_ = navigationGeneration_ + 1
+    pendingPlayStart_ = false
     refs_ = {}
     context_ = nil
 end

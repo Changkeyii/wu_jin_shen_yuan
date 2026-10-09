@@ -7,6 +7,12 @@ local PlayerTransition = require("server.domain.PlayerTransition")
 local DomainMath = require("server.domain.DomainMath")
 
 local CombatEngine = {}
+local function hasGiftBoost(state, monster)
+    local gifts = state.rewardClaims and state.rewardClaims.gifts
+    return gifts and gifts.boostActive and not monster.abyssSource
+        and state.currentMonster and monster.id == state.currentMonster.id
+        and (monster.encounter == "boss" or monster.encounter == "chapterBoss")
+end
 
 local function encounterFor(room, floor, explicitType)
     room = Catalog.Clamp(TableUtils.ToInteger(room, 1), 1, 10)
@@ -81,6 +87,9 @@ local function damageToMonster(state, monster, weight, rng)
         attack = BigNumber.MultiplyScalar(attack, 1 + (stats.bossDamage or 0))
     end
     attack = BigNumber.MultiplyScalar(attack, 1 + (stats.damageBonus or 0))
+    if hasGiftBoost(state, monster) then
+        attack = BigNumber.MultiplyScalar(attack, 1 + require("shared.AdGiftDefinitions").BOOST)
+    end
     attack = BigNumber.Add(attack, BigNumber.MultiplyScalar(
         DomainMath.StatMagnitude(stats, "hp"), (stats.trueDamageRate or 0) * weight))
     return DomainMath.FloorDamage(defendedDamage(
@@ -97,6 +106,9 @@ local function damageToPlayer(state, monster)
         attack, DomainMath.StatMagnitude(state.stats, "def"), TowerRules.DifficultyGrowth(state.floor))
     damage = BigNumber.MultiplyScalar(
         damage, 1 - Catalog.Clamp(state.stats.damageReduction or 0, 0, 0.70))
+    if hasGiftBoost(state, monster) then
+        damage = BigNumber.MultiplyScalar(damage, 1 - require("shared.AdGiftDefinitions").DAMAGE_REDUCTION)
+    end
     return DomainMath.FloorDamage(damage)
 end
 
@@ -168,8 +180,9 @@ local function attackStartedEvent(monster, attack)
     })
 end
 
-function CombatEngine.BeginBattle(state, eventType, rng, events)
-    local generated = CombatEngine.GetMonster(state, eventType, state.position)
+function CombatEngine.BeginBattle(state, eventType, rng, events, context)
+    local generated = context and context.monsterDefinition
+        or CombatEngine.GetMonster(state, eventType, state.position)
     local encounter = generated.encounter
     local monster = {
         id = string.format("floor:%d:room:%d", state.floor, encounter.room),
@@ -202,6 +215,9 @@ function CombatEngine.BeginBattle(state, eventType, rng, events)
         monster.abyssSource = currentRandom.source
     end
     state.currentMonster = monster
+    if not (context and context.campaign) then
+        require("server.domain.AdGiftEngine").BeginBattle(state, monster, context)
+    end
     state.currentEvent = encounter.eventType
     local attack = randomAttack(state, monster, rng)
     local battleStarted = {

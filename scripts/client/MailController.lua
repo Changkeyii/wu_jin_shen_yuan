@@ -9,10 +9,14 @@ local NavigationController = require("client.NavigationController")
 local MailController = {}
 
 local LONG_PRESS_SECONDS = 5
+local TITLE_TAP_COUNT = 8
+local TITLE_TAP_GAP_SECONDS = 2
 
 local pressing_ = false
 local timer_ = 0
 local triggered_ = false
+local titleTapCount_ = 0
+local titleTapGap_ = 0
 
 --- 由邮件入口的 pointer 事件调用，上报是否正在按住
 function MailController.SetPressing(pressing)
@@ -45,8 +49,30 @@ function MailController.OpenGM()
     end
 end
 
+-- 首页标题连点只负责触发既有入口，不授予管理员权限。
+function MailController.OnHomeTitleClick()
+    local game = GameStateAdapter.GetViewState()
+    if not game or game.page ~= "home" then
+        titleTapCount_, titleTapGap_ = 0, 0
+        return
+    end
+    titleTapCount_ = titleTapCount_ + 1
+    titleTapGap_ = 0
+    if titleTapCount_ >= TITLE_TAP_COUNT then
+        titleTapCount_ = 0
+        MailController.OpenGM()
+    end
+end
+
 --- 每帧更新（由 GameView.HandleUpdate 调用）
 function MailController.Update(dt)
+    if titleTapCount_ > 0 then
+        local game = GameStateAdapter.GetViewState()
+        titleTapGap_ = titleTapGap_ + math.max(0, dt or 0)
+        if not game or game.page ~= "home" or titleTapGap_ > TITLE_TAP_GAP_SECONDS then
+            titleTapCount_, titleTapGap_ = 0, 0
+        end
+    end
     if not pressing_ or triggered_ then return end
     timer_ = timer_ + (dt or 0)
     if timer_ >= LONG_PRESS_SECONDS then
@@ -66,6 +92,7 @@ function MailController.Open()
 end
 
 function MailController.Reset()
+    titleTapCount_, titleTapGap_ = 0, 0
     pressing_ = false
     timer_ = 0
     triggered_ = false

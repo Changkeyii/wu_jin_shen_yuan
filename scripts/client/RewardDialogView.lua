@@ -20,7 +20,7 @@ function RewardDialogView.BuildItemCard(icon, name, amount, rarity, item)
         rarity = rarity or "common",
         level = 1,
     }
-    return BackpackItemSlot.Build({
+    local card = BackpackItemSlot.Build({
         UI = UI,
         C = C,
         ASSETS = ASSETS,
@@ -40,13 +40,50 @@ function RewardDialogView.BuildItemCard(icon, name, amount, rarity, item)
         showLevel = item ~= nil,
         showEquipped = false,
     })
+    card.retainOnDialogRebuild = true
+    return card
 end
 
 function RewardDialogView.AddCard(cards, icon, name, amount, rarity, item)
     cards[#cards + 1] = RewardDialogView.BuildItemCard(icon, name, amount, rarity, item)
 end
 
+function RewardDialogView.DescribeCard(icon, name, amount, rarity, item)
+    return { rewardDescriptor = true, icon = icon, name = name, amount = amount, rarity = rarity, item = item }
+end
+function RewardDialogView.AddDescriptor(cards, ...)
+    cards[#cards + 1] = RewardDialogView.DescribeCard(...)
+end
+local function BuildLazyCards(cards, pageLabel)
+    local current, pageCount = 1, math.max(1, math.ceil(#cards / 9))
+    local body = UI.Panel { position = "absolute", left = 42, top = 0, width = 636, height = 580 }
+    local function render()
+        for i = #(body.children or {}), 1, -1 do
+            local child = body.children[i]
+            if child.Destroy then child:Destroy() else body:RemoveChild(child) end
+        end
+        for i = (current - 1) * 9 + 1, math.min(current * 9, #cards) do
+            local d = cards[i]
+            local card = RewardDialogView.BuildItemCard(d.icon, d.name, d.amount, d.rarity, d.item)
+            local index = (i - 1) % 9
+            card:SetStyle({ position = "absolute", left = 40 + (index % 3) * 188, top = 6 + math.floor(index / 3) * 190 })
+            body:AddChild(card)
+        end
+        if pageLabel then pageLabel:SetText(string.format("%d / %d", current, pageCount)) end
+    end
+    local function arrow(text, x, direction)
+        return UI.Button { position = "absolute", left = x, top = 240, width = 42, height = 72,
+            text = text, onClick = function()
+                local nextPage = math.max(1, math.min(pageCount, current + direction))
+                if nextPage ~= current then current = nextPage; render() end
+            end }
+    end
+    render()
+    return UI.Panel { width = 720, height = 600, position = "relative", overflow = "hidden",
+        children = { body, arrow("‹", 0, -1), arrow("›", 678, 1) } }
+end
 function RewardDialogView.BuildCardPanel(cards, pageLabel)
+    if cards[1] and cards[1].rewardDescriptor then return BuildLazyCards(cards, pageLabel) end
     return HorizontalArrowScroller.Build {
         width = 720,
         height = 600,
@@ -141,7 +178,7 @@ function RewardDialogView.BuildOptions(options)
         kind = "equipment",
         priority = options.priority or 320,
         queueKey = options.queueKey or RewardDialogView.NextKey("reward"),
-        zIndex = options.zIndex or 2000,
+        zIndex = options.zIndex or require("client.UI.UILayout").Z.reward,
         title = options.title or "获得奖励",
         celebration = true,
         entranceDuration = 0.52,

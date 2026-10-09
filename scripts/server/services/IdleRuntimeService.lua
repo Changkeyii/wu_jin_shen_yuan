@@ -25,6 +25,11 @@ end
 
 IdleRuntimeService.new = IdleRuntimeService.New
 
+local function HasCampaignTrial(session)
+    local trial = session and session.campaignTrial
+    return trial ~= nil and os.time() <= trial.expiresAt
+end
+
 function IdleRuntimeService:Reset(userId)
     self.elapsed[userId] = 0
 end
@@ -58,6 +63,7 @@ function IdleRuntimeService:_enqueueEventTimeout(userId, pendingEvent)
         if not self.profileService:IsOnline(userId)
             or not current or current.generation ~= generation
             or not current.state.pendingEvent
+            or current.state.pendingEvent.eventId ~= pendingEvent.eventId
         then finish(); return end
 
         self.profileService:ApplyRuntime(userId, "event timeout skip", function(state, now)
@@ -93,6 +99,7 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
         local session = self.profileService:GetSession(userId)
         if not self.profileService:IsOnline(userId)
             or not session or session.generation ~= generation
+            or HasCampaignTrial(session)
             or not session.state.autoRun
             or session.state.pendingStoryGate
             or session.state.pendingEvent
@@ -101,6 +108,7 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
             local current = self.profileService:GetSession(userId)
             if not self.profileService:IsOnline(userId)
                 or not current or current.generation ~= generation
+                or HasCampaignTrial(current)
             then
                 return {
                     ok = true,
@@ -145,7 +153,9 @@ function IdleRuntimeService:Update(timeStep)
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         online[userId] = true
         local state = self.profileService:GetState(userId)
-        if state and state.pendingEvent then
+        if HasCampaignTrial(self.profileService:GetSession(userId)) then
+            self.idlePlayers[userId] = true
+        elseif state and state.pendingEvent then
             self.pendingTimeoutPlayers[userId] = true
         elseif state and state.autoRun and state.currentMonster
             and not state.pendingStoryGate and not state.pendingEvent then

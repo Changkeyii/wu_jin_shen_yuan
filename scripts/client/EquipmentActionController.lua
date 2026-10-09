@@ -490,6 +490,11 @@ actionFns_.StrengthenSelected = function()
             return
         end
         local preview = response.data
+        if preview.canStrengthen == false and not preview.atMax
+            and game.tutorial and game.tutorial.completed == true then
+            require("client.AdGiftController").Show("forge")
+            return
+        end
         local content = UI.Panel {
             width = "100%",
             height = 300,
@@ -510,7 +515,8 @@ actionFns_.StrengthenSelected = function()
                     }
                 ),
                 Kit.CompactTxt(
-                    preview.atMax and "已达到当前强化上限" or "强化所需材料",
+                    preview.atMax and ("已达到强化上限 +" .. tostring(preview.enhanceLimit))
+                        or (preview.tutorialFree and "塔灵助力：本次教学强化免费" or "强化所需材料"),
                     20,
                     preview.atMax and C.error or C.textSecondary,
                     { width = "100%", height = 30, textAlign = "center" }
@@ -558,10 +564,6 @@ actionFns_.StrengthenSelected = function()
             if TutorialController.NotifyAction then
                 -- 预览回调返回时强制进入确认子步骤，避免异步窗口挂载后仍停在第 1 子步。
                 TutorialController.NotifyAction("strengthen_open")
-            end
-            -- 教学态必须有可点的强化确认：资源不足时也允许展示确认按钮（服务端会返回失败原因）。
-            if preview.canStrengthen ~= true then
-                preview.canStrengthen = true
             end
         end
         CommonPromptDialog.Show {

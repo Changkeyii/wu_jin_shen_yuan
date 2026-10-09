@@ -244,6 +244,9 @@ function LootStashController.Show(forced, onClosed)
             },
         },
     }
+    local frame = overlay_.children[2]
+    overlay_:RemoveChild(frame)
+    overlay_:AddChild(require("client.UI.DialogSettingsAccess").Wrap(frame))
     root_:AddChild(overlay_)
     return true
 end

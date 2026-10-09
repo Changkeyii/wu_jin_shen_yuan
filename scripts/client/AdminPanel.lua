@@ -2,6 +2,7 @@ local ServerClient = require("client.ServerClient")
 local LargeNumber = require("shared.LargeNumber")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local UI = require("urhox-libs/UI")
+local MailRules = require("shared.MailRules")
 
 local SECTION_BACKGROUND = "image/ui/generated/panel_940x320.png"
 
@@ -27,7 +28,6 @@ local form_ = {
     mailTitle = "官方奖励发送",
     mailBody = "您有一份奖励邮件，请查收。",
     mailType = "reward",
-    mailGold = "0",
     mailId = "",
     broadcastExpireDays = "7",
     queryName = "",
@@ -41,6 +41,9 @@ local byNameMatches_ = {}
 
 -- 道具发放（多选）状态：itemId -> { checked = bool, count = string }
 local itemSelections_ = {}
+local mailAttachments_ = {}
+local mailDraftVersion_ = 0
+local mailSending_ = false
 
 -- 道具发放列表过滤
 local itemFilterType_ = "all"
@@ -495,7 +498,7 @@ function AdminPanel.Build(UI, options)
     })
 
     -- 发放邮件信息：所有发放（金币/碎片/装备/道具）统一走邮箱，玩家自行领取。
-    local mailInfoSection = Section(UI, "发放邮件信息（所有发放均发到玩家邮箱）", {
+    local mailInfoSection = Section(UI, "邮件模板", {
         ButtonRow(UI, (function()
             local templateButtons = {}
             for _, template in ipairs(MAIL_TEMPLATES) do
@@ -514,42 +517,66 @@ function AdminPanel.Build(UI, options)
             end
             return templateButtons
         end)()),
-        Field(UI, "邮件标题", "mailTitle", "默认：官方奖励发送"),
-        Field(UI, "邮件正文", "mailBody", "默认：请查收奖励邮件。"),
     })
 
-    local function SendRewardMail(attachments)
-        if form_.targetUid == "" then
-            SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged)
-            return false
-        end
-        local title = MailText(
-            CurrentFieldText("admin-mail-title", form_.mailTitle),
-            DEFAULT_MAIL_TITLE
-        )
-        local body = MailText(
-            CurrentFieldText("admin-mail-body", form_.mailBody),
-            DEFAULT_MAIL_BODY
-        )
-        form_.mailTitle = title
-        form_.mailBody = body
+    -- Both recipients share one reviewed attachment draft; adding never sends mail.
+    local function AddMailAttachments(attachments)
+        if readOnly or mailSending_ then return false end
         if #attachments == 0 then
-            SetStatus({ ok = false, reason = "没有可发送的附件" }, onChanged)
+            SetStatus({ ok = false, reason = "没有可添加的附件" }, onChanged)
             return false
         end
-        if #attachments > 6 then
-            SetStatus({ ok = false, reason = "单封邮件最多携带 6 种附件，请减少勾选" }, onChanged)
+        if #mailAttachments_ + #attachments > MailRules.MAX_ATTACHMENTS then
+            SetStatus({ ok = false, reason = "单封邮件最多携带 6 项附件，请先清空或减少勾选" }, onChanged)
             return false
         end
-        ServerClient.AdminSendMail({
-            targetUid = form_.targetUid,
-            title = title,
-            body = body,
-            mailType = "reward",
-            batchId = "gm_mail",
-            attachments = attachments,
-        }, function(response) SetStatus(response, onChanged) end)
+        for _, attachment in ipairs(attachments) do
+            local count = tonumber(attachment.count)
+            if not count or count % 1 ~= 0 or count < 1 or count > 1000000000 then
+                SetStatus({ ok = false, reason = "附件数量必须为 1～1000000000 的整数" }, onChanged)
+                return false
+            end
+        end
+        for _, attachment in ipairs(attachments) do mailAttachments_[#mailAttachments_ + 1] = attachment end
+        mailDraftVersion_ = mailDraftVersion_ + 1
+        if onChanged then onChanged() end
         return true
+    end
+
+    local function SendMailDraft(broadcast)
+        if readOnly or mailSending_ then return end
+        if not broadcast and not form_.targetUid:match("^%d+$") then
+            SetStatus({ ok = false, reason = "请填写目标玩家编号" }, onChanged)
+            return
+        end
+        local days = tonumber(form_.broadcastExpireDays)
+        if not days or days % 1 ~= 0 or days < 1 or days > 3650 then
+            SetStatus({ ok = false, reason = "有效期必须为 1～3650 天的整数" }, onChanged)
+            return
+        end
+        local title, body = CurrentMailDraft()
+        local attachments = {}
+        for _, source in ipairs(mailAttachments_) do
+            local copy = {}
+            for key, value in pairs(source) do copy[key] = value end
+            attachments[#attachments + 1] = copy
+        end
+        local payload = { title = title, body = body, mailType = form_.mailType,
+            expireDays = days, attachments = attachments }
+        if not broadcast then payload.targetUid = form_.targetUid; payload.batchId = "gm_mail" end
+        local version = mailDraftVersion_
+        mailSending_ = true
+        if onChanged then onChanged() end
+        local function completed(response)
+            mailSending_ = false
+            if response and response.ok and mailDraftVersion_ == version then
+                mailAttachments_ = {}
+                mailDraftVersion_ = mailDraftVersion_ + 1
+            end
+            SetStatus(response, onChanged)
+        end
+        if broadcast then ServerClient.AdminSendBroadcastMail(payload, completed)
+        else ServerClient.AdminSendMail(payload, completed) end
     end
 
     local function ClearItemSelections()
@@ -559,7 +586,7 @@ function AdminPanel.Build(UI, options)
         if onChanged then onChanged() end
     end
 
-    local currencySection = Section(UI, "资源发放（发送到玩家邮箱）", {
+    local currencySection = Section(UI, "添加货币附件", {
         UI.Panel {
             width = "100%",
             flexDirection = "row",
@@ -586,24 +613,24 @@ function AdminPanel.Build(UI, options)
             },
         },
         UI.Button {
-            text = "发送到邮箱",
+            text = "加入邮件附件",
             variant = "success",
             width = 210,
             disabled = readOnly,
             onClick = function()
-                local amount = ToInteger(form_.amount)
-                if not amount or amount <= 0 then
+                local amount = tonumber(form_.amount)
+                if not amount or amount <= 0 or amount % 1 ~= 0 then
                     SetStatus({ ok = false, reason = "数量必须是正整数" }, onChanged)
                     return
                 end
-                SendRewardMail({
+                AddMailAttachments({
                     { kind = "currency", currency = form_.currency, count = amount },
                 })
             end,
         },
     })
 
-    local equipmentSection = Section(UI, "装备发放（发送到玩家邮箱）", {
+    local equipmentSection = Section(UI, "添加装备附件", {
         UI.Panel {
             width = "100%",
             flexDirection = "row",
@@ -637,12 +664,12 @@ function AdminPanel.Build(UI, options)
             },
         },
         UI.Button {
-            text = "发送到邮箱",
+            text = "加入邮件附件",
             variant = "success",
             width = 210,
             disabled = readOnly,
             onClick = function()
-                SendRewardMail({
+                AddMailAttachments({
                     {
                         kind = "equipment",
                         slot = form_.slot,
@@ -703,8 +730,20 @@ function AdminPanel.Build(UI, options)
         }),
     })
 
-    -- 邮件管理页
-    local mailSection = Section(UI, "GM 邮件", {
+    -- Shared composer: the same attachments and validation feed both send buttons.
+    local attachmentRows = {}
+    for index, attachment in ipairs(mailAttachments_) do
+        local name = attachment.name or attachment.itemId
+            or (attachment.kind == "currency" and (attachment.currency == "gold" and "金币" or "深渊碎片"))
+            or (tostring(attachment.rarity) .. " / " .. tostring(attachment.slot))
+        attachmentRows[#attachmentRows + 1] = Label(UI,
+            tostring(index) .. ". " .. name .. " × " .. tostring(attachment.count), 24, {213, 226, 255, 255})
+    end
+    if #attachmentRows == 0 then
+        attachmentRows[1] = Label(UI, "暂无附件，可发送纯文字邮件。", 24, {154, 177, 226, 255})
+    end
+    local mailSection = Section(UI, "确认附件并发送邮件", {
+        Field(UI, "个人邮件目标玩家编号（全服发送无需填写）", "targetUid", "玩家编号"),
         Field(UI, "标题", "mailTitle", "邮件标题"),
         Field(UI, "正文", "mailBody", "邮件正文"),
         UI.Panel {
@@ -732,63 +771,33 @@ function AdminPanel.Build(UI, options)
                         },
                     },
                 },
-                UI.Panel { flexGrow = 1, flexBasis = 0, children = { Field(UI, "金币附件", "mailGold", "0 = 无") } },
                 UI.Panel { flexGrow = 1, flexBasis = 0, children = { Field(UI, "有效期(天)", "broadcastExpireDays", "默认7天") } },
             },
         },
+        Label(UI, "待发送附件（" .. tostring(#mailAttachments_) .. "/6）", 24, {255, 255, 255, 255}),
+        UI.Panel { width = "100%", gap = 6, children = attachmentRows },
+        UI.Button { text = "清空邮件附件", variant = "secondary", width = 240,
+            disabled = readOnly or mailSending_, onClick = function()
+                if readOnly or mailSending_ then return end
+                mailAttachments_ = {}; mailDraftVersion_ = mailDraftVersion_ + 1
+                if onChanged then onChanged() end
+            end },
+        Label(UI, mailSending_ and "正在发送，请稍候…" or "个人和全服发送均使用以上附件。", 24, {213, 226, 255, 255}),
         Field(UI, "邮件ID（强制过期用）", "mailId", "查询后复制"),
         ButtonRow(UI, {
             UI.Button {
-                text = "发送测试邮件",
+                text = "发送个人邮件",
                 variant = "success",
-                width = 210,
-                disabled = readOnly,
-                onClick = function()
-                    local title, body = CurrentMailDraft()
-                    local gold = ToInteger(form_.mailGold) or 0
-                    if title == "" or body == "" then
-                        SetStatus({ ok = false, reason = "标题和正文不能为空" }, onChanged)
-                        return
-                    end
-                    local attachments = {}
-                    if gold > 0 then
-                        attachments[#attachments + 1] = { kind = "currency", currency = "gold", count = gold }
-                    end
-                    ServerClient.AdminSendMail({
-                        targetUid = form_.targetUid,
-                        title = title,
-                        body = body,
-                        mailType = form_.mailType,
-                        batchId = "gm_test",
-                        attachments = attachments,
-                    }, function(response) SetStatus(response, onChanged) end)
-                end,
+                width = 240,
+                disabled = readOnly or mailSending_,
+                onClick = function() SendMailDraft(false) end,
             },
             UI.Button {
                 text = "发送全服邮件",
                 variant = "warning",
-                width = 220,
-                disabled = readOnly,
-                onClick = function()
-                    local title, body = CurrentMailDraft()
-                    local gold = ToInteger(form_.mailGold) or 0
-                    if title == "" or body == "" then
-                        SetStatus({ ok = false, reason = "标题和正文不能为空" }, onChanged)
-                        return
-                    end
-                    local attachments = {}
-                    if gold > 0 then
-                        attachments[#attachments + 1] = { kind = "currency", currency = "gold", count = gold }
-                    end
-                    local expireDays = ToInteger(form_.broadcastExpireDays) or 7
-                    ServerClient.AdminSendBroadcastMail({
-                        title = title,
-                        body = body,
-                        mailType = form_.mailType,
-                        expireDays = expireDays,
-                        attachments = attachments,
-                    }, function(response) SetStatus(response, onChanged) end)
-                end,
+                width = 240,
+                disabled = readOnly or mailSending_,
+                onClick = function() SendMailDraft(true) end,
             },
             UI.Button {
                 text = "查询邮件",
@@ -897,7 +906,7 @@ function AdminPanel.Build(UI, options)
             },
         }
     end
-    local itemSection = Section(UI, "道具发放（多选，勾选后发送到目标玩家邮箱）", {
+    local itemSection = Section(UI, "添加道具附件（多选）", {
         UI.Panel {
             width = "100%",
             flexDirection = "row",
@@ -979,10 +988,13 @@ function AdminPanel.Build(UI, options)
                 },
             },
         },
-        table.unpack(itemRows),
+        UI.ScrollView { width = "100%", height = 420, flexShrink = 0,
+            scrollY = true, scrollX = false, showScrollbar = true, children = {
+                UI.Panel { width = "100%", gap = 8, children = itemRows },
+            } },
         ButtonRow(UI, {
             UI.Button {
-                text = "发送选中道具",
+                text = "选中道具加入附件",
                 variant = "success",
                 width = 280,
                 disabled = readOnly,
@@ -990,8 +1002,12 @@ function AdminPanel.Build(UI, options)
                     local attachments = {}
                     for itemId, entry in pairs(itemSelections_) do
                         if entry and entry.checked then
-                            local count = ToInteger(entry.count)
-                            if count and count > 0 then
+                            local count = tonumber(entry.count)
+                            if not count or count % 1 ~= 0 or count < 1 or count > 1000000000 then
+                                SetStatus({ ok = false, reason = "选中道具的数量必须为正整数且不超过 1000000000" }, onChanged)
+                                return
+                            end
+                            if count then
                                 local optionName = itemId
                                 for _, option in ipairs(itemOptions) do
                                     if option.itemId == itemId then optionName = option.name break end
@@ -1009,12 +1025,8 @@ function AdminPanel.Build(UI, options)
                         SetStatus({ ok = false, reason = "至少勾选一个道具并填写数量" }, onChanged)
                         return
                     end
-                    if form_.targetUid == "" then
-                        SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged)
-                        return
-                    end
-                    if SendRewardMail(attachments) then
-                        -- 发送后清空勾选，避免误把历史勾选带入下次发送
+                    if AddMailAttachments(attachments) then
+                        -- 加入草稿后清空勾选，附件仍待统一确认发送
                         ClearItemSelections()
                     end
                 end,
@@ -1043,11 +1055,12 @@ function AdminPanel.Build(UI, options)
             currencySection,
             equipmentSection,
             itemSection,
+            mailSection,
             progressSection,
             banSection,
         }
     elseif activeTab_ == "mail" then
-        contentChildren = { mailSection }
+        contentChildren = { mailInfoSection, currencySection, equipmentSection, itemSection, mailSection }
     else
         contentChildren = {
             Section(UI, "最近审计", {

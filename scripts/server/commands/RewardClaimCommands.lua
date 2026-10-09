@@ -32,10 +32,20 @@ local GIFT_SCHEMA = {
     },
 }
 
+local BATCH_SCHEMA = {
+    type = "object", required = { "rewardIds" }, allowUnknown = false,
+    fields = { rewardIds = { type = "array", minLength = 1, maxLength = 50,
+        items = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" } } },
+}
+
 local function mutationResponse(result)
     if not result or not result.ok then return result end
     local data = result.data or {}
     local state = data.state or {}
+    local receipts = {}
+    for _, event in ipairs(data.delta and data.delta.events or {}) do
+        if (event.kind or event.type) == "reward_ad_extra_claimed" then receipts[#receipts + 1] = event end
+    end
     return {
         ok = true,
         code = result.code,
@@ -43,6 +53,7 @@ local function mutationResponse(result)
         data = {
             committed = data.committed == true,
             revision = state.revision,
+            rewards = receipts,
         },
     }
 end
@@ -73,6 +84,9 @@ local function registerMutation(router, services, name, schema, operation, mutat
 end
 
 function RewardClaimCommands.Register(router, services)
+    require("server.commands.AdGiftCommands").Register(router, services)
+    registerMutation(router, services, "Reward.ClaimAdExtras", BATCH_SCHEMA, "claim reward ad batch",
+        function(state, payload, now) return RewardClaimEngine.ClaimAdExtras(state, payload.rewardIds, now) end)
     registerMutation(
         router,
         services,

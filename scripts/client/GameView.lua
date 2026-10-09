@@ -1,8 +1,10 @@
 local UI = require("urhox-libs/UI")
+local PageCache = require("client.UI.PageCache")
+local ResourceStages = require("client.ResourceStages")
+local pageRecency_, pageVisit_ = {}, 0
 local GameTheme = require("client.Theme")
 local ServerClient = require("client.ServerClient")
 local GameStateAdapter = require("client.GameStateAdapter")
-local AdminPanel = require("client.AdminPanel")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
 local GameStatePolicy = require("shared.GameStatePolicy")
 local LargeNumber = require("shared.LargeNumber")
@@ -15,11 +17,8 @@ local WishPoolController = require("client.WishPoolController")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local DialogCoordinator = require("client.DialogCoordinator")
 local AudioController = require("client.AudioController")
-local EquipmentCodexView = require("client.EquipmentCodexView")
 local EquipmentRecycleFilter = require("client.EquipmentRecycleFilter")
 local EquipmentDispositionDialog = require("client.EquipmentDispositionDialog")
-local MarketView = require("client.MarketView")
-local QuestView = require("client.QuestView")
 local QuestController = require("client.QuestController")
 local ActivityView = require("client.ActivityView")
 local ActivityController = require("client.ActivityController")
@@ -45,7 +44,6 @@ local MailView = require("client.MailView")
 local EquipmentUpgradePromptController = require("client.EquipmentUpgradePromptController")
 local GameplayDialogsController = require("client.GameplayDialogsController")
 local NavigationController = require("client.NavigationController")
-local EquipmentLoadoutView = require("client.EquipmentLoadoutView")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ItemView = require("client.ItemView")
@@ -355,7 +353,7 @@ local function BuildInventoryPage()
 end
 
 local function BuildEquipmentPage()
-    return EquipmentLoadoutView.Build {
+    return require("client.EquipmentLoadoutView").Build {
         view = {
             C = C,
             assets = ASSETS,
@@ -453,12 +451,7 @@ local function ConfigurePlayPresentation()
         loadingController = LoadingController,
         actionResult = ActionResult,
         openIdleSettings = function()
-            IdleSettingsView.Show {
-                uiRoot = uiRoot_,
-                setInventoryPolicy = actionFns_.SetInventoryPolicy,
-                requestPageRefresh = RequestPageRefresh,
-                actionResult = ActionResult,
-            }
+            GameView.OpenSettings()
         end,
         openLootStash = LootStashController.Show,
         requestAutoRunChange = function(enabled, proceed)
@@ -543,7 +536,7 @@ BuildDispositionContext = function()
 end
 
 local function CreateMarketPage()
-    return MarketView.Build {
+    return require("client.MarketView").Build {
         game = GameStateAdapter.GetViewState(),
         C = C,
         ASSETS = ASSETS,
@@ -567,10 +560,10 @@ local function CreateMarketPage()
 end
 
 local function CreatePageContent()
-    if game.page == "admin" and game.isAdmin then return AdminPanel.Build(UI, { onChanged = RequestPageRefresh, readOnly = game.readOnly }) end
+    if game.page == "admin" and game.isAdmin then return require("client.AdminPanel").Build(UI, { onChanged = RequestPageRefresh, readOnly = game.readOnly }) end
     if game.page == "bag" then return BuildInventoryPage() end
     if game.page == "codex" then
-        return EquipmentCodexView.Build {
+        return require("client.EquipmentCodexView").Build {
             game = game,
             C = C,
             ASSETS = ASSETS,
@@ -597,7 +590,7 @@ local function CreatePageContent()
     end
     if game.page == "play" then return PlayPresentation.BuildPage() end
     if game.page == "market" then return CreateMarketPage() end
-    if game.page == "quest" then return QuestView.BuildPage() end
+    if game.page == "quest" then return require("client.QuestView").BuildPage() end
     if game.page == "activity" then return ActivityView.BuildPage() end
     if game.page == "wish" then return WishPoolView.BuildPage() end
     if game.page == "campaign" then return CampaignView.BuildPage() end
@@ -611,20 +604,8 @@ local function CreatePageContent()
     }
 end
 
-local function PageWidget(entry)
-    if type(entry) == "table" and entry.GetRoot then return entry:GetRoot() end
-    return entry
-end
-
-local function DestroyCachedPage(entry)
-    local widget = PageWidget(entry)
-    if widget and widget.parent then widget:Remove() end
-    if type(entry) == "table" and entry.Destroy then
-        pcall(entry.Destroy, entry)
-    elseif widget and widget.Destroy then
-        pcall(widget.Destroy, widget)
-    end
-end
+local PageWidget = PageCache.Root
+local DestroyCachedPage = PageCache.Destroy
 
 local function HideCachedPage(pageId)
     local entry = pageCache_[pageId]
@@ -643,6 +624,11 @@ local function ShowCachedPage(pageId, rebuild)
         DestroyCachedPage(pageCache_[pageId])
         pageCache_[pageId] = nil
     end
+    -- Evict before building the next tree, avoiding a temporary third page at entry.
+    PageCache.Trim(pageCache_, pageRecency_, pageId, function(evictedId)
+        if evictedId == "play" then PlayPresentation.Reset() end
+        ResourceStages.ReleasePageLater(evictedId)
+    end)
     local entry = pageCache_[pageId]
     if not entry then
         entry = CreatePageContent()
@@ -653,6 +639,8 @@ local function ShowCachedPage(pageId, rebuild)
         pageContainer_:AddChild(widget)
     end
     activePageId_ = pageId
+    pageVisit_ = pageVisit_ + 1
+    pageRecency_[pageId] = pageVisit_
     if type(entry) == "table" and entry.OnShow then pcall(entry.OnShow, entry, game) end
     if type(entry) == "table" and entry.Update then pcall(entry.Update, entry, game) end
 end
@@ -679,12 +667,15 @@ RefreshCurrentPage = function(forceRebuild)
 end
 
 local function BuildRoot()
+    IdleSettingsView.Close()
+    CommonPromptDialog.DetachForRebuild()
     game = GameStateAdapter.GetViewState()
     for pageId, entry in pairs(pageCache_) do
         DestroyCachedPage(entry)
         pageCache_[pageId] = nil
     end
     activePageId_ = nil
+    pageRecency_, pageVisit_ = {}, 0
     pageContainer_ = UI.Panel {
         id = "middlePageContainer",
         width = "100%",
@@ -782,6 +773,17 @@ local function BuildRoot()
             safeContent,
         }
     }
+    require("client.UI.DialogSettingsAccess").Configure(GameView.OpenSettings)
+    -- SafeAreaView shares the page top; no additional top gap. Escape stays above game modals.
+    screenRoot_:AddChild(UI.SafeAreaView {
+        position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
+        zIndex = 53000, pointerEvents = "box-none", children = {
+            UI.Panel { id = "recoveryAccess", position = "absolute", right = 190, top = 0,
+                width = 110, height = 64, clickable = true, backgroundImage = ASSETS.ui.inventoryActionBlue,
+                backgroundFit = "contain", onClick = GameView.OpenSettings,
+                children = { Kit.CompactTxt("设置", 22, C.text, { width = "100%", height = 64, textAlign = "center", pointerEvents = "none" }) } },
+        }
+    })
     UI.SetRoot(screenRoot_, true)
     UIOverlay.AttachRoot(screenRoot_)
     WishPoolView.ReattachOverlay()
@@ -854,29 +856,32 @@ local function InitUI()
         scale = CONFIG.ViewportScale,
     })
     UI.SetOverflowWarnings(false)
+    require("client.UI.ToastLayout").Install()
 end
 
 local function BindServerEvents()
+    ServerClient.On("ready", GameView.TryRecoverServer)
+    ServerClient.On("ready", NavigationController.OnReady)
     ServerClient.On("snapshot", function(payload)
         game = GameStateAdapter.GetViewState()
         local dirtyDomains = GameStateAdapter.GetDirtyDomains()
+        GameplayDialogsController.SyncPendingEvent(game.pendingEvent)
         ClientViewCache.Set("gameView", "dirtyDomains", dirtyDomains)
         UIBinder.Notify(dirtyDomains, game, payload)
         RewardFeedbackController.SyncSnapshot()
-        PlayPresentation.HandleSnapshot()
+        if require("client.PerformanceController").IsForeground() then PlayPresentation.HandleSnapshot() end
         if not pageContainer_ then
             RequestFullRebuild()
         end
-        LoadingController.MarkSnapshotReceived()
+        LoadingController.MarkSnapshotReceived(game, TutorialController.Evaluate)
         FaceSlapController.Evaluate("snapshot")
-        -- 新手剧情：每次登录触发序章（服务端已重置教程状态）
-        TutorialController.Evaluate()
     end)
     ServerClient.On("snapshotProgress", function(payload)
         LoadingController.MarkSnapshotProgress(payload and payload.received, payload and payload.total)
     end)
     ServerClient.On("delta", function(payload)
         game = GameStateAdapter.GetViewState()
+        GameplayDialogsController.SyncPendingEvent(game.pendingEvent)
         local dirtyDomains = GameStateAdapter.GetDirtyDomains()
         ClientViewCache.Set("gameView", "dirtyDomains", dirtyDomains)
         UIBinder.Notify(dirtyDomains, game, payload)
@@ -894,8 +899,10 @@ local function BindServerEvents()
             end
         end
         RewardFeedbackController.AccumulateDelta(payload)
-        PlayPresentation.HandleDelta(payload)
+        local foreground = require("client.PerformanceController").IsForeground()
+        if foreground then PlayPresentation.HandleDelta(payload) end
         RewardFeedbackController.PresentDelta(payload)
+        if not foreground then return end
         UpdateTopBar()
         NavigationController.Update(game)
         if game.page == "play" then
@@ -927,7 +934,7 @@ local function BindServerEvents()
         end
         LoadingController.HandleStatus(state)
         if state == "ready" then
-            ViewAssets.PreloadItemIcons()
+            GameView.TryRecoverServer()
         end
         if not LoadingController.IsActive() then
             game = GameStateAdapter.GetViewState()
@@ -935,7 +942,7 @@ local function BindServerEvents()
             if game.page == "play" then PlayPresentation.Update(0) end
         end
     end)
-    ServerClient.On("adminResult", function(result) AdminPanel.HandleResult(result, RequestPageRefresh) end)
+    ServerClient.On("adminResult", function(result) require("client.AdminPanel").HandleResult(result, RequestPageRefresh) end)
     ServerClient.On("disconnected", function()
         FaceSlapController.ResetConnection()
         DailyVipController.ResetConnection()
@@ -965,6 +972,45 @@ local function BindServerEvents()
     end)
 end
 
+function GameView.RecoverToHome()
+    local recovery = require("client.RecoveryState")
+    if recovery.rebuilding then return end
+    recovery.rebuilding, recovery.suppressTutorial, recovery.pendingServer, recovery.requesting = true, true, true, false
+    require("client.AdGiftController").Recover()
+    RewardClaimController.Reset()
+    ActivityController.Recover()
+    require("client.RewardVideo").Cancel()
+    ServerClient.ClearPresentationRequests()
+    OfflineClaimController.Reset()
+    IdleSettingsView.Close()
+    GameView.Stop(true)
+    GameStateAdapter.SetPage("home")
+    GameView.Start()
+    recovery.rebuilding = false
+    LoadingController.DismissForRecovery()
+    GameView.TryRecoverServer()
+end
+function GameView.TryRecoverServer()
+    local recovery = require("client.RecoveryState")
+    if not recovery.pendingServer or recovery.requesting or not ServerClient.IsReady() then return end
+    recovery.requesting = true
+    ServerClient.Send("Game.RecoverToHome", {}, function(result)
+        recovery.requesting = false
+        if result and result.ok then recovery.pendingServer = false end
+        UI.Toast.Show(result and result.ok and "已恢复首页，挂机已停止" or "已恢复界面，连接后请重试同步", { position = "bottom" })
+    end)
+end
+function GameView.OpenSettings()
+    if IdleSettingsView.IsOpen() then
+        -- A settings help/confirmation can cover its own recovery controls.
+        -- Dismiss only that layer; gameplay decisions underneath remain untouched.
+        local active = DialogCoordinator.GetState().active
+        if active and active.zIndex == 52000 then DialogCoordinator.CancelByKey(active.queueKey) end
+        return
+    end
+    IdleSettingsView.Show { uiRoot = screenRoot_, setInventoryPolicy = actionFns_.SetInventoryPolicy,
+        requestPageRefresh = RequestPageRefresh, actionResult = ActionResult, recover = GameView.RecoverToHome }
+end
 function GameView.Start()
     UIRefreshCoordinator.Reset()
     UIBinder.Reset()
@@ -1087,6 +1133,10 @@ function GameView.Start()
         end,
         onLoginGuideClosed = FaceSlapController.RetryPending,
     }
+    require("client.PerformanceController").Start(function()
+        PlayPresentation.ClearCombatPresentation(false)
+        if ServerClient.IsReady() then ServerClient.RequestSnapshot() else ServerClient.RetryConnection() end
+    end)
     graphics.windowTitle = CONFIG.Title
     LoadingController.Configure({
         title = CONFIG.Title,
@@ -1100,14 +1150,13 @@ function GameView.Start()
     })
     ConfigurePlayPresentation()
     InitUI()
-    AudioController.Start()
     viewportWidth_ = graphics:GetWidth()
     viewportHeight_ = graphics:GetHeight()
-    ProbeOptionalFonts()
     game = GameStateAdapter.GetViewState()
     BuildRoot()
-    AudioController.SetPage(game.page)
     LoadingController.Start(uiRoot_)
+    AudioController.Start()
+    AudioController.SetPage(game.page)
     BindServerEvents()
     local ok, reason = ServerClient.Start()
     if not ok then
@@ -1118,7 +1167,8 @@ function GameView.Start()
     print("=== " .. CONFIG.Title .. " client started with DWP loading ===")
 end
 
-function GameView.Stop()
+function GameView.Stop(keepConnection)
+    GameplayDialogsController.Reset()
     UnsubscribeFromEvent("Update")
     if binderToken_ then UIBinder.Unsubscribe(binderToken_); binderToken_ = nil end
     UIRefreshCoordinator.Reset()
@@ -1132,6 +1182,7 @@ function GameView.Stop()
         pageCache_[pageId] = nil
     end
     activePageId_ = nil
+    pageRecency_, pageVisit_ = {}, 0
     inventoryState_.selectedInventoryId = nil
     inventoryState_.selectedSlot = "weapon"
     inventoryState_.selectedCategory = "all"
@@ -1139,6 +1190,7 @@ function GameView.Stop()
     inventoryState_.inventoryGridScrollY = 0
     inventoryState_.equipmentScrollY = 0
     inventoryState_.equipmentPageScrollY = 0
+    IdleSettingsView.Close()
     PlayPresentation.Reset()
     ActivityView.Reset()
     InventoryFullPrompt.Reset()
@@ -1161,7 +1213,8 @@ function GameView.Stop()
     MailController.Reset()
     MailView.Reset()
     LoadingController.Stop()
-    ServerClient.Stop()
+    if not keepConnection then ServerClient.Stop() end
+    require("client.PerformanceController").Stop()
     AudioController.Stop()
     UI.Shutdown()
 end
@@ -1169,11 +1222,18 @@ end
 ---@param eventType StringHash|string
 ---@param eventData VariantMap
 function GameView.HandleUpdate(eventType, eventData)
-    local dt = eventData:GetFloat("TimeStep")
-    ServerClient.Update(dt)
+    local dt = math.min(0.25, math.max(0, eventData:GetFloat("TimeStep")))
+    ServerClient.Update(math.max(0, eventData:GetFloat("TimeStep")))
+    OfflineClaimController.Update(dt)
+    if not require("client.PerformanceController").IsForeground() then
+        require("client.RewardVideo").Update(dt)
+        return
+    end
     LoadingController.Update(dt)
     DailyVipController.Update(dt)
     RewardClaimController.Update(dt)
+    require("client.RewardVideo").Update(dt)
+    require("client.AdGiftController").Update()
     InventoryFullPrompt.Update(dt)
     ActivityView.UpdateAd(dt)
     WishPoolController.Update(dt)
@@ -1207,6 +1267,7 @@ function GameView.HandleUpdate(eventType, eventData)
     end
     -- 新手强引导：维护目标重建、布局重试与异步弹窗输入白名单。
     TutorialController.Update(dt)
+    ResourceStages.ReleaseDepartedPages(screenRoot_, game.page or "home")
 end
 
 return GameView

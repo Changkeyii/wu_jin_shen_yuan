@@ -23,6 +23,7 @@ end
 -- 请求在途锁：同一命令 + 活动在回包前忽略连点（框架保证无论成败都会回包）。
 -- debounce 为 false 的命令（如打桩高频攻击）不做防抖。
 local pendingCommands_ = {}
+local generation_ = 0
 
 local function Send(command, payload, onDone, debounce)
     local key = command .. ":" .. tostring(payload and payload.activityId or "")
@@ -31,13 +32,17 @@ local function Send(command, payload, onDone, debounce)
         return false
     end
     if debounce then pendingCommands_[key] = true end
+    local generation = generation_
     ServerClient.Send(command, payload, function(response)
+        if generation ~= generation_ then return end
         if debounce then pendingCommands_[key] = nil end
         if onDone then onDone(response) end
         ActivityController.Refresh()
     end)
     return true
 end
+
+function ActivityController.Recover() generation_ = generation_ + 1; pendingCommands_ = {} end
 
 function ActivityController.SignIn(activityId, onDone)
     Send("Activity.SignIn", { activityId = activityId }, onDone, true)

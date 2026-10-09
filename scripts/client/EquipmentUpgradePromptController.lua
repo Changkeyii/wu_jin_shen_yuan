@@ -19,7 +19,10 @@ local pendingValue_ = nil
 local pendingDecisionId_ = nil
 
 local function RemoveOverlay()
-    if overlay_ and root_ then root_:RemoveChild(overlay_) end
+    if overlay_ then
+        if overlay_.parent then overlay_.parent:RemoveChild(overlay_) end
+        if overlay_.Destroy then overlay_:Destroy() end
+    end
     overlay_ = nil
 end
 
@@ -161,8 +164,8 @@ function EquipmentUpgradePromptController.Show(value)
 
     overlay_ = UI.Panel {
         position = "absolute",
-        right = 24,
-        top = 340,
+        left = 80,
+        top = 0,
         width = 480,
         height = 398,
         zIndex = 1800,
@@ -174,6 +177,12 @@ function EquipmentUpgradePromptController.Show(value)
         boxShadow = { { x = 0, y = 6, blur = 16, color = { 0, 0, 0, 150 } } },
         children = children,
     }
+    local frame = overlay_
+    overlay_ = UI.Panel {
+        position = "absolute", right = 24, top = 340, width = 560, height = 398,
+        zIndex = 1800, pointerEvents = "box-none", children = { frame },
+    }
+    require("client.UI.DialogSettingsAccess").Attach(overlay_, false, { left = 0 })
     root_:AddChild(overlay_)
     return true
 end

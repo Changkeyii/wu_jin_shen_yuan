@@ -5,7 +5,13 @@ local PlayerTransition = require("server.domain.PlayerTransition")
 local RewardEngine = require("server.domain.RewardEngine")
 local TableUtils = require("server.domain.TableUtils")
 
+local CombatEngine = require("server.domain.CombatEngine")
+local BigNumber = require("shared.BigNumber")
+local DomainMath = require("server.domain.DomainMath")
+
 local QuestEngine = require("server.domain.QuestEngine")
+local RewardClaimEngine = require("server.domain.RewardClaimEngine")
+local LargeNumber = require("shared.LargeNumber")
 
 local CampaignEngine = {}
 
@@ -95,9 +101,6 @@ local function ResolveMechanic(stage, player, enemy)
     elseif mechanic == "mirror" then
         enemy.atk = math.max(enemy.atk, math.floor(player.atk * 0.72))
         enemy.def = math.max(enemy.def, math.floor(player.def * 0.45))
-    elseif mechanic == "gatekeeper" or mechanic == "clear_minions" then
-        local waves = math.max(1, math.floor(tonumber(stage.waves) or 3))
-        enemy.hp = enemy.hp + math.floor(player.atk * 0.35 * waves)
     elseif mechanic == "oathbreak" then
         enemy.def = math.floor(enemy.def * 1.15)
         enemy.hp = math.floor(enemy.hp * 1.08)
@@ -111,64 +114,86 @@ local function ResolveMechanic(stage, player, enemy)
     }
 end
 
-local function SimulateBattle(state, stage)
+-- Trials run the exact tower combat engine on an isolated state. Only authority events
+-- are sent to the common renderer; no second client-side damage simulation exists.
+local function SimulateBattle(state, stage, rng)
     local player = PlayerCombatStats(state)
     local enemy = ScaleEnemy(stage, player)
     local extras = ResolveMechanic(stage, player, enemy)
-    local elapsed = 0
-    local limit = math.max(20, tonumber(stage.timeLimit) or 90)
-    local playerCd = 0
-    local enemyCd = 0
-    local log = {}
-    while elapsed < limit and player.hp > 0 and enemy.hp > 0 do
-        local step = 0.2
-        elapsed = elapsed + step
-        playerCd = playerCd - step
-        enemyCd = enemyCd - step
-        if playerCd <= 0 then
-            local crit = extras.mechanic == "mirror" and false or (math.random() < player.crit)
-            local damage = math.max(1, math.floor((player.atk - enemy.def * 0.35) * (crit and player.critDmg or 1)))
-            if extras.mechanic == "mirror" then
-                damage = math.max(1, math.floor(damage * 0.92))
-            end
-            enemy.hp = enemy.hp - damage
-            playerCd = 1 / player.atkSpeed
-            log[#log + 1] = { actor = "player", damage = damage, crit = crit, hp = enemy.hp }
-        end
-        if enemy.hp <= 0 then break end
-        if enemyCd <= 0 then
-            local damage = math.max(1, math.floor(enemy.atk - player.def * 0.4))
-            player.hp = player.hp - damage
-            enemyCd = 1 / enemy.atkSpeed
-            log[#log + 1] = { actor = "enemy", damage = damage, hp = player.hp }
-        end
-    end
-    local won = enemy.hp <= 0 and player.hp > 0
-    local hpRatio = player.hp / math.max(1, player.maxHp)
-    local stars = 0
-    if won then
-        stars = 1
-        if elapsed <= limit then stars = stars + 1 end
-        if hpRatio >= 0.3 then stars = stars + 1 end
-        if extras.usedAid then stars = math.max(1, stars - 1) end
-        if extras.mechanic == "lamps" and extras.lamps < 2 then stars = math.max(1, stars - 1) end
-        if extras.mechanic == "true_voice" and extras.voiceMisses > 0 then stars = math.max(1, stars - 1) end
-        stars = math.max(1, math.min(3, stars))
-    end
-    return {
-        won = won,
-        stars = stars,
-        elapsed = elapsed,
-        hpRatio = hpRatio,
-        playerHp = math.max(0, math.floor(player.hp)),
-        playerMaxHp = player.maxHp,
-        enemyName = enemy.name,
-        enemyHp = math.max(0, math.floor(enemy.hp)),
-        enemyMaxHp = enemy.maxHp,
-        mechanic = extras.mechanic,
-        lamps = extras.lamps,
-        log = log,
+    local combat = {
+        stats = TableUtils.DeepCopy(state.stats or Catalog.CalculateStats(state)),
+        floor = math.max(1, stage.recommendedLevel or 1), position = 1,
+        autoRun = true, transitionRemaining = 0,
     }
+    if extras.mechanic == "mirror" then
+        combat.stats.crit = 0
+        combat.stats.atkBig = BigNumber.MultiplyScalar(DomainMath.StatMagnitude(combat.stats, "atk"), 0.92)
+    end
+    DomainMath.SetPlayerHp(combat, DomainMath.StatMagnitude(combat.stats, "hp"))
+    local waves = (extras.mechanic == "gatekeeper" or extras.mechanic == "clear_minions")
+        and math.min(9, math.max(1, math.floor(tonumber(stage.waves) or 3))) or 1
+    if extras.mechanic == "gatekeeper" then waves = waves + 1 end
+    local report = { frames = {}, playerMaxHp = BigNumber.Clone(combat.hpBig), waves = waves,
+        limit = math.max(20, math.min(90, tonumber(stage.timeLimit) or 90)), duration = 0 }
+    local elapsed, won, dead = 0, false, false
+    local keep = { battle_started = true, attack_started = true, battle_hit = true,
+        player_damaged = true, player_healed = true, battle_won = true, player_died = true, boss_enraged = true }
+    local fields = { "kind", "monsterId", "eventType", "name", "room", "attackSerial", "sequenceIndex", "hitFrame",
+        "endFrame", "windupSeconds", "recoverySeconds", "durationSeconds", "critical", "lucky",
+        "damageBig", "amountBig", "monsterHpBig", "monsterMaxHpBig", "playerHpBig", "playerMaxHpBig" }
+    local function Capture(events)
+        for _, event in ipairs(events) do
+            if keep[event.kind] then
+                local frame = { t = elapsed }
+                for _, field in ipairs(fields) do frame[field] = event[field] end
+                if event.hitFrames then frame.hitFrame = event.hitFrames[1] end
+                report.frames[#report.frames + 1] = frame
+            end
+        end
+    end
+    for wave = 1, waves do
+        combat.position = wave
+        local finalWave = wave == waves
+        local boss = finalWave and stage.kind == "boss"
+        local generated = {
+            name = finalWave and enemy.name or ("无名影卒 " .. tostring(wave)),
+            hpBig = BigNumber.FromNumber(math.max(1, enemy.hp * (finalWave and 1 or 0.25))),
+            atkBig = BigNumber.FromNumber(math.max(1, enemy.atk * (finalWave and 1 or 0.55))),
+            defBig = BigNumber.FromNumber(enemy.def),
+            encounter = { room = wave, floor = combat.floor, kind = boss and "boss" or "normal",
+                eventType = boss and "boss" or "monster", isChapterBoss = false },
+        }
+        generated.hp = BigNumber.ToNumber(generated.hpBig)
+        generated.atk = BigNumber.ToNumber(generated.atkBig)
+        generated.def = BigNumber.ToNumber(generated.defBig)
+        local events = {}
+        local context = { campaign = true, monsterDefinition = generated }
+        CombatEngine.BeginBattle(combat, generated.encounter.eventType, rng, events, context)
+        Capture(events)
+        while combat.currentMonster and elapsed < report.limit and not dead do
+            local dt = math.min(0.05, report.limit - elapsed)
+            elapsed = elapsed + dt
+            events = {}
+            CombatEngine.AdvanceActiveCombat(combat, rng, 0, dt, events, context, {
+                settleVictory = function() return true, false end,
+                handlePlayerDeath = function(current, monster, out)
+                    dead = true
+                    current.currentMonster = nil
+                    out[#out + 1] = { kind = "player_died", monsterId = monster.id }
+                end,
+            })
+            Capture(events)
+        end
+        if dead or combat.currentMonster then break end
+        if finalWave then won = true end
+    end
+    local hpRatio = BigNumber.Ratio(combat.hpBig, report.playerMaxHp) or 0
+    local stars = won and (hpRatio >= 0.3 and 3 or 2) or 0
+    if won and extras.mechanic == "lamps" and extras.lamps < 2 then stars = math.max(1, stars - 1) end
+    if won and extras.mechanic == "true_voice" and extras.voiceMisses > 0 then stars = math.max(1, stars - 1) end
+    report.duration = elapsed
+    report.won, report.stars = won, stars
+    return report, { won = won, stars = stars, elapsed = elapsed, mechanic = extras.mechanic }
 end
 
 local function CompleteStage(inputState, stage, now, action, battle)
@@ -213,7 +238,19 @@ local function CompleteStage(inputState, stage, now, action, battle)
     }
     if firstClear then
         AddReward(working, stage, events)
-        if stage.kind ~= "story" then
+        local offer = RewardClaimEngine.CreateAdOffer(working, {
+            source = "campaign", sourceKey = "campaign:first:" .. stage.id,
+            baseReward = { gold = LargeNumber.FromNumber(stage.gold), exp = stage.exp, fragments = stage.fragments },
+            meta = {},
+        }, now)
+        if offer then
+            events[#events + 1] = PlayerTransition.Event("reward_offer_pending", {
+                rewardId = offer.id, source = offer.source,
+                baseReward = offer.baseReward, extraReward = offer.extraReward,
+            })
+        end
+        -- First sections keep their original resource-only reward bundle.
+        if stage.stage ~= "a" then
             local rarity = stage.kind == "boss" and "artifact" or "rare"
             local ok, granted = RewardEngine.AddGeneratedDrop(
                 working,
@@ -254,6 +291,8 @@ local function CompleteStage(inputState, stage, now, action, battle)
         firstClear = firstClear,
         stars = stars,
         nextStageId = nextStage and nextStage.id or "",
+        chapterCompleted = stage.stage == "c",
+        reward = firstClear and { gold = stage.gold, exp = stage.exp, fragments = stage.fragments } or nil,
     })
     events[#events + 1] = PlayerTransition.Event("campaign_stage_clear", {
         stageId = stage.id,
@@ -330,14 +369,28 @@ function CampaignEngine.PlayStage(inputState, stageId, action, now)
         return Failure(inputState, now, "CAMPAIGN_ACTION_INVALID", "剧情关卡需要完成阅读")
     end
 
-    local battle = nil
     if stage.kind ~= "story" then
-        battle = SimulateBattle(inputState, stage)
-        if not battle.won then
-            return Failure(inputState, now, "CAMPAIGN_BATTLE_FAILED", "挑战失败，调整节奏后再战")
-        end
+        return Failure(inputState, now, "CAMPAIGN_TRIAL_REQUIRED", "请进入章节试炼后完成战斗")
     end
-    return CompleteStage(inputState, stage, now, action, battle)
+    return CompleteStage(inputState, stage, now, action, nil)
+end
+
+function CampaignEngine.PrepareTrial(state, stageId, rng)
+    local stage = CampaignCatalog.GetStage(stageId)
+    if not stage or stage.kind == "story" then return nil, "请选择战斗关卡" end
+    if not IsStageUnlocked(state.campaign or CampaignDefinitions.NewState(), stage) then
+        return nil, "请先完成前置剧情"
+    end
+    return SimulateBattle(state, stage, rng)
+end
+
+-- outcome comes only from the server session; clients submit an opaque trial ID.
+function CampaignEngine.SettleTrial(state, stageId, outcome, now)
+    local stage = CampaignCatalog.GetStage(stageId)
+    if not stage or not outcome or not outcome.won then
+        return PlayerTransition.NoCommit(state, now, "campaign_trial_lost")
+    end
+    return CompleteStage(state, stage, now, "challenge", outcome)
 end
 
 function CampaignEngine.ViewState(state)

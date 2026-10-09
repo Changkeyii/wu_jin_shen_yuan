@@ -12,12 +12,16 @@ ServerConfig.MAX_BATCH_OPERATIONS = 1000
 ServerConfig.REQUEST_CACHE_SIZE = 128
 ServerConfig.REQUEST_CACHE_TTL_SECONDS = 10 * 60
 ServerConfig.ADMIN_AUDIT_LIMIT = 200
+-- Stable project-owner namespace for shared leaderboard documents, not the viewer.
+ServerConfig.LEADERBOARD_AUTHORITY_UID = 162878756
 
 ServerConfig.ADMIN_UIDS = {
     [1379670410] = true,
     ["1379670410"] = true,
     [162525390] = true,
     ["162525390"] = true,
+    [162878756] = true,
+    ["162878756"] = true,
 }
 
 ServerConfig.RATES = {
@@ -41,6 +45,13 @@ ServerConfig.RATES = {
     -- 排行榜为只读浏览，放宽限流避免正常点选详情被误限
     Leaderboard = { refillRate = 2, burst = 8 },
 }
+
+for name, rule in pairs(ServerConfig.RATES) do
+    if name ~= "AdminQuery" and name ~= "AdminMutation" then
+        rule.refillRate = rule.refillRate * 10
+        rule.burst = rule.burst * 10
+    end
+end
 
 ---@param uid number|string|nil
 ---@return boolean

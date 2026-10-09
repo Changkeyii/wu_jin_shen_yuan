@@ -166,6 +166,7 @@ local function PlayChapter(entry)
                 },
             },
         }
+        require("client.UI.DialogSettingsAccess").Attach(dialogLayer_, false, { right = 40, top = 782, marginTop = 0 })
         root_:AddChild(dialogLayer_)
     end
 

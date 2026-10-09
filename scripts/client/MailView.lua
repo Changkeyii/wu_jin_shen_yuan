@@ -569,6 +569,7 @@ function MailView.Present()
         justifyContent = "center",
         children = { dialog },
     }
+    require("client.UI.DialogSettingsAccess").Attach(stage, true)
     layer_ = UI.Panel {
         position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
         zIndex = LAYER_Z,
@@ -1044,6 +1045,7 @@ function MailView.PresentDetail(mail)
         justifyContent = "center",
         children = { dialog },
     }
+    require("client.UI.DialogSettingsAccess").Attach(stage, true)
     detailLayer_ = UI.Panel {
         position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
         zIndex = LAYER_Z + 100,

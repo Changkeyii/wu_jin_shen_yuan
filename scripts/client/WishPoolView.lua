@@ -218,6 +218,7 @@ local function showJarOverlay()
             },
         },
     }
+    require("client.UI.DialogSettingsAccess").Attach(jarOverlay_)
     overlayHost_.Add("wish.jar", jarOverlay_, { layer = "Blocking" })
 end
 
@@ -642,7 +643,10 @@ local function buildMainPage()
 
     local function statCell(icon, label, valueRef, offset)
         offset = offset or {}
+        valueRef:SetStyle({ pointerEvents = "none" })
         return UI.Panel {
+            clickable = label == "许愿券",
+            onClick = label == "许愿券" and function() require("client.ResourceTips").Show("wish_ticket") end or nil,
             flexGrow = 1,
             flexBasis = 0,
             height = 62,
@@ -654,6 +658,7 @@ local function buildMainPage()
             children = {
                 UI.Panel {
                     flexDirection = "row",
+                    pointerEvents = "none",
                     alignItems = "center",
                     justifyContent = "center",
                     gap = 6,

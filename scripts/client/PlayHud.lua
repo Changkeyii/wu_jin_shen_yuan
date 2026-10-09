@@ -1,3 +1,6 @@
+local ChangedOnly = require("client.UI.ChangedOnly")
+-- Each scene owns its widgets and animation state; tower and trials share this implementation.
+local function New()
 local PlayHud = {}
 
 local ports_ = nil
@@ -323,6 +326,10 @@ function PlayHud.Build(options)
         children = {refs_.lootTrayIcon, refs_.lootTrayLabel},
     }
     local playerFrame, enemyFrame = BuildHealthFrames(assets)
+    if options.trial then
+        -- 共用生命框和关卡进度，试炼不显示登塔设置、暂存箱或挂机开关。
+        return { BuildChapterProgressBar(), playerFrame, enemyFrame }
+    end
 
     return {
         powerCard,
@@ -346,54 +353,61 @@ function PlayHud.Update(state)
     local chapterFloor = ((chapter - 1) * 10) + 1
     local chapterStep = (floor - chapterFloor) * 10 + (state.floorRouteStep or 0)
     local progress = math.max(0, math.min(1, chapterStep / 100))
-    refs_.chapterProgressFill:SetStyle({
+    ChangedOnly.Style(refs_.chapterProgressFill, {
         width = CHAPTER_PROGRESS.contentWidth * progress,
     })
-    refs_.chapterLabel:SetText(string.format("第%d章", chapter))
-    refs_.chapterProgressLabel:SetText(string.format("第%d层 · 第%d关", floor, room))
+    ChangedOnly.Text(refs_.chapterLabel, string.format("第%d章", chapter))
+    ChangedOnly.Text(refs_.chapterProgressLabel, string.format("第%d层 · 第%d关", floor, room))
+    if state.trial then
+        local trial = state.trial
+        progress = math.max(0, math.min(1, (trial.wave - 1) / math.max(1, trial.waves)))
+        ChangedOnly.Style(refs_.chapterProgressFill, { width = CHAPTER_PROGRESS.contentWidth * progress })
+        ChangedOnly.Text(refs_.chapterLabel, "章节试炼")
+        ChangedOnly.Text(refs_.chapterProgressLabel, string.format("第 %d / %d 场 · 剩余 %d 秒", trial.wave, trial.waves, math.max(0, math.ceil(trial.remaining))))
+    end
     for index, node in ipairs(refs_.chapterProgressNodes or {}) do
-        node:SetStyle({opacity = progress + 0.000001 >= index / 10 and 1.0 or 0.35})
+        ChangedOnly.Style(node, {opacity = progress + 0.000001 >= index / 10 and 1.0 or 0.35})
     end
 
-    refs_.lootTrayLabel:SetText(state.lootText or "等待掉落")
+    ChangedOnly.Text(refs_.lootTrayLabel, state.lootText or "等待掉落")
     local rarity = ports_.rarities
         and (ports_.rarities[state.lootRarity] or ports_.rarities.gold_green)
     refs_.lootTrayLabel:SetFontColor(rarity and rarity.color or Colors().gold)
-    if state.lootIcon then refs_.lootTrayIcon:SetStyle({backgroundImage = state.lootIcon}) end
+    if state.lootIcon then ChangedOnly.Style(refs_.lootTrayIcon, {backgroundImage = state.lootIcon}) end
 
     ports_.setImageProgress(refs_.hpFill, 420, state.playerHp, state.playerMaxHp)
     ports_.setImageProgress(refs_.enemyHpFill, 420, state.enemyHp, state.enemyMaxHp)
-    refs_.playerHpText:SetText(
+    ChangedOnly.Text(refs_.playerHpText,
         ports_.formatInt(state.playerHp) .. " / " .. ports_.formatInt(state.playerMaxHp)
             .. "  ·  " .. string.format("%.1f%%", (state.playerHpRatio or 0) * 100)
     )
-    refs_.enemyHpText:SetText(
+    ChangedOnly.Text(refs_.enemyHpText,
         ports_.formatInt(state.enemyHp) .. " / " .. ports_.formatInt(state.enemyMaxHp)
             .. "  ·  " .. string.format("%.1f%%", (state.enemyHpRatio or 0) * 100)
     )
-    refs_.enemyName:SetText(state.enemyName or "等待敌人")
+    ChangedOnly.Text(refs_.enemyName, state.enemyName or "等待敌人")
 
-    refs_.powerCurrent:SetText(state.displayedPower ~= nil
+    ChangedOnly.Text(refs_.powerCurrent, state.displayedPower ~= nil
         and ("当前战力 " .. ports_.formatInt(state.displayedPower))
         or "当前战力 待评估")
-    refs_.powerRecommended:SetText(state.recommendedPower ~= nil
+    ChangedOnly.Text(refs_.powerRecommended, state.recommendedPower ~= nil
         and ("本层推荐 " .. ports_.formatInt(state.recommendedPower))
         or "本层推荐 待同步")
     local ratioText = state.powerRatio and string.format("%.1f%%", state.powerRatio * 100) or "--"
     local floorText = state.estimatedEasyFloor
         and (" · 预计轻松至" .. tostring(math.floor(state.estimatedEasyFloor)) .. "层")
         or ""
-    refs_.powerStatus:SetText((state.difficultyLabel or "待评估") .. " · 战力比 " .. ratioText .. floorText)
+    ChangedOnly.Text(refs_.powerStatus, (state.difficultyLabel or "待评估") .. " · 战力比 " .. ratioText .. floorText)
     refs_.powerStatus:SetFontColor((state.powerRatio or 0) >= 0.92
         and Colors().success
         or ((state.powerRatio or 0) >= 0.88 and Colors().warning or Colors().hp))
 
-    refs_.runButtonLabel:SetText(state.pendingAutoRun
+    ChangedOnly.Text(refs_.runButtonLabel, state.pendingAutoRun
         and "同步中"
         or (state.visualAutoRun and "登塔中" or "开始登塔"))
     local unavailable = state.readOnly or state.assetsLoading
     refs_.runButton:SetDisabled(unavailable or state.pendingAutoRun)
-    refs_.runButton:SetStyle({
+    ChangedOnly.Style(refs_.runButton, {
         opacity = unavailable and 0.45 or (state.pendingAutoRun and 0.72 or 1.0),
     })
 end
@@ -403,3 +417,8 @@ function PlayHud.Reset()
 end
 
 return PlayHud
+end
+
+local default = New()
+default.New = New
+return default

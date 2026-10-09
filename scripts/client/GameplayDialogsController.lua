@@ -3,15 +3,18 @@ local CommonPromptDialog = require("client.CommonPromptDialog")
 local StoryCatalog = require("shared.StoryCatalog")
 local LargeNumber = require("shared.LargeNumber")
 local ServerClock = require("client.ServerClock")
+local DialogCoordinator = require("client.DialogCoordinator")
+local GameStateAdapter = require("client.GameStateAdapter")
 
 local GameplayDialogsController = {}
 
 local actionResult_ = nil
+local eventContext_ --[[@type table?]]
 
 local EVENT_LABELS = {
-    chest = { title = "发现宝箱", confirm = "开启宝箱" },
-    merchant = { title = "神秘商人", confirm = "确认购买" },
-    randomEvent = { title = "奇遇事件", confirm = "接受" },
+    chest = { title = "发现宝箱", confirm = "开启宝箱", action = "open" },
+    merchant = { title = "神秘商人", confirm = "确认购买", action = "buy" },
+    randomEvent = { title = "奇遇事件", confirm = "接受", action = "accept" },
 }
 
 local function SendStoryDecision(story, action, lineIndex)
@@ -22,10 +25,41 @@ local function SendStoryDecision(story, action, lineIndex)
 end
 
 local function SendEventDecision(pendingEvent, action)
-    if not pendingEvent or not pendingEvent.eventId then return end
-    ServerClient.ResolveEvent(pendingEvent.eventId, action, function(response)
+    local context = eventContext_
+    if not context or context.eventId ~= pendingEvent.eventId or context.busy then return end
+    context.busy = true
+    local waitingKey = "event_wait:" .. pendingEvent.eventId
+    CommonPromptDialog.Show { queueKey = waitingKey, kind = "event", title = "正在处理事件",
+        message = "正在同步结果，请稍候……", showConfirm = false, showClose = false, closeOnOverlay = false }
+    local function Finish(response)
+        if eventContext_ ~= context then return end
+        context.busy = false
+        DialogCoordinator.CancelByKey(waitingKey, false)
         if not response or not response.ok then actionResult_(response) end
+        GameplayDialogsController.SyncPendingEvent(GameStateAdapter.GetViewState().pendingEvent)
+    end
+    ServerClient.ResolveEvent(pendingEvent.eventId, action, function(response)
+        if eventContext_ ~= context then return end
+        if not response or not response.ok then Finish(response); return end
+        -- The authoritative delta normally arrives first; a snapshot also repairs a lost delta.
+        ServerClient.RequestSnapshot(Finish)
     end)
+end
+
+function GameplayDialogsController.Reset()
+    local previous = eventContext_
+    eventContext_ = nil -- Invalidate callbacks before silently removing their dialogs.
+    if previous then
+        DialogCoordinator.CancelByKey("event:" .. previous.eventId, false)
+        DialogCoordinator.CancelByKey("event_wait:" .. previous.eventId, false)
+    end
+end
+
+function GameplayDialogsController.SyncPendingEvent(pendingEvent)
+    if eventContext_ and (not pendingEvent or pendingEvent.eventId ~= eventContext_.eventId) then
+        GameplayDialogsController.Reset()
+    end
+    if pendingEvent then return GameplayDialogsController.ShowPendingEvent(pendingEvent) end
 end
 
 function GameplayDialogsController.Configure(context)
@@ -51,7 +85,13 @@ end
 -- 玩家必须主动选择；服务端超时会按 skip 结算。
 function GameplayDialogsController.ShowPendingEvent(pendingEvent)
     if type(pendingEvent) ~= "table" or not pendingEvent.eventId then return false end
+    if eventContext_ and eventContext_.eventId ~= pendingEvent.eventId then GameplayDialogsController.Reset() end
+    if eventContext_ and eventContext_.busy then return false end
+    eventContext_ = eventContext_ or { eventId = pendingEvent.eventId, busy = false }
     local label = EVENT_LABELS[pendingEvent.eventType] or { title = "遭遇事件", confirm = "确认" }
+    local action = label.action
+    local allowed = false
+    for _, value in ipairs(pendingEvent.actions or {}) do if value == action then allowed = true end end
     local lines = {}
     if pendingEvent.description then lines[#lines + 1] = tostring(pendingEvent.description) end
     if pendingEvent.goldCost then
@@ -69,10 +109,11 @@ function GameplayDialogsController.ShowPendingEvent(pendingEvent)
         title = pendingEvent.title or label.title,
         lines = lines,
         confirmText = label.confirm,
+        showConfirm = allowed,
         cancelText = "跳过",
         closeOnOverlay = false,
         showClose = false,
-        onConfirm = function() SendEventDecision(pendingEvent, "accept") end,
+        onConfirm = function() SendEventDecision(pendingEvent, action) end,
         onCancel = function() SendEventDecision(pendingEvent, "skip") end,
     }
 end

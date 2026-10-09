@@ -2,9 +2,6 @@
 -- 客户端界面资源表与布局常量。
 -- 从 GameView.lua 抽出，避免单文件超出 Lua 主块 200 个局部变量上限。
 
-local ImageCache = require("urhox-libs/UI/Core/ImageCache")
-local EquipmentCatalog = require("shared.EquipmentCatalog")
-local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 
 local ViewAssets = {}
 
@@ -243,35 +240,6 @@ LAYOUT.PLATFORM_PLAYER_Y = LAYOUT.ROAD_Y - LAYOUT.RUN_H + LAYOUT.PLAYER_FOOT_OFF
 
 ViewAssets.ASSETS = ASSETS
 ViewAssets.LAYOUT = LAYOUT
-
-local itemIconPreloadStarted_ = false
-
-function ViewAssets.PreloadItemIcons()
-    if itemIconPreloadStarted_ then return end
-    itemIconPreloadStarted_ = true
-
-    local resources = { EquipmentCatalog.ATLAS_PATH }
-    for _, path in pairs(ASSETS.items) do
-        resources[#resources + 1] = path
-    end
-    for _, path in ipairs(WishPoolDefinitions.AllIcons()) do
-        resources[#resources + 1] = path
-    end
-
-    GetCache():DownloadResources(resources, function(success, failedCount)
-        if success then
-            for _, path in ipairs(resources) do
-                ImageCache.Get(path)
-            end
-        end
-        print(string.format(
-            "[ViewAssets] item icon preload finished: success=%s failed=%d",
-            tostring(success),
-            tonumber(failedCount) or 0
-        ))
-    end)
-    print("[ViewAssets] item icon preload started: " .. tostring(#resources) .. " resources")
-end
 
 function ViewAssets.CurrentPlayer()
     return ASSETS.player

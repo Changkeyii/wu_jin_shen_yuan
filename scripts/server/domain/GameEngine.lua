@@ -221,6 +221,7 @@ local function settleMonsterVictory(state, monster, rng, now, events, context)
         return true, inventoryChanged
     end
     if isBoss then
+        require("server.domain.AdGiftEngine").OnBossVictory(state, gold, events)
         local _, boundOnOptimize = EquipmentEngine.OptimizeLoadout(state, now, events)
         inventoryChanged = inventoryChanged or boundOnOptimize
         local completedFloor = state.floor
@@ -396,6 +397,7 @@ local function playerDeath(state, monster, events, context)
     events[#events + 1] = PlayerTransition.Event("player_healed", healedEvent)
 
     local offline = context and context.offline == true
+    if not offline then require("server.domain.AdGiftEngine").OnLoss(state, monster, events) end
     local granted = hasAidForFloor(state, floor)
     if not offline and RewardPolicy.ShouldGrantAid(state.floorDefeats, granted) then
         state.aidPending = true
@@ -484,7 +486,7 @@ local function advanceOnlineCombatWorking(state, rng, now, timeStep, context)
             eventType = encounter.eventType,
             encounterKind = encounter.kind,
         })
-        CombatEngine.BeginBattle(state, encounter.eventType, rng, events)
+        CombatEngine.BeginBattle(state, encounter.eventType, rng, events, context)
         return state, "battle_started", events, false
     end
 
@@ -501,7 +503,7 @@ local function advanceOnlineCombatWorking(state, rng, now, timeStep, context)
 end
 
 local function resolveMonsterOffline(state, eventType, rng, now, events, context)
-    CombatEngine.BeginBattle(state, eventType, rng, events)
+    CombatEngine.BeginBattle(state, eventType, rng, events, context)
     local inventoryChanged = false
     local guard = 0
     while state.currentMonster and guard < 120 do

@@ -915,6 +915,10 @@ function ItemTips.Show(item, anchor, options, expanded)
     currentAnchor_ = anchor
     currentOptions_ = options
     compareExpanded_ = requestedExpanded
+    require("client.UI.DialogSettingsAccess").Attach(layer_, false, {
+        left = math.max(8, math.min(viewportWidth - 80, footprintLeft + footprintWidth + 8)),
+        top = math.max(8, math.min(viewportHeight - 104, top + panelHeight / 2 - 48)), marginTop = 0,
+    })
     root_:AddChild(layer_)
     panel_:Animate {
         keyframes = {

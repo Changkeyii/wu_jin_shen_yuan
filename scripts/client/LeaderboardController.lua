@@ -11,6 +11,7 @@ local LeaderboardController = {}
 
 local inFlight_ = false
 local currentBoard_ = "power"
+local generation_ = 0
 
 local function Toast(message, variant)
     UI.Toast.Show(message, {
@@ -24,14 +25,16 @@ local function OpenBoard(board)
     board = board == "damage" and "damage" or (board == "boss" and "boss" or (board == "season" and "season" or "power"))
     if inFlight_ then return end
     inFlight_ = true
-    currentBoard_ = board
+    local generation = generation_
     local queryBoard = board == "season" and "power" or board
     ServerClient.GetLeaderboard(function(response)
+        if generation ~= generation_ then return end
         inFlight_ = false
         if not response or not response.ok then
             Toast((response and response.reason) or "排行榜加载失败")
             return
         end
+        currentBoard_ = board
         local data = response.data or {}
         LeaderboardView.Show(
             data.list or {},
@@ -62,7 +65,9 @@ function LeaderboardController.ShowDetail(userId)
     end
     if inFlight_ then return end
     inFlight_ = true
+    local generation = generation_
     ServerClient.GetLeaderboardDetail(userId, function(response)
+        if generation ~= generation_ then return end
         inFlight_ = false
         if not response or not response.ok then
             Toast((response and response.reason) or "玩家详情加载失败")
@@ -73,6 +78,7 @@ function LeaderboardController.ShowDetail(userId)
 end
 
 function LeaderboardController.Reset()
+    generation_ = generation_ + 1
     inFlight_ = false
     currentBoard_ = "power"
 end

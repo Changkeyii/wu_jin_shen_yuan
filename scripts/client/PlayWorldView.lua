@@ -1,3 +1,6 @@
+local ChangedOnly = require("client.UI.ChangedOnly")
+-- Each scene owns its widgets and animation state; tower and trials share this implementation.
+local function New()
 local PlayWorldView = {}
 local AbyssPresentation = require("client.AbyssPresentation")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
@@ -94,7 +97,7 @@ function PlayWorldView.Build(metrics)
                 gradeId,
                 { width = 112, height = 210, fontSize = 14 }
             )
-            pillar:SetStyle({
+            ChangedOnly.Style(pillar, {
                 position = "absolute",
                 left = 0,
                 top = 0,
@@ -140,9 +143,9 @@ end
 function PlayWorldView.Update(state)
     if not refs_.player then return end
     local bgShift = -(state.presentationX % (ports_.bgTileW * 2))
-    refs_.bgTiles[1]:SetStyle({left = bgShift, top = 0, height = state.metrics.height})
-    refs_.bgTiles[2]:SetStyle({left = bgShift + ports_.bgTileW, top = 0, height = state.metrics.height})
-    refs_.bgTiles[3]:SetStyle({left = bgShift + ports_.bgTileW * 2, top = 0, height = state.metrics.height})
+    ChangedOnly.Style(refs_.bgTiles[1], {left = bgShift, top = 0, height = state.metrics.height})
+    ChangedOnly.Style(refs_.bgTiles[2], {left = bgShift + ports_.bgTileW, top = 0, height = state.metrics.height})
+    ChangedOnly.Style(refs_.bgTiles[3], {left = bgShift + ports_.bgTileW * 2, top = 0, height = state.metrics.height})
 
     local player = ports_.currentPlayer()
     local movementFrames = state.visualAutoRun and player.run or player.idle
@@ -186,8 +189,8 @@ function PlayWorldView.Update(state)
         playerStyle.backgroundImage = playerImage
         currentPlayerImage_ = playerImage
     end
-    refs_.player:SetStyle(playerStyle)
-    refs_.playerShadow:SetStyle({
+    ChangedOnly.Style(refs_.player, playerStyle)
+    ChangedOnly.Style(refs_.playerShadow, {
         left = state.playerScreenX + 42 + walkLean + attackPulse * 3,
         top = state.roadY - 8,
     })
@@ -210,7 +213,7 @@ function PlayWorldView.Update(state)
                     local visible = onScreen
                         and event.kind == "enemy"
                         and event.abyssGradeId == gradeId
-                    pillar:SetStyle({
+                    ChangedOnly.Style(pillar, {
                         visible = visible,
                         left = x + math.floor((size - 112) * 0.5),
                         top = state.roadY - 206
@@ -220,7 +223,7 @@ function PlayWorldView.Update(state)
                     })
                 end
             end
-            node:SetStyle({
+            ChangedOnly.Style(node, {
                 visible = onScreen,
                 left = x, top = top + pulse,
                 width = size, height = size,
@@ -229,10 +232,10 @@ function PlayWorldView.Update(state)
                 scale = active and 1.05 or 1.0,
             })
         else
-            node:SetStyle({visible = false})
+            ChangedOnly.Style(node, {visible = false})
             for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
                 local pillar = pillars[gradeId]
-                if pillar then pillar:SetStyle({visible = false}) end
+                if pillar then ChangedOnly.Style(pillar, {visible = false}) end
             end
         end
     end
@@ -244,3 +247,8 @@ function PlayWorldView.Reset()
 end
 
 return PlayWorldView
+end
+
+local default = New()
+default.New = New
+return default

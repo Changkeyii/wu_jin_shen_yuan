@@ -824,10 +824,11 @@ local REWARD_CLAIMS_SCHEMA = {
     allowUnknown = false,
     required = { "nextId", "pending", "exclusive" },
     fields = {
+        gifts = require("shared.AdGiftDefinitions").Schema(CURRENCY_SCHEMA),
         nextId = { type = "integer", min = 1, max = LargeNumber.MAX_SAFE_INTEGER },
         pending = {
             type = "array",
-            maxLength = 50,
+            maxLength = require("shared.RewardClaimDefinitions").MAX_PENDING,
             items = {
                 type = "object",
                 allowUnknown = false,
@@ -839,7 +840,7 @@ local REWARD_CLAIMS_SCHEMA = {
                     id = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
                     source = { type = "string", enum = {
                         "signin", "level_milestone", "floor_milestone",
-                        "abyss_settlement", "task",
+                        "abyss_settlement", "task", "campaign",
                     } },
                     sourceKey = { type = "string", minLength = 1, maxLength = 128, pattern = "^[%w%._:%-]+$" },
                     createdAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
@@ -880,6 +881,9 @@ local REWARD_CLAIMS_SCHEMA = {
         },
     },
 }
+
+-- Bounded persisted receipts reuse the exact offer shape for idempotent claim retries.
+REWARD_CLAIMS_SCHEMA.fields.receipts = REWARD_CLAIMS_SCHEMA.fields.pending
 
 local WISH_POOL_SCHEMA = {
     type = "object",

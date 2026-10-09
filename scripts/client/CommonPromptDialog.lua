@@ -17,20 +17,33 @@ local ASSETS = {
 local root_ = nil
 local overlay_ = nil
 local context_ = nil
+local reusableContent_ --[[@type table?]]
+local reusableForeground_ --[[@type table?]]
 
-local function removeOverlay()
-    if overlay_ and root_ then
-        root_:RemoveChild(overlay_)
-    end
+local function removeOverlay(preserve)
+    local node = overlay_
     overlay_ = nil
+    if not node then return end
+    if preserve then
+        local function retain(parent)
+            for i = #(parent.children or {}), 1, -1 do
+                local child = parent.children[i]
+                if child == reusableContent_ or child == reusableForeground_ or child.retainOnDialogRebuild then parent:RemoveChild(child)
+                else retain(child) end
+            end
+        end
+        retain(node)
+    end
+    if node.Destroy then node:Destroy() elseif node.parent then node.parent:RemoveChild(node) end
 end
+function CommonPromptDialog.DetachForRebuild() removeOverlay(true) end
 
 function CommonPromptDialog.Configure(context)
     context_ = context
 end
 
 function CommonPromptDialog.AttachRoot(root)
-    removeOverlay()
+    removeOverlay(true)
     root_ = root
     DialogCoordinator.Configure {
         present = CommonPromptDialog.Present,
@@ -48,7 +61,9 @@ function CommonPromptDialog.Present(options, finish)
         return false
     end
     options = options or {}
-    removeOverlay()
+    removeOverlay(true)
+    reusableContent_ = options.content
+    reusableForeground_ = options.foregroundContent
 
     local closeOnOverlay = options.closeOnOverlay ~= false
     local pages = options.pages or options.storyLines
@@ -89,7 +104,7 @@ function CommonPromptDialog.Present(options, finish)
     end
 
     RenderPage = function()
-        removeOverlay()
+        removeOverlay(true)
         local page = type(pages) == "table" and pages[pageIndex] or nil
         local pageMessage = options.message
         local pageLines = options.lines or {}
@@ -298,6 +313,7 @@ function CommonPromptDialog.Present(options, finish)
             justifyContent = "center",
             children = foregroundChildren,
         }
+        require("client.UI.DialogSettingsAccess").Attach(stage, true)
         overlay_ = UI.Panel {
             position = "absolute", left = 0, top = 0, right = 0, bottom = 0,
             zIndex = options.zIndex or 2000, pointerEvents = "box-none",
@@ -321,7 +337,7 @@ function CommonPromptDialog.Present(options, finish)
             duration = options.entranceDuration or 0.46,
             easing = "easeOut",
         }
-        if celebrationGlow then
+        if celebrationGlow and not require("client.PerformanceController").IsPowerSaving() then
             celebrationGlow:Animate {
                 keyframes = {
                     [0] = { opacity = 0, scale = 0.45 },

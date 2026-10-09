@@ -72,6 +72,10 @@ end
 
 function AudioController.PlayFeedback(name)
     local sound = feedbackSounds_[name]
+    if not sound and FEEDBACK_PATHS[name] then
+        sound = LoadSound(FEEDBACK_PATHS[name], false)
+        feedbackSounds_[name] = sound
+    end
     if not sound then
         print("[AudioController] feedback sound unavailable: " .. tostring(name))
         return false
@@ -152,11 +156,7 @@ function AudioController.Start()
     end
 
     clickSound_ = LoadSound(CLICK_PATH, false)
-    for name, path in pairs(FEEDBACK_PATHS) do
-        feedbackSounds_[name] = LoadSound(path, false)
-    end
-    musicSounds_.home = LoadSound(MUSIC_PATHS.home, true)
-    musicSounds_.battle = LoadSound(MUSIC_PATHS.battle, true)
+    -- Page music and feedback sounds are loaded when first used, not all at login.
 
     SubscribeToEvent("MouseButtonDown", HandleMouseButtonDown)
     SubscribeToEvent("TouchBegin", HandleTouchBegin)
@@ -167,6 +167,10 @@ end
 function AudioController.SetPage(pageId)
     local wanted = pageId == "play" and "battle" or "home"
     local sound = musicSounds_[wanted]
+    if not sound then
+        sound = LoadSound(MUSIC_PATHS[wanted], true)
+        musicSounds_[wanted] = sound
+    end
     if currentMusic_ == wanted and musicSource_ and musicSource_:IsPlaying() then return end
     if not musicSource_ or not sound then
         print("[AudioController] music unavailable: " .. wanted)

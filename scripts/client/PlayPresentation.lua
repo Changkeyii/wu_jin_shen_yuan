@@ -1,16 +1,19 @@
+-- Each scene owns its widgets and animation state; tower and trials share this implementation.
+local function New()
 local PlayPresentation = {}
 local CombatSequence = require("shared.CombatSequence")
 local BigNumber = require("shared.BigNumber")
-local PlayEffects = require("client.PlayEffects")
-local PlayHud = require("client.PlayHud")
-local PlayWorldView = require("client.PlayWorldView")
+local PlayEffects = require("client.PlayEffects").New()
+local PlayHud = require("client.PlayHud").New()
+local PlayWorldView = require("client.PlayWorldView").New()
 local AbyssDefinitions = require("shared.AbyssDefinitions")
+local EncounterRequestController = require("client.EncounterRequestController")
 
 local context_ = nil
 local refs_ = {}
 local roadEvents_ = {}
 local activeRouteId_ = nil
-local pendingEncounterId_ = nil
+local encounterRequests_ = EncounterRequestController.New()
 local transitioningFloor_ = nil
 local presentationX_ = 0
 local animationTime_ = 0
@@ -137,7 +140,7 @@ local function ApplyFloorRoute(route, position, currentMonster)
         return true
     end
     activeRouteId_ = route.routeId
-    pendingEncounterId_ = nil
+    encounterRequests_:Reset()
     local completedEncounter = route.encounters[position]
     presentationX_ = completedEncounter
         and math.max(0, completedEncounter.distance - route.triggerDistance)
@@ -196,7 +199,7 @@ end
 local function AdvanceRoadEvent()
     local current = roadEvents_[1]
     if current then
-        pendingEncounterId_ = nil
+        encounterRequests_:Reset()
         table.remove(roadEvents_, 1)
     end
     currentEventLocked_ = false
@@ -257,6 +260,7 @@ end
 
 local function SetAutoRun(enabled)
     if pendingAutoRun_ then return false end
+    encounterRequests_:Reset()
     requestedAutoRun_ = enabled
     pendingAutoRun_ = true
     if enabled then
@@ -443,6 +447,7 @@ local function CreatePage()
     refs_.root = root
     local lootText, lootIcon, lootRarity = PlayEffects.GetLootDisplay()
     for _, node in ipairs(PlayHud.Build {
+        trial = game.trial,
         readOnly = game.readOnly,
         stashCount = #(game.lootStash or {}),
         lootText = lootText,
@@ -474,7 +479,7 @@ spawnFinisherEffect = function()
             delay = delay or 0,
             easing = "easeOut",
             onComplete = function()
-                if node.parent then node.parent:RemoveChild(node) end
+                if node.Destroy then node:Destroy() elseif node.parent then node.parent:RemoveChild(node) end
             end,
         }
     end
@@ -611,7 +616,7 @@ spawnFinisherEffect = function()
 
     -- 特效层自身收尾清理
     local function cleanup()
-        if effectLayer.parent then effectLayer.parent:RemoveChild(effectLayer) end
+        if effectLayer.Destroy then effectLayer:Destroy() elseif effectLayer.parent then effectLayer.parent:RemoveChild(effectLayer) end
     end
     effectLayer:Animate {
         keyframes = { [0] = { opacity = 1 }, [1] = { opacity = 1 } },
@@ -650,7 +655,7 @@ local function spawnFinisherGhost()
         duration = 0.5,
         easing = "easeOut",
         onComplete = function()
-            if ghost.parent then ghost.parent:RemoveChild(ghost) end
+            if ghost.Destroy then ghost:Destroy() elseif ghost.parent then ghost.parent:RemoveChild(ghost) end
         end,
     }
 end
@@ -672,7 +677,7 @@ local function Update(dt)
     animationTime_ = animationTime_ + dt
     combatAnimationTime_ = currentEventLocked_ and (combatAnimationTime_ + dt) or 0
     -- 终结技残影拖尾：攻击进行期间持续生成金色能量残影
-    if currentEventLocked_ and combatSequenceIndex_ and combatSequenceIndex_ >= 4 then
+    if not require("client.PerformanceController").IsPowerSaving() and currentEventLocked_ and combatSequenceIndex_ and combatSequenceIndex_ >= 4 then
         finisherGhostTimer_ = finisherGhostTimer_ + dt
         if finisherGhostTimer_ >= 0.09 then
             finisherGhostTimer_ = 0
@@ -692,30 +697,15 @@ local function Update(dt)
     local reachedEnemy = current
         and current.kind == "enemy"
         and currentDistance <= triggerDistance
-    if visualAutoRun
-        and reachedEnemy
-        and not currentEventLocked_
-        and pendingEncounterId_ ~= current.encounterId
-        and route
-    then
-        pendingEncounterId_ = current.encounterId
-        context_.serverClient.EnterEncounter(
-            route.routeId,
-            current.encounterId,
-            current.room,
-            function(response)
-                if not response or not response.ok then
-                    pendingEncounterId_ = nil
-                    ActionResult(response)
-                    context_.serverClient.RequestSnapshot()
-                end
-            end
-        )
+    encounterRequests_:Update(dt)
+    local encounterBlocked = EncounterRequestController.IsBlocked(game)
+    if not context_.presentationOnly and visualAutoRun and reachedEnemy and not currentEventLocked_ and route then
+        encounterRequests_:Try(game, route, current, context_)
     end
     local shouldStopForEvent = current
         and current.kind == "enemy"
         and (currentEventLocked_ or reachedEnemy)
-    local speed = (visualAutoRun and not shouldStopForEvent) and moveSpeed or 0
+    local speed = (visualAutoRun and not encounterBlocked and not shouldStopForEvent) and moveSpeed or 0
     local nextPresentationX = presentationX_ + speed * dt
     local stopDistance = current and tonumber(current.distance)
     if speed > 0 and current and current.kind == "enemy" and stopDistance then
@@ -775,7 +765,7 @@ local function Update(dt)
         metrics = metrics_,
         presentationX = presentationX_,
         roadEvents = roadEvents_,
-        visualAutoRun = visualAutoRun,
+        visualAutoRun = speed > 0,
         isAttacking = isAttacking,
         isPicking = isPicking,
         attackFrames = currentAttackFrames_ or attackFrames,
@@ -784,7 +774,7 @@ local function Update(dt)
         windupSeconds = combatWindupSeconds_,
         recoverySeconds = combatRecoverySeconds_,
         sequenceTime = math.max(0, combatAnimationTime_ - combatSequenceStartTime_),
-        activeFps = isAttacking and sequence.fps or (visualAutoRun and activeParams.fps or 8),
+        activeFps = isAttacking and sequence.fps or (speed > 0 and activeParams.fps or 8),
         activeParams = activeParams,
         animationTime = animationTime_,
         combatAnimationTime = combatAnimationTime_,
@@ -801,6 +791,7 @@ local function Update(dt)
     local displayHp = hasMonster and currentMonsterHp_ or 0
     local monster = game.currentMonster
     PlayHud.Update {
+        trial = game.trial,
         floor = game.floor,
         room = game.room,
         floorRouteStep = CurrentFloorRouteStep(game),
@@ -882,6 +873,19 @@ function PlayPresentation.Configure(context)
     }
 end
 
+-- Inherit the same art, animation tuning and sound ports, but never tower commands/state.
+function PlayPresentation.CreateIsolated(overrides)
+    assert(context_, "battle presentation must be configured")
+    local ports = {}
+    for key, value in pairs(context_) do ports[key] = value end
+    for key, value in pairs(overrides or {}) do ports[key] = value end
+    ports.presentationOnly = true
+    ports.updateTopBar = function() end
+    local scene = New()
+    scene.Configure(ports)
+    return scene
+end
+
 function PlayPresentation.BuildPage()
     return CreatePage()
 end
@@ -927,7 +931,7 @@ function PlayPresentation.HandleDelta(payload)
             if value.enabled == false then ClearCombatPresentation(false) end
         elseif kind == "battle_started" or kind == "monster_spawned" then
             rewardOrigin_ = nil
-            pendingEncounterId_ = value.monsterId or pendingEncounterId_
+            encounterRequests_:Reset()
             local eventType = NormalizedEventType(value)
             lastEventType_ = eventType
             AlignCurrentRoadEvent(eventType)
@@ -991,7 +995,7 @@ function PlayPresentation.HandleDelta(payload)
         elseif kind == "floor_reset" then
             activeRouteId_ = nil
             roadEvents_ = {}
-            pendingEncounterId_ = nil
+            encounterRequests_:Reset()
             presentationX_ = 0
             ClearCombatPresentation(false)
             PlayEffects.AddPlayerFeedback("本层重置", C().focus, "floor_rest")
@@ -1000,7 +1004,7 @@ function PlayPresentation.HandleDelta(payload)
             context_.loadingController.BeginFloorTransition(value.floor)
             activeRouteId_ = nil
             roadEvents_ = {}
-            pendingEncounterId_ = nil
+            encounterRequests_:Reset()
             presentationX_ = 0
             ClearCombatPresentation(false)
         elseif kind == "boss_enraged" then
@@ -1100,11 +1104,14 @@ function PlayPresentation.HandleDelta(payload)
                 "宝箱+" .. context_.formatInt(value.gold or 0),
                 Assets().items.chest
             )
+        elseif kind == "story_completed" or kind == "story_skipped"
+            or kind == "event_resolved" or kind == "aid_granted" then
+            encounterRequests_:Reset()
         elseif kind == "story_gate" and context_.showStoryGate then
-            pendingEncounterId_ = nil
+            encounterRequests_:Reset()
             context_.showStoryGate(value)
         elseif kind == "event_pending" and context_.showPendingEvent then
-            pendingEncounterId_ = nil
+            encounterRequests_:Reset()
             context_.showPendingEvent(value)
         elseif kind == "equipment_upgrade_available" and context_.showEquipmentUpgrade then
             local ok, TutorialController = pcall(require, "client.TutorialController")
@@ -1204,6 +1211,7 @@ function PlayPresentation.SetAutoRun(enabled)
 end
 
 function PlayPresentation.CancelPendingAutoRun()
+    encounterRequests_:Reset()
     requestedAutoRun_ = nil
     pendingAutoRun_ = nil
 end
@@ -1217,7 +1225,7 @@ function PlayPresentation.Reset()
     refs_ = {}
     roadEvents_ = {}
     activeRouteId_ = nil
-    pendingEncounterId_ = nil
+    encounterRequests_:Reset()
     transitioningFloor_ = nil
     presentationX_ = 0
     animationTime_ = 0
@@ -1244,3 +1252,8 @@ function PlayPresentation.SetPendingAutoRun(value)
 end
 
 return PlayPresentation
+end
+
+local default = New()
+default.New = New
+return default

@@ -18,18 +18,6 @@ local AdventureEngine = {}
 local storyGateEvent
 local maybeQueueStoryGate
 
-local function createPrologueGate()
-    return {
-        storyId = StoryCatalog.PROLOGUE.id,
-        chapter = 0,
-        floor = 1,
-        phase = "prologue",
-        title = StoryCatalog.PROLOGUE.title,
-        lines = TableUtils.DeepCopy(StoryCatalog.PROLOGUE.lines),
-        lineIndex = 1,
-    }
-end
-
 storyGateEvent = function(gate)
     return PlayerTransition.Event("story_gate", {
         storyId = gate.storyId,
@@ -82,7 +70,8 @@ function AdventureEngine.SetAutoRun(inputState, enabled, now)
     local working = PlayerTransition.Copy(inputState, now)
     -- 序章教学战斗：开挂机前强制回到第 1 层，避免老号高楼层被秒。
     local tutorialFloorEvents = {}
-    if enabled and TutorialEngine and TutorialEngine.IsActive and TutorialEngine.IsActive(working) then
+    local tutorialActive = enabled and TutorialEngine.IsActive(working)
+    if tutorialActive then
         TutorialEngine.EnsureTutorialFloor(working, tutorialFloorEvents)
     end
     if enabled and working.aidPending then
@@ -95,7 +84,22 @@ function AdventureEngine.SetAutoRun(inputState, enabled, now)
             PlayerTransition.Event("inventory_full", { capacity = Catalog.GetInventoryCapacity(working) }),
         })
     end
-    if working.autoRun == enabled then
+    local storyProgress = working.storyProgress or {}
+    local prologueGate = working.pendingStoryGate
+        and working.pendingStoryGate.storyId == StoryCatalog.PROLOGUE.id
+    -- TutorialController is the sole prologue flow and presents its CG/dialogue
+    -- before requesting the first battle. Its modal lock intentionally hides ordinary story
+    -- dialogs, so a second prologue gate would wait forever. Also repair saves
+    -- already stuck behind that gate, even when autoRun is already true.
+    local tutorialPrologueCompleted = enabled
+        and (not working.pendingStoryGate or prologueGate)
+        and (not storyProgress.introCompleted or prologueGate)
+    if tutorialPrologueCompleted then
+        storyProgress.introCompleted = true
+        working.storyProgress = storyProgress
+        if prologueGate then working.pendingStoryGate = nil end
+    end
+    if working.autoRun == enabled and not tutorialPrologueCompleted and #tutorialFloorEvents == 0 then
         return PlayerTransition.NoCommit(inputState, now, "auto_run_unchanged")
     end
     working.autoRun = enabled
@@ -104,24 +108,12 @@ function AdventureEngine.SetAutoRun(inputState, enabled, now)
     for _, event in ipairs(tutorialFloorEvents) do
         events[#events + 1] = event
     end
-    local storyProgress = working.storyProgress or {}
-    local automation = working.automationPolicy or {}
-    if enabled and not storyProgress.introCompleted then
-        if automation.autoSkipStory and working.interactionMode ~= "cinematic" then
-            storyProgress.introCompleted = true
-            working.storyProgress = storyProgress
-            events[#events + 1] = PlayerTransition.Event("story_skipped", {
-                storyId = StoryCatalog.PROLOGUE.id,
-                chapter = 0,
-                phase = "prologue",
-                automatic = true,
-            })
-        else
-            local gate = createPrologueGate()
-            working.pendingStoryGate = gate
-            working.pauseReason = "story_gate"
-            events[#events + 1] = storyGateEvent(gate)
-        end
+    if tutorialPrologueCompleted then
+        events[#events + 1] = PlayerTransition.Event("story_completed", {
+            storyId = StoryCatalog.PROLOGUE.id,
+            chapter = 0,
+            phase = "prologue",
+        })
     end
     return PlayerTransition.Finalize(inputState, working, now, "auto_run_changed", events, false, false)
 end

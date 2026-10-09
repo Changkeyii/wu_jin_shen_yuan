@@ -123,7 +123,8 @@ local function CompleteActive(result)
     end
 
     active_ = nil
-    local callback = result == "confirm" and item.options.onConfirm or item.options.onCancel
+    local callback = result == "confirm" and item.options.onConfirm
+        or result == "cancel" and item.options.onCancel
     if callback then
         local ok, reason = pcall(callback, result, item.options)
         if not ok then print("[DialogCoordinator] callback failed: " .. tostring(reason)) end
@@ -205,15 +206,15 @@ function DialogCoordinator.CancelActive()
     return CompleteActive("cancel")
 end
 
-function DialogCoordinator.CancelByKey(key)
+function DialogCoordinator.CancelByKey(key, invokeCancel)
     if key == nil then return false end
     if active_ and active_.key == key then
-        return CompleteActive("cancel")
+        return CompleteActive(invokeCancel == false and "dismiss" or "cancel")
     end
     for index, item in ipairs(queue_) do
         if item.key == key then
             table.remove(queue_, index)
-            if item.options.onCancel then
+            if invokeCancel ~= false and item.options.onCancel then
                 local ok, reason = pcall(item.options.onCancel, "cancel", item.options)
                 if not ok then print("[DialogCoordinator] callback failed: " .. tostring(reason)) end
             end
@@ -233,13 +234,16 @@ function DialogCoordinator.Clear(invokeCancel)
     active_ = nil
     queue_ = {}
     reservations_ = {}
+    blocked_, allowPrefixes_ = false, {}
     if invokeCancel and active and active.options.onCancel then
         pcall(active.options.onCancel, "cancel", active.options)
     end
 end
 
 function DialogCoordinator.GetState()
-    return {
+    local count = 0
+    for _ in pairs(reservations_) do count = count + 1 end
+    return { reservations = count,
         active = active_ and active_.options or nil,
         activePriority = active_ and active_.priority or nil,
         queued = #queue_,

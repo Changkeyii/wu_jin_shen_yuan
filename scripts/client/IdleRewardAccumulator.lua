@@ -16,6 +16,7 @@ function IdleRewardAccumulator.New()
         exp = BigNumber.Zero(),
         fragments = BigNumber.Zero(),
         equipmentItems = {},
+        equipmentCount = 0,
         equipmentById = {},
         battles = 0,
         abyssRuns = 0,
@@ -73,6 +74,8 @@ function IdleRewardAccumulator.Accumulate(summary, events, options)
         elseif kind == "equipment_drop" or kind == "equipment_granted" then
             local itemId = tostring(value.itemId or value.equipmentId or "")
             if itemId ~= "" and not summary.equipmentById[itemId] then
+                summary.equipmentCount = (summary.equipmentCount or 0) + 1
+                if #summary.equipmentItems >= 100 then goto next_event end
                 summary.equipmentById[itemId] = true
                 local item = options.getItemById and options.getItemById(value.itemId) or nil
                 item = item or value
@@ -81,10 +84,11 @@ function IdleRewardAccumulator.Accumulate(summary, events, options)
                     icon = options.itemImage and options.itemImage(item) or value.icon,
                     name = value.name or item.name or "装备",
                     rarity = value.rarity or item.rarity or "common",
-                    item = item,
+                    item = { name = item.name, rarity = item.rarity, level = item.level, slot = item.slot },
                 }
             end
         end
+        ::next_event::
     end
     return summary
 end
@@ -95,7 +99,9 @@ function IdleRewardAccumulator.Merge(target, source)
     target.fragments = BigNumber.Add(target.fragments, source.fragments)
     target.battles = (target.battles or 0) + (source.battles or 0)
     target.abyssRuns = (target.abyssRuns or 0) + (source.abyssRuns or 0)
+    target.equipmentCount = (target.equipmentCount or 0) + (source.equipmentCount or #(source.equipmentItems or {}))
     for _, value in ipairs(source.equipmentItems or {}) do
+        if #target.equipmentItems >= 100 then break end
         local itemId = tostring(value.itemId or "")
         if itemId == "" or not target.equipmentById[itemId] then
             if itemId ~= "" then target.equipmentById[itemId] = true end

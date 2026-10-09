@@ -1,35 +1,65 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "m_azc3",
+  "project_id": "m_5thf",
   "author": {
-    "id": "162525390"
+    "id": "162878756"
   },
   "entry": "main.lua",
-  "version": "1.0.1",
+  "version": "1.0.10",
   "taptap_publish": {
-    "title": "无尽深渊",
-    "description": "无尽深渊挂机录：服务器权威的挂机 RPG，包含装备、深渊挑战、好友、宗门与排行榜系统。",
+    "title": "地下城与灵境勇士",
+    "description": "下一件掉落，会让你变得多强？\n踏入万灵塔，成为与灵境并肩作战的勇士。从一把普通武器开始，挑战层层怪物与首领，在随机掉落中寻找属于你的神装！\n打不过？换套装备再来。背包满了？分解、强化，让每一件战利品都有价值。搭配装备、积蓄力量，突破曾经挡住你的那一层。\n忙时轻松挂机，闲时研究搭配；离线也能积累收益，回来继续向深处进发。\n这里没有废掉的战利品，只有尚未成形的力量。你的极限，会在第几层？",
     "category": "rpg",
     "screen_orientation": "portrait",
-    "collection_type": "sce",
-    "trial_note": "测试版本",
+    "collection_type": "rpg",
+    "trial_note": "哇！闲暇摸鱼快乐游戏哇！",
     "app_platforms": "1,2",
-    "app_id": 917086,
-    "miniapp_id": "tapmchwtwkftmua6ve",
-    "developer_id": 384520
+    "developer_id": 390299,
+    "gameplay_demo_video_source": "https://tapcode-sce.spark.xd.com/videos/m_5thf/1791449084580-rec_82237a6d-79ac-44b7-a52a-de6a045750d4.mp4",
+    "promotional_video_source": "https://tapcode-sce.spark.xd.com/assets/video/cgt-20261008170317-l69cn/video.mp4",
+    "promotional_video": "./assets/video/cgt-20261008170317-l69cn_video.mp4",
+    "app_id": 964773,
+    "miniapp_id": "tapmcjahachwvjjdrx",
+    "release_phase": "official"
   },
   "assets": {
-    "icon": "",
-    "screenshots": [],
-    "promotional_image": ""
+    "icon": "./game_material/ICON_2026-10-08T08-54-52_01.png",
+    "screenshots": [
+      "./game_material/SCREENSHOT_2026-10-08T08-59-31_04_hd.png",
+      "./game_material/SCREENSHOT_2026-10-08T09-00-32_06_hd.png",
+      "./game_material/SCREENSHOT_2026-10-08T09-01-08_07_hd.png",
+      "./game_material/SCREENSHOT_2026-10-08T09-01-54_08_hd.png",
+      "./game_material/SCREENSHOT_2026-10-08T09-02-31_09_hd.png"
+    ],
+    "promotional_image": "./game_material/PROMO_2026-10-08T08-50-27_01.jpg",
+    "source_screenshots": [
+      "_uploads/822a76afd2ff107c895fd28525dd97ade71cd0ddea5326955939b5fa7b088feb.png",
+      "_uploads/78f0b244b1b1faed454ba36607525dd3a4a987cd0b7b8882661d9638d14d1c9f.png"
+    ],
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/ICON_2026-10-08T08-54-52_01.png",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/SCREENSHOT_2026-10-08T08-59-31_04_hd.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/SCREENSHOT_2026-10-08T09-00-32_06_hd.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/SCREENSHOT_2026-10-08T09-01-08_07_hd.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/SCREENSHOT_2026-10-08T09-01-54_08_hd.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/SCREENSHOT_2026-10-08T09-02-31_09_hd.png"
+    ],
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/m_5thf/PROMO_2026-10-08T08-50-27_01.jpg",
+    "cover_horizontal": "./game_material/COVER_HORIZONTAL_2026-10-08T08-54-34_01.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/地下城与灵境勇士/COVER_HORIZONTAL_2026-10-08T08-54-34_01.png",
+    "cover_vertical": "./game_material/COVER_VERTICAL_2026-10-08T08-54-34_01.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/地下城与灵境勇士/COVER_VERTICAL_2026-10-08T08-54-34_01.png",
+    "square_promotional_image": "./game_material/SQUARE_PROMO_2026-10-08T08-54-34_01.jpg",
+    "square_promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/地下城与灵境勇士/SQUARE_PROMO_2026-10-08T08-54-34_01.jpg"
   },
   "entry@client": "main.lua",
   "entry@server": "server/ServerMain.lua",
-  "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/m_azc3_1787625641901.png",
-    "generated_at": "2026-08-25T02:40:42.069Z"
-  },
   "metadata": {
-    "updated_at": "2026-08-25T02:40:46.034Z"
+    "updated_at": "2026-10-08T16:07:14.278Z",
+    "promo_dependent_hash": "9c205db92ca9ba80f70557c8d2d5b219"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/m_5thf_1791449162212.png",
+    "generated_at": "2026-10-08T08:46:02.353Z"
   }
 }

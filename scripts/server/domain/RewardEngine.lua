@@ -390,7 +390,7 @@ function RewardEngine.AccrueOffline(inputState, now)
         return PlayerTransition.NoCommit(inputState, now, "offline_unchanged")
     end
     local before = working.pendingOfflineSeconds
-    -- 单次离线不足 1 分钟不计入可领离线时长（但仍刷新 lastActiveAt，避免重复累计）
+    -- 单次离线不足 15 分钟不计入可领离线时长（但仍刷新 lastActiveAt，避免重复累计）
     local credited = elapsed >= Catalog.OFFLINE_MIN_SECONDS and elapsed or 0
     working.pendingOfflineSeconds = math.min(Catalog.OFFLINE_MAX_SECONDS, before + credited)
     return PlayerTransition.Finalize(inputState, working, now, "offline_accrued", {
@@ -529,7 +529,7 @@ local function simulateOfflineCollection(inputState, now, rng)
     local working = PlayerTransition.Copy(inputState, now)
     local floor = math.max(1, TableUtils.ToInteger(working.floor, 1))
     local seconds = math.min(working.pendingOfflineSeconds, Catalog.OFFLINE_MAX_SECONDS)
-    -- 离线时长不足 1 分钟不结算离线奖励
+    -- 离线时长不足 15 分钟不结算离线奖励
     if seconds < Catalog.OFFLINE_MIN_SECONDS then
         return nil, "NO_OFFLINE_REWARD", "offline reward requires at least "
             .. tostring(Catalog.OFFLINE_MIN_SECONDS) .. " seconds"
@@ -773,6 +773,7 @@ function RewardEngine.ClaimOfflineReward(inputState, ledger, now)
     reward.generatedEquipment = stored
     reward.discardedEquipment = overflowed
     events[#events + 1] = PlayerTransition.Event("offline_collected", reward)
+    require("server.domain.AdGiftEngine").OnOffline(working, reward, events)
 
     PlayerTransition.RefreshDerived(working)
     return PlayerTransition.Finalize(

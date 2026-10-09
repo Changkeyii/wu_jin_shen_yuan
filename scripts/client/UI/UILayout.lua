@@ -21,6 +21,26 @@ UILayout.Z = {
 -- 这里再垫一层，避免标题/返回按钮顶到胶囊体。
 UILayout.CAPSULE_EXTRA = 18
 
+-- 顶部提示与 GameView.safeContent 共用起点：max(系统安全区, 胶囊底边)。
+-- 不添加额外顶部间距；返回 UI 设计像素，不能重复乘缩放。
+function UILayout.OverlayInsets()
+    local safe = UI.GetSafeAreaInsets()
+    local top = math.max(0, safe.top or 0)
+    if sdk and sdk.GetNativeExitMenuRect then
+        local rect = sdk:GetNativeExitMenuRect()
+        if rect then
+            local scale = math.max(0.001, UI.GetScale())
+            top = math.max(top, rect.bottom * graphics.height / scale)
+        end
+    end
+    return {
+        top = top,
+        left = math.max(0, safe.left or 0) + 40,
+        right = math.max(0, safe.right or 0) + 40,
+        bottom = math.max(0, safe.bottom or 0) + 40,
+    }
+end
+
 UILayout.Type = GameTheme.TypeScale or {
     pageTitle = 32,
     chapterTitle = 26,

@@ -18,7 +18,7 @@ local requestPending_ = false
 local sequence_ = 0
 local adElapsed_ = 0
 local adFinish_ = nil
-local AD_WATCHDOG_SECONDS = 45
+local AD_WATCHDOG_SECONDS = require("client.RewardVideo").WATCHDOG_SECONDS
 
 local function Toast(message, variant)
     if UI.Toast and UI.Toast.Show then
@@ -93,7 +93,7 @@ local function ExpandByAd(onDone)
     end
     adFinish_ = finish
 
-    local accepted = sdk:ShowRewardVideoAd(function(result)
+    local accepted = require("client.RewardVideo").Play(function(result)
         callbackFired = true
         finish(result)
     end)

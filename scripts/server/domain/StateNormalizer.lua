@@ -690,7 +690,7 @@ local function sanitizeRewardMeta(value)
     return result
 end
 
-local function sanitizeRewardClaims(value)
+local function sanitizeRewardClaims(value, clearedFloor)
     value = type(value) == "table" and value or {}
     local pending = {}
     local seenIds = {}
@@ -731,6 +731,8 @@ local function sanitizeRewardClaims(value)
     return {
         nextId = math.max(1, TableUtils.ToInteger(value.nextId, 1)),
         pending = pending,
+        receipts = type(value.receipts) == "table" and sanitizeRewardClaims({ pending = value.receipts }).pending or {},
+        gifts = require("shared.AdGiftDefinitions").Normalize(value.gifts, clearedFloor),
         exclusive = {
             dailyDayKey = math.max(0, TableUtils.ToInteger(rawExclusive.dailyDayKey, 0)),
             dailyClaimed = math.max(0, math.min(
@@ -902,7 +904,7 @@ function StateNormalizer.Normalize(rawState, now)
         activities = sanitizeActivities(rawState.activities),
         wishPool = sanitizeWishPool(rawState.wishPool),
         abyss = sanitizeAbyss(rawState.abyss),
-        rewardClaims = sanitizeRewardClaims(rawState.rewardClaims),
+        rewardClaims = sanitizeRewardClaims(rawState.rewardClaims, normalizedMaxFloor - 1),
         challenges = sanitizeChallenges(rawState.challenges),
         campaign = CampaignDefinitions.Sanitize(rawState.campaign),
         tutorial = sanitizeTutorial(rawState.tutorial),
@@ -941,8 +943,9 @@ function StateNormalizer.Normalize(rawState, now)
         local phase = rawMonster.phase == "recovery" and "recovery" or "windup"
         local sequenceIndex = clampInteger(rawMonster.sequenceIndex, 1, CombatSequence.Count(), 1)
         local sequence = CombatSequence.Get(sequenceIndex)
-        local hitIndex = clampInteger(rawMonster.hitIndex, 0, #sequence.hitFrames, 0)
-        local hitFrame = clampInteger(rawMonster.hitFrame, 1, sequence.frameCount, sequence.hitFrames[math.max(1, hitIndex)] or sequence.hitFrames[1])
+        local hitFrames = sequence.hitFrames --[[@as number[] ]]
+        local hitIndex = clampInteger(rawMonster.hitIndex, 0, #hitFrames, 0)
+        local hitFrame = clampInteger(rawMonster.hitFrame, 1, sequence.frameCount, hitFrames[math.max(1, hitIndex)] or hitFrames[1])
         local endFrame = clampInteger(rawMonster.endFrame, hitFrame, sequence.frameCount, sequence.endFrame)
         if eventType == "monster" or eventType == "elite" or eventType == "boss" then
             local room = clampInteger(rawMonster.room, 1, 10, math.max(1, state.position))
@@ -1028,6 +1031,10 @@ function StateNormalizer.Normalize(rawState, now)
     end
     state.nextExp = Catalog.NextExp(state.level)
     state.maxFloor = math.max(state.maxFloor, state.floor)
+    local oldGifts = rawState.rewardClaims and rawState.rewardClaims.gifts
+    if oldGifts and (tonumber(oldGifts.version) or 1) < 2 then
+        state.rewardClaims.gifts.highestFloor = math.max(0, state.maxFloor - 1)
+    end
 
     local rawConsumables = type(rawState.consumables) == "table" and rawState.consumables or {}
     state.consumables.healthPotion = math.max(0, TableUtils.ToInteger(rawConsumables.healthPotion, 0))

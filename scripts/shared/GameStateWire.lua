@@ -153,6 +153,22 @@ end
 ---@param state table
 ---@param options table|nil
 ---@return table
+-- Historical campaign entitlements remain on the server. The current reward
+-- popup receives its exact IDs in events; sending all 120 old offers on every
+-- update can exceed the 60 KiB envelope. Keep other sources' existing wire data.
+local function NetworkRewardClaims(claims)
+    local result = deepCopy(claims)
+    result.receipts = {} -- Server-only idempotency history; do not inflate snapshots.
+    local pending, latestCampaign = {}, nil
+    for _, offer in ipairs(result.pending or {}) do
+        if offer.source == "campaign" then latestCampaign = offer
+        else pending[#pending + 1] = offer end
+    end
+    if latestCampaign then pending[#pending + 1] = latestCampaign end
+    result.pending = pending
+    return result
+end
+
 function GameStateSchema.BuildSnapshot(state, options)
     options = options or {}
     local snapshot = {
@@ -173,6 +189,7 @@ function GameStateSchema.BuildSnapshot(state, options)
     end
 
     snapshot.inventory = networkInventory(state.inventory)
+    if snapshot.rewardClaims then snapshot.rewardClaims = NetworkRewardClaims(snapshot.rewardClaims) end
     snapshot.overflowLoot = networkInventory(state.overflowLoot)
     snapshot.lootStash = deepCopy(state.lootStash or {})
     snapshot.equipped = deepCopy(state.equipped or {})
@@ -192,8 +209,10 @@ function GameStateSchema.BuildSnapshot(state, options)
     end
     snapshot.displayedPower = snapshot.displayedPower or stats.power or 0
     if options.itemPower ~= nil then
-        for _, item in ipairs(snapshot.inventory or {}) do
-            item.power = options.itemPower(item)
+        for index, item in ipairs(snapshot.inventory or {}) do
+            -- Power evaluators may cache values on their input. Keep those
+            -- private fields on domain items, outside the network snapshot.
+            item.power = options.itemPower(state.inventory[index])
         end
     end
     if options.itemMarketQuote ~= nil then
@@ -259,6 +278,7 @@ function GameStateSchema.BuildDelta(revision, changes, options)
         or changes.lootStash ~= nil
         or changes.equipped ~= nil
         or changes.consumables ~= nil
+    if deltaChanges.rewardClaims then deltaChanges.rewardClaims = NetworkRewardClaims(deltaChanges.rewardClaims) end
     if inventoryChanged and options.state ~= nil then
         deltaChanges.inventory = networkInventory(options.state.inventory or {})
         deltaChanges.overflowLoot = networkInventory(options.state.overflowLoot or {})

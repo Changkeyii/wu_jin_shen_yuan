@@ -432,6 +432,13 @@ local function CreateItemUseDetail(item)
 
     ---@type any[]
     local rightChildren = {}
+    if isWishTicket then
+        rightChildren[#rightChildren + 1] = UI.Panel {
+            position = "absolute", left = 748, top = 184, width = 150, height = 46,
+            children = { ImageButton("获取途径", 150, 46, ASSETS.ui.inventoryActionGold,
+                function() require("client.ResourceTips").Show("wish_ticket") end, false) },
+        }
+    end
     if onUse then
         rightChildren[#rightChildren + 1] = UI.Panel {
             position = "absolute", left = 748, top = 124, width = 150, height = 46,

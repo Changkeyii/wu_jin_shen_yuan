@@ -19,6 +19,9 @@ local HomeView = {}
 local homeRoot_ = nil
 local homeRefs_ = {}
 
+---@class HomeStatCard : Panel
+---@field _valueLabel Label
+---@return HomeStatCard
 local function FormalStatCard(label, value, color, icon, width, height)
     local cardW = width or 600
     local cardH = height or 400
@@ -51,6 +54,7 @@ local function FormalStatCard(label, value, color, icon, width, height)
             valueLabel,
         },
     }
+    ---@cast card HomeStatCard
     card._valueLabel = valueLabel
     return card
 end
@@ -65,7 +69,7 @@ local function ShowRules(game)
             "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
             "死亡后回到本层第1场，双方满血，已获得奖励保留。",
             "离线金币、经验、碎片及最终掉落概率均为在线效率的1/5。",
-            "离线时间最多累计 12 小时；背包已满时，未结算时间会保留。",
+            "离线满15分钟可领取，最多累计 12 小时；背包已满时，未结算时间会保留。",
             "当前累计离线：" .. Kit.FormatDuration(game.pendingOfflineSeconds),
         },
         confirmText = "知道了",
@@ -179,6 +183,21 @@ end
 local function MailEntry(game)
     local summary = (game and game.mailSummary) or {}
     local unread = math.max(0, math.floor(tonumber(summary.unread) or 0))
+    homeRefs_.mailBadgeText = Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 18, C.text, {
+        width = "100%", height = 36, textAlign = "center",
+        textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
+    })
+    homeRefs_.mailBadge = UI.Panel {
+        id = "homeMailBadge",
+        -- Keep the badge in the cached tree; Update changes visibility and count.
+        position = "absolute", right = -2, top = 2, width = 36, height = 36,
+        alignItems = "center", justifyContent = "center", shape = "circle",
+        overflow = "visible", backgroundColor = C.error,
+        borderWidth = 2, borderColor = { 0, 0, 0, 120 },
+        children = { homeRefs_.mailBadgeText },
+    }
+    if unread == 0 then homeRefs_.mailBadge:Hide() end
+    homeRefs_.mailUnread = unread
     return SideEntryItem {
         id = "tutorialFeatureMail",
         icon = ASSETS.ui.mailIcon,
@@ -190,30 +209,7 @@ local function MailEntry(game)
             MailController.SetPressing(false)
             MailController.Open()
         end,
-        badge = unread > 0 and UI.Panel {
-            -- 未读红点（固定正圆，数字几何居中；超过 99 显示 99+）
-            position = "absolute",
-            right = -2,
-            top = 2,
-            width = 36,
-            height = 36,
-            alignItems = "center",
-            justifyContent = "center",
-            shape = "circle",
-            overflow = "visible",
-            backgroundColor = C.error,
-            borderWidth = 2,
-            borderColor = { 0, 0, 0, 120 },
-            children = {
-                Kit.CompactTxt(unread > 99 and "99+" or tostring(unread), 18, C.text, {
-                    width = "100%",
-                    height = 36,
-                    textAlign = "center",
-                    textStroke = { width = 1, color = "#000000" },
-                    pointerEvents = "none",
-                }),
-            },
-        } or nil,
+        badge = homeRefs_.mailBadge,
     }
 end
 
@@ -455,6 +451,12 @@ end
 
 function HomeView.Update(game)
     game = game or {}
+    local unread = math.max(0, math.floor(tonumber((game.mailSummary or {}).unread) or 0))
+    if homeRefs_.mailBadge and homeRefs_.mailUnread ~= unread then
+        homeRefs_.mailUnread = unread
+        homeRefs_.mailBadgeText:SetText(unread > 99 and "99+" or tostring(unread))
+        if unread > 0 then homeRefs_.mailBadge:Show() else homeRefs_.mailBadge:Hide() end
+    end
     local stats = game.stats or {}
     if homeRefs_.atk then homeRefs_.atk:SetText(Kit.FormatInt(stats.atkBig or stats.atk)) end
     if homeRefs_.def then homeRefs_.def:SetText(Kit.FormatInt(stats.defBig or stats.def)) end

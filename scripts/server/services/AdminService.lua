@@ -9,9 +9,13 @@ local function Result(ok, data, code, reason)
     return { ok = ok == true, data = data or {}, code = code or (ok and 0 or -1), reason = tostring(reason or "") }
 end
 
+---@param value any
+---@return integer?
 local function UserId(value)
     local number = tonumber(value)
-    if not number or number ~= math.floor(number) or number <= 0 then return nil end
+    if not number then return nil end
+    number = math.tointeger(number)
+    if not number or number <= 0 then return nil end
     return number
 end
 

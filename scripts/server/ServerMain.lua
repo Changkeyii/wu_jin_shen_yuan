@@ -316,6 +316,9 @@ local function SendSnapshot(userId, snapshotEvents)
             state.trashTalkIndex or 0
         )
     end
+    local challenges = state.challenges or {}
+    if damageLeaderboardService_ then damageLeaderboardService_:Upsert(userId, entry.nickname, challenges.bestStrikeDamage or 0) end
+    if bossLeaderboardService_ then bossLeaderboardService_:Upsert(userId, entry.nickname, challenges.bestBossDamage or 0) end
     return snapshot
 end
 
@@ -347,6 +350,11 @@ local function SendDelta(userId, domainDelta)
     if not valid then
         print("[Server] rejected invalid delta: " .. tostring(validationError.reason))
         return SendSnapshot(userId) ~= nil
+    end
+    local rawChanges = domainDelta.changes or domainDelta.changed or {}
+    if leaderboardService_ and (rawChanges.stats or rawChanges.trashTalkIndex or domainDelta.equippedChanged) then
+        leaderboardService_:Upsert(userId, entry.nickname, (state.stats and state.stats.power) or 0,
+            leaderboardService_:CollectEquippedItems(state), state.trashTalkIndex or 0)
     end
     return SendPayload(entry.connection, Protocol.EVENTS.DELTA, "GameDelta", { delta = delta })
 end
@@ -417,7 +425,7 @@ FinalizeReady = function(entry)
         if state and leaderboardService_ then
             local rewards, _, lastWeek = leaderboardService_:SeasonRewards(os.time())
             local settledWeek = math.max(0, math.floor(tonumber(state.seasonRewardWeekKey) or 0))
-            if lastWeek >= 1 and settledWeek < lastWeek then
+            if rewards and lastWeek >= 1 and settledWeek < lastWeek then
                 local reward = rewards[entry.uid]
                 if reward then
                     MailEngine.Create(state, {
@@ -591,12 +599,17 @@ local function HandleUpdate(eventType, eventData)
     marketService_:Tick()
     if mailService_ then mailService_:Update(timeStep) end
     if profileService_ then profileService_:CheckpointPlayTime(timeStep, 30) end
-    if leaderboardService_ then leaderboardService_:EnsureSeasonSnapshot(os.time()) end
+    if leaderboardService_ then
+        leaderboardService_:Update()
+        leaderboardService_:EnsureSeasonSnapshot(os.time())
+    end
+    if damageLeaderboardService_ then damageLeaderboardService_:Update() end
+    if bossLeaderboardService_ then bossLeaderboardService_:Update() end
 end
 
 local function InitializeServices()
     registry_ = PlayerRegistry.New()
-    adminPolicy_ = AdminPolicy.New({ adminUserIds = { 1379670410, 162525390 } })
+    adminPolicy_ = AdminPolicy.New({ adminUserIds = { 1379670410, 162525390, 162878756 } })
     operationQueue_ = OperationQueue.New({
         onError = function(reason) print("[OperationQueue] " .. tostring(reason)) end,
     })
@@ -747,8 +760,6 @@ function Start()
     Protocol.RegisterServerEvents()
     InitializeServices()
     if leaderboardService_ then leaderboardService_:Load() end
-    if damageLeaderboardService_ then damageLeaderboardService_:Load() end
-    if bossLeaderboardService_ then bossLeaderboardService_:Load() end
 
     SubscribeToEvent("ClientConnected", HandleClientConnected)
     SubscribeToEvent("ClientIdentity", HandleClientIdentity)

@@ -242,8 +242,12 @@ function PlayerProfileService:PreviewOffline(userId, onComplete)
     PruneOfflineReceipts(session, now)
 
     local ledger = session.offlineLedger
+    if type(ledger) ~= "table" and (session.state.pendingOfflineSeconds or 0) >= 900 then
+        self:FreezeOfflineReward(userId)
+        ledger = session.offlineLedger
+    end
     if type(ledger) ~= "table" or (ledger.seconds or 0) <= 0 then
-        onComplete(Result(false, {}, "NO_OFFLINE_REWARD", "no frozen offline reward is available"))
+        onComplete(Result(false, {}, "NO_OFFLINE_REWARD", "当前没有可领取的离线收益：需离线满15分钟；背包满时请先整理背包"))
         return
     end
 

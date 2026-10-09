@@ -5,12 +5,14 @@ local IdleRewardAccumulator = require("client.IdleRewardAccumulator")
 local RewardDialogView = require("client.RewardDialogView")
 local AudioController = require("client.AudioController")
 local BigNumber = require("shared.BigNumber")
+local LargeNumber = require("shared.LargeNumber")
 local ViewAssets = require("client.ViewAssets")
 local Kit = require("client.ViewKit")
 local ItemView = require("client.ItemView")
 local CommonPromptDialog = require("client.CommonPromptDialog")
 local RewardClaimController = require("client.RewardClaimController")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
+local UILayout = require("client.UI.UILayout")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -46,7 +48,7 @@ local function Accumulate(events)
     })
 end
 
-local function ShowLevelUpDialog(value)
+local function ShowLevelUpDialog(value, zIndex)
     value = value or {}
     local previousLevel = math.max(1, tonumber(value.previousLevel) or ((tonumber(value.level) or 1) - 1))
     local level = math.max(previousLevel + 1, tonumber(value.level) or (previousLevel + 1))
@@ -56,6 +58,7 @@ local function ShowLevelUpDialog(value)
     local expRatio = math.max(0, math.min(1, currentExp / nextExp))
     return CommonPromptDialog.Show {
         kind = "equipment",
+        zIndex = zIndex or UILayout.Z.reward,
         priority = 500,
         queueKey = "level_up:" .. tostring(previousLevel) .. ":" .. tostring(level),
         title = "等级提升",
@@ -168,17 +171,28 @@ end
 local function EventKey(value, index)
     return table.concat({
         tostring(value.kind or value.type or "event"),
-        tostring(value.runId or value.itemId or value.equipmentId or ""),
+        tostring(value.rewardId or value.runId or value.itemId or value.equipmentId or value.questId or ""),
         tostring(value.floor or ""),
         tostring(value.position or ""),
         tostring(index or ""),
     }, ":")
 end
 
+local function AddAmount(base, value)
+    if LargeNumber.IsLargeNumber(value) then value = LargeNumber.ToBigNumber(value) end
+    return BigNumber.Add(base, value)
+end
+
 local function ShowDeltaFeedback(payload)
     local events = (payload and payload.events) or {}
     local hasOfflineReward = false
     local hasActivityAbyss = false
+    local campaignClear
+    local hasAdOffer = false
+    for _, value in ipairs(events) do
+        if (value.kind or value.type) == "campaign_stage_completed" then campaignClear = value end
+        if (value.kind or value.type) == "reward_offer_pending" then hasAdOffer = true end
+    end
     for _, value in ipairs(events) do
         local kind = value.kind or value.type
         if kind == "abyss_completed" and (value.source == "activity" or value.source == "boss") then
@@ -187,14 +201,17 @@ local function ShowDeltaFeedback(payload)
         if kind == "offline_collected" then
             hasOfflineReward = true
         elseif kind == "level_up" then
-            ShowLevelUpDialog(value)
+            ShowLevelUpDialog(value, campaignClear and UILayout.Z.reward or nil)
         end
     end
-    if hasOfflineReward then return end
+    if hasOfflineReward then
+        RewardClaimController.CaptureOffline(events)
+        return
+    end
 
     local game = GameStateAdapter.GetViewState()
     local equipmentById = {}
-    local cards = {}
+    local equipmentCards = {}
     local title = "获得奖励"
     local message = "奖励已存入背包"
     local queueParts = {}
@@ -209,6 +226,8 @@ local function ShowDeltaFeedback(payload)
         queueParts[#queueParts + 1] = EventKey(value, index)
         if tracking_
             and not hasActivityAbyss
+            and not campaignClear
+            and not hasAdOffer
             and IdleRewardAccumulator.IsRewardEvent(kind)
         then
             -- 在线挂机奖励按会话累计，切页或退出挂机时统一展示。
@@ -217,45 +236,46 @@ local function ShowDeltaFeedback(payload)
             if not equipmentById[itemId] then
                 equipmentById[itemId] = true
                 local item = ItemView.GetItemById(game, value.itemId) or value
-                RewardDialogView.AddCard(
-                    cards,
-                    ItemView.ItemImage(item),
-                    value.name or item.name or "装备",
-                    nil,
-                    value.rarity or item.rarity,
-                    item
-                )
+                equipmentCards[#equipmentCards + 1] = {
+                    icon = ItemView.ItemImage(item), name = value.name or item.name or "装备",
+                    rarity = value.rarity or item.rarity, item = item,
+                }
                 hasReward = true
             end
+        elseif kind == "campaign_stage_completed" and value.firstClear and value.reward then
+            gold = AddAmount(gold, value.reward.gold or 0)
+            exp = AddAmount(exp, value.reward.exp or 0)
+            fragments = AddAmount(fragments, value.reward.fragments or 0)
+            hasReward = true
         elseif kind == "battle_reward" then
-            gold = BigNumber.Add(gold, value.gold or 0)
-            exp = BigNumber.Add(exp, value.exp or 0)
+            gold = AddAmount(gold, value.gold or 0)
+            exp = AddAmount(exp, value.exp or 0)
             title = "战斗胜利"
             message = "战斗奖励结算完成"
             hasReward = true
         elseif kind == "chest_reward" then
-            gold = BigNumber.Add(gold, value.gold or 0)
-            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            gold = AddAmount(gold, value.gold or 0)
+            fragments = AddAmount(fragments, value.fragments or 0)
             title = "宝箱奖励"
             message = "宝箱奖励已收取"
             hasReward = true
         elseif kind == "merchant_trade" then
-            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            fragments = AddAmount(fragments, value.fragments or 0)
             title = "交易奖励"
             message = "商人交易完成"
             hasReward = true
         elseif kind == "wish_pool" then
-            gold = BigNumber.Add(gold, value.gold or 0)
+            gold = AddAmount(gold, value.gold or 0)
             title = "许愿奖励"
             message = "许愿池已回应"
             hasReward = true
         elseif kind == "abyss_echo" then
-            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            fragments = AddAmount(fragments, value.fragments or 0)
             title = "深渊回响"
             message = "深渊碎片已收取"
             hasReward = true
         elseif kind == "abyss_completed" then
-            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            fragments = AddAmount(fragments, value.fragments or 0)
             abyssTickets = abyssTickets + math.max(
                 0,
                 math.floor(tonumber(value.abyssTickets) or 0)
@@ -274,7 +294,7 @@ local function ShowDeltaFeedback(payload)
                         .. tostring(value.dryStreak or 0) .. "/5"))
             hasReward = true
         elseif kind == "abyss_boss_failed" then
-            fragments = BigNumber.Add(fragments, value.fragments or 0)
+            fragments = AddAmount(fragments, value.fragments or 0)
             title = "深渊 Boss 未击杀"
             message = "时限结束，已发放少量碎片，本次伤害已计入 Boss 榜"
             hasReward = true
@@ -282,23 +302,24 @@ local function ShowDeltaFeedback(payload)
             title = "塔灵援助"
             message = "援助奖励已发放"
             if value.gold or value.fragments then
-                gold = BigNumber.Add(gold, value.gold or 0)
-                fragments = BigNumber.Add(fragments, value.fragments or 0)
+                gold = AddAmount(gold, value.gold or 0)
+                fragments = AddAmount(fragments, value.fragments or 0)
                 hasReward = true
             end
         elseif kind == "quest_claimed" then
             local reward = value.reward or {}
-            if reward.gold then gold = BigNumber.Add(gold, reward.gold) end
-            if reward.fragments then fragments = BigNumber.Add(fragments, reward.fragments) end
-            if reward.exp then exp = BigNumber.Add(exp, reward.exp) end
+            if reward.gold then gold = AddAmount(gold, reward.gold) end
+            if reward.fragments then fragments = AddAmount(fragments, reward.fragments) end
+            if reward.exp then exp = AddAmount(exp, reward.exp) end
+            abyssTickets = abyssTickets + math.max(0, tonumber(reward.abyssTickets) or 0)
             title = "任务奖励"
             message = "任务奖励已发放"
             hasReward = true
         elseif kind == "activity_signed" or kind == "activity_claimed" then
             local reward = value.reward or {}
-            if reward.gold then gold = BigNumber.Add(gold, reward.gold) end
-            if reward.fragments then fragments = BigNumber.Add(fragments, reward.fragments) end
-            if reward.exp then exp = BigNumber.Add(exp, reward.exp) end
+            if reward.gold then gold = AddAmount(gold, reward.gold) end
+            if reward.fragments then fragments = AddAmount(fragments, reward.fragments) end
+            if reward.exp then exp = AddAmount(exp, reward.exp) end
             abyssTickets = abyssTickets + math.max(
                 0,
                 math.floor(tonumber(reward.abyssTickets) or 0)
@@ -306,38 +327,34 @@ local function ShowDeltaFeedback(payload)
             title = "活动奖励"
             message = "活动奖励已发放"
             hasReward = true
-        elseif kind == "reward_ad_extra_claimed"
-            or kind == "ad_exclusive_reward_claimed"
-        then
+        elseif kind == "reward_ad_extra_claimed" then
+            -- The originating common reward dialog owns the fivefold receipt.
+        elseif kind == "ad_exclusive_reward_claimed" then
             local reward = value.reward or {}
             if reward.gold then
-                gold = BigNumber.Add(gold, reward.gold)
+                gold = AddAmount(gold, reward.gold)
             end
             if reward.fragments then
-                fragments = BigNumber.Add(
+                fragments = AddAmount(
                     fragments,
                     reward.fragments
                 )
             end
             if reward.exp then
-                exp = BigNumber.Add(exp, reward.exp)
+                exp = AddAmount(exp, reward.exp)
             end
             abyssTickets = abyssTickets + math.max(
                 0,
                 math.floor(tonumber(reward.abyssTickets) or 0)
             )
-            title = kind == "reward_ad_extra_claimed"
-                and "五倍激励奖励"
-                or "广告专属豪礼"
-            message = kind == "reward_ad_extra_claimed"
-                and "额外 4 倍资源已发放，金币/经验/碎片/深渊票达到 5 倍"
-                or "高价值激励豪礼已发放"
+            title = "广告专属豪礼"
+            message = "高价值激励豪礼已发放"
             hasReward = true
         elseif kind == "level_milestone_reward"
             or kind == "floor_milestone_reward"
         then
             local reward = value.reward or {}
-            fragments = BigNumber.Add(
+            fragments = AddAmount(
                 fragments,
                 reward.fragments or 0
             )
@@ -363,33 +380,44 @@ local function ShowDeltaFeedback(payload)
         end
     end
 
-    if not BigNumber.IsZero(gold) then
-        RewardDialogView.AddCard(cards, ASSETS.items.gold, "金币", "+" .. Kit.FormatInt(gold), "epic")
+    if not hasReward then return end
+    local function BuildCards(extra)
+        extra = extra or {}
+        local cards = {}
+        for _, equipment in ipairs(equipmentCards) do
+            RewardDialogView.AddCard(cards, equipment.icon, equipment.name, nil, equipment.rarity, equipment.item)
+        end
+        local rewards = {
+            { "gold", gold, ASSETS.items.gold, "金币", "epic" },
+            { "exp", exp, ASSETS.items.crystal, "经验", "advanced" },
+            { "fragments", fragments, ASSETS.items.crystal, "碎片", "rare" },
+            { "abyssTickets", abyssTickets, AbyssDefinitions.ICON, "深渊票", "epic" },
+        }
+        for _, entry in ipairs(rewards) do
+            local amount = AddAmount(entry[2], extra[entry[1]] or 0)
+            if not BigNumber.IsZero(amount) then
+                RewardDialogView.AddCard(cards, entry[3], entry[4], "+" .. Kit.FormatInt(amount), entry[5])
+            end
+        end
+        return cards
     end
-    if not BigNumber.IsZero(exp) then
-        RewardDialogView.AddCard(cards, ASSETS.items.crystal, "经验", "+" .. Kit.FormatInt(exp), "advanced")
-    end
-    if not BigNumber.IsZero(fragments) then
-        RewardDialogView.AddCard(cards, ASSETS.items.crystal, "碎片", "+" .. Kit.FormatInt(fragments), "rare")
-    end
-    if abyssTickets > 0 then
-        RewardDialogView.AddCard(
-            cards,
-            AbyssDefinitions.ICON,
-            "深渊票",
-            "+" .. tostring(abyssTickets),
-            "epic"
-        )
-    end
-    if not hasReward or #cards == 0 then return end
 
-    RewardDialogView.Show {
-        queueKey = "delta_reward:" .. table.concat(queueParts, "|"),
+    if campaignClear then
+        title = campaignClear.chapterCompleted and "章节通关奖励" or "关卡首通奖励"
+        message = "首通奖励已发放至当前角色"
+    end
+
+    RewardClaimController.ShowReward({
+        queueKey = campaignClear and ("campaign_reward:" .. tostring(campaignClear.stageId))
+            or ("delta_reward:" .. tostring(payload and payload.revision or "") .. ":" .. table.concat(queueParts, "|")),
+        zIndex = campaignClear and UILayout.Z.reward or nil,
+        confirmText = campaignClear and "领取并返回章节" or nil,
+        onConfirm = campaignClear and require("client.CampaignView").GetRewardReturnHandler(campaignClear.stageId) or nil,
         title = title,
         message = message,
         lines = { "奖励结算由服务器确认，物品已同步到当前角色。" },
-        cards = cards,
-    }
+        buildCards = BuildCards,
+    }, events)
 end
 
 function RewardFeedbackController.SyncSnapshot()
@@ -408,6 +436,8 @@ function RewardFeedbackController.AccumulateDelta(payload)
     if game.autoRun then StartTracking() end
     local events = (payload and payload.events) or {}
     for _, value in ipairs(events) do
+        if (value.kind or value.type) == "campaign_stage_completed"
+            or (value.kind or value.type) == "reward_offer_pending" then return end
         if (value.kind or value.type) == "abyss_completed"
             and value.source == "activity"
         then
@@ -420,6 +450,7 @@ end
 function RewardFeedbackController.PresentDelta(payload)
     ShowDeltaFeedback(payload)
     RewardClaimController.HandleDelta(payload)
+    require("client.AdGiftController").HandleDelta(payload)
 end
 
 function RewardFeedbackController.ShowIdleSummary(onConfirm)
@@ -433,16 +464,16 @@ function RewardFeedbackController.ShowIdleSummary(onConfirm)
     ResetSummary()
     local cards = {}
     if not BigNumber.IsZero(summary.gold) then
-        RewardDialogView.AddCard(cards, ASSETS.items.gold, "金币", "+" .. Kit.FormatInt(summary.gold), "epic")
+        RewardDialogView.AddDescriptor(cards, ASSETS.items.gold, "金币", "+" .. Kit.FormatInt(summary.gold), "epic")
     end
     if not BigNumber.IsZero(summary.exp) then
-        RewardDialogView.AddCard(cards, ASSETS.items.crystal, "经验", "+" .. Kit.FormatInt(summary.exp), "advanced")
+        RewardDialogView.AddDescriptor(cards, ASSETS.items.crystal, "经验", "+" .. Kit.FormatInt(summary.exp), "advanced")
     end
     if not BigNumber.IsZero(summary.fragments) then
-        RewardDialogView.AddCard(cards, ASSETS.items.crystal, "碎片", "+" .. Kit.FormatInt(summary.fragments), "rare")
+        RewardDialogView.AddDescriptor(cards, ASSETS.items.crystal, "碎片", "+" .. Kit.FormatInt(summary.fragments), "rare")
     end
     for _, value in ipairs(summary.equipmentItems) do
-        RewardDialogView.AddCard(cards, value.icon, value.name, nil, value.rarity, value.item)
+        RewardDialogView.AddDescriptor(cards, value.icon, value.name, nil, value.rarity, value.item)
     end
 
     actionPending_ = true
@@ -450,9 +481,9 @@ function RewardFeedbackController.ShowIdleSummary(onConfirm)
         priority = 450,
         queueKey = RewardDialogView.NextKey("idle_reward"),
         title = "获得挂机奖励",
-        message = "本次挂机收益已汇总",
+        message = "本次挂机收益已汇总（装备详情最多展示100件）",
         lines = {
-            "完成战斗 " .. tostring(summary.battles or 0) .. " 场"
+            "获得装备 " .. tostring(summary.equipmentCount or #summary.equipmentItems) .. " 件；完成战斗 " .. tostring(summary.battles or 0) .. " 场"
                 .. ((summary.abyssRuns or 0) > 0
                     and ("，触发免费深渊 " .. tostring(summary.abyssRuns) .. " 次")
                     or "")
@@ -484,6 +515,7 @@ end
 
 function RewardFeedbackController.Reset()
     RewardClaimController.Reset()
+    require("client.AdGiftController").Reset()
     tracking_ = false
     actionPending_ = false
     ResetSummary()

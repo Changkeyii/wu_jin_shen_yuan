@@ -1,7 +1,9 @@
 local RewardClaimDefinitions = {}
 
-RewardClaimDefinitions.VERSION = 1
-RewardClaimDefinitions.MAX_PENDING = 50
+RewardClaimDefinitions.VERSION = 2
+-- Reserve one entitlement per campaign stage without merging it with old offers.
+RewardClaimDefinitions.MAX_OTHER_PENDING = 50
+RewardClaimDefinitions.MAX_PENDING = 170 -- 120 campaign stages + the existing 50 other offers
 RewardClaimDefinitions.MAX_REWARD_AMOUNT = 1000000000000
 RewardClaimDefinitions.AD_MULTIPLIER = 5
 RewardClaimDefinitions.AD_EXTRA_MULTIPLIER = 4
@@ -11,6 +13,7 @@ RewardClaimDefinitions.SOURCES = {
     floor_milestone = true,
     abyss_settlement = true,
     task = true,
+    campaign = true,
 }
 
 RewardClaimDefinitions.LEVEL_MILESTONES = {
@@ -59,6 +62,8 @@ function RewardClaimDefinitions.NewState()
     return {
         nextId = 1,
         pending = {},
+        receipts = {},
+        gifts = require("shared.AdGiftDefinitions").Normalize(nil),
         exclusive = {
             dailyDayKey = 0,
             dailyClaimed = 0,

@@ -63,9 +63,10 @@ local function MutationResponse(result)
     }
 end
 
-local function AsyncMutation(services, operationName, mutator)
+local function AsyncMutation(services, operationName, mutator, runtimeOnly)
     return function(context, payload, done)
-        services.profileService:Apply(context.uid, operationName, function(state, now)
+        local apply = runtimeOnly and services.profileService.ApplyRuntime or services.profileService.Apply
+        apply(services.profileService, context.uid, operationName, function(state, now)
             return mutator(state, payload, now)
         end, function(result)
             if result.ok and result.data.delta then services.sendDelta(context.uid, result.data.delta) end
@@ -77,6 +78,30 @@ local function AsyncMutation(services, operationName, mutator)
 end
 
 function GameCommands.Register(router, services)
+    require("server.commands.CampaignTrialCommands").Register(router, services)
+    router:Register {
+        name = "Game.RecoverToHome", schema = EMPTY_SCHEMA, async = true,
+        rate = ServerConfig.RATES.AutoRun,
+        handler = function(context, _, done)
+            local session = services.profileService:GetSession(context.uid)
+            if not session then return false, { code = "PROFILE_NOT_LOADED", reason = "角色尚未加载" } end
+            -- Serialized alongside gameplay mutations: old trial completion cannot race recovery.
+            services.profileService:Apply(context.uid, "recover to home", function(state, now)
+                session.campaignTrial = nil
+                local working = PlayerTransition.Copy(state, now)
+                working.autoRun = false
+                working.currentMonster = nil
+                working.transitionRemaining = 0
+                return PlayerTransition.Finalize(state, working, now, "auto_run_changed", {
+                    PlayerTransition.Event("auto_run_changed", { enabled = false })
+                }, false, false)
+            end, function(result)
+                if result.ok then services.sendSnapshot(context.uid) end
+                done(result.ok, MutationResponse(result))
+            end)
+            return CommandRouter.PENDING
+        end,
+    }
     router:Register({
         name = "Game.RequestSnapshot",
         schema = EMPTY_SCHEMA,
@@ -140,7 +165,7 @@ function GameCommands.Register(router, services)
             required = { "eventId", "action" },
             allowUnknown = false,
             fields = {
-                eventId = { type = "string", maxLength = 64 },
+                eventId = SAFE_ID_SCHEMA,
                 action = { type = "string", enum = { "open", "buy", "accept", "skip" } },
             },
         },
@@ -148,7 +173,7 @@ function GameCommands.Register(router, services)
         async = true,
         handler = AsyncMutation(services, "resolve tower event", function(state, payload, now)
             return GameEngine.ResolveEvent(state, payload, now)
-        end),
+        end, true),
     })
 
     router:Register({
@@ -712,7 +737,8 @@ function GameCommands.Register(router, services)
         },
         rate = ServerConfig.RATES.Leaderboard,
         serialized = false,
-        handler = function(context, payload)
+        async = true,
+        handler = function(context, payload, done)
             payload = payload or {}
             local board = payload.board or "power"
             local service
@@ -724,15 +750,14 @@ function GameCommands.Register(router, services)
                 service = services.leaderboardService
             end
             if not service then
-                return false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" }
+                done(false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" })
+                return CommandRouter.PENDING
             end
-            local list, selfRank = service:GetTop(context.uid)
-            return {
-                list = list,
-                selfRank = selfRank,
-                total = service:Count(),
-                board = board,
-            }
+            service:GetTop(context.uid, function(result)
+                if result.ok then result.data.board = board end
+                done(result.ok, result.ok and result.data or result)
+            end)
+            return CommandRouter.PENDING
         end,
     })
 
@@ -748,27 +773,23 @@ function GameCommands.Register(router, services)
         },
         rate = ServerConfig.RATES.Leaderboard,
         serialized = false,
-        handler = function(context, payload)
+        async = true,
+        handler = function(context, payload, done)
             local service = services.leaderboardService
             if not service then
-                return false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" }
+                done(false, { code = "LEADERBOARD_UNAVAILABLE", reason = "排行榜暂不可用" })
+                return CommandRouter.PENDING
             end
             local targetUserId = tonumber(payload.userId)
             if not targetUserId then
-                return false, { code = "INVALID_USER_ID", reason = "无效玩家" }
+                done(false, { code = "INVALID_USER_ID", reason = "无效玩家" })
+                return CommandRouter.PENDING
             end
-            local detail = service:GetDetail(targetUserId)
-            if not detail then
-                return false, { code = "NOT_ON_LEADERBOARD", reason = "该玩家不在榜单" }
-            end
-            return {
-                userId = detail.userId,
-                nickname = detail.nickname,
-                power = detail.power,
-                equipment = detail.equipment,
-                trashTalkIndex = detail.trashTalkIndex or 0,
-                isSelf = context.uid == detail.userId,
-            }
+            service:GetDetail(targetUserId, function(result)
+                if result.ok then result.data.isSelf = tonumber(context.uid) == result.data.userId end
+                done(result.ok, result.ok and result.data or result)
+            end)
+            return CommandRouter.PENDING
         end,
     })
 

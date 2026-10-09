@@ -7,6 +7,10 @@ GameEventSchema.VERSION = 3
 GameEventSchema.MAX_EVENTS = 128
 
 local KNOWN = {
+    event_pending = true,
+    event_resolved = true,
+    ad_gift_available = true,
+    ad_gift_claimed = true,
     abyss_echo = true,
     abyss_started = true,
     abyss_random_spawned = true,
@@ -129,6 +133,10 @@ local KNOWN = {
 }
 
 local REQUIRED = {
+    event_pending = { "eventId", "eventType", "floor", "room", "encounterId", "expiresAt", "actions" },
+    event_resolved = { "eventId", "eventType", "action", "floor", "room" },
+    ad_gift_available = { "giftKind" },
+    ad_gift_claimed = { "giftKind", "token", "reward" },
     ad_exclusive_reward_claimed = { "giftId", "reward" },
     level_milestone_reward = { "level", "reward" },
     floor_milestone_reward = { "floor", "reward" },
@@ -214,6 +222,18 @@ local REQUIRED_MAGNITUDES = {
 }
 
 local FIELD_RULES = {
+    event_pending = {
+        eventId = { kind = "string", minLength = 1, maxLength = 96 },
+        eventType = { kind = "enum", values = { chest = true, merchant = true, randomEvent = true } },
+        expiresAt = { kind = "integer", minimum = 0 },
+        actions = { kind = "array", minLength = 1, maxLength = 4,
+            items = { kind = "enum", values = { open = true, buy = true, accept = true, skip = true } } },
+    },
+    event_resolved = {
+        eventId = { kind = "string", minLength = 1, maxLength = 96 },
+        eventType = { kind = "enum", values = { chest = true, merchant = true, randomEvent = true } },
+        action = { kind = "enum", values = { open = true, buy = true, accept = true, skip = true } },
+    },
     ad_exclusive_reward_claimed = {
         giftId = { kind = "enum", values = {
             daily = true,
@@ -232,7 +252,7 @@ local FIELD_RULES = {
         rewardId = { kind = "string", minLength = 1, maxLength = 96 },
         source = { kind = "enum", values = {
             signin = true, level_milestone = true, floor_milestone = true,
-            abyss_settlement = true, task = true,
+            abyss_settlement = true, task = true, campaign = true,
         } },
         multiplier = { kind = "integer", minimum = 5, maximum = 5 },
         reward = { kind = "object" },
@@ -241,7 +261,7 @@ local FIELD_RULES = {
         rewardId = { kind = "string", minLength = 1, maxLength = 96 },
         source = { kind = "enum", values = {
             signin = true, level_milestone = true, floor_milestone = true,
-            abyss_settlement = true, task = true,
+            abyss_settlement = true, task = true, campaign = true,
         } },
         baseReward = { kind = "object" },
         extraReward = { kind = "object" },

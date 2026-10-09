@@ -539,6 +539,7 @@ function EquipmentEngine.Decompose(inputState, maximumRank, now, candidateIds)
     local kept = {}
     local removed = 0
     local fragments = 0
+    local adBaseFragments = 0
     local gold = LargeNumber.Zero()
     for _, item in ipairs(working.inventory) do
         local rarity = Catalog.RARITIES[item.rarity]
@@ -547,6 +548,7 @@ function EquipmentEngine.Decompose(inputState, maximumRank, now, candidateIds)
             and not equipped[item.id] and not item.locked and not item.aidLocked then
             removed = removed + 1
             local refund = Catalog.GetDecomposeRefund(item, working.vipLevel)
+            adBaseFragments = adBaseFragments + Catalog.GetEquipmentBaseRecoveryValue(item).fragments
             fragments = fragments + refund.fragments
             gold = LargeNumber.Add(gold, refund.gold)
             PlayerTransition.AddCurrency(working, "gold", refund.gold)
@@ -569,6 +571,7 @@ function EquipmentEngine.Decompose(inputState, maximumRank, now, candidateIds)
     if recovered > 0 then events[#events + 1] = PlayerTransition.Event("temporary_loot_recovered", { count = recovered }) end
     -- 新手剧情：分解完成
     TutorialEngine.OnDecompose(working, events, now)
+    require("server.domain.AdGiftEngine").OnDecompose(working, adBaseFragments, events)
     return PlayerTransition.Finalize(inputState, working, now, "equipment_decomposed", events, true, false)
 end
 
@@ -786,7 +789,18 @@ function EquipmentEngine.UndoEquip(inputState, now)
     }, false, true)
 end
 
-local function StrengthenCost(item, enhance)
+local function StrengthenCost(state, item, enhance)
+    -- 教学护具仅返还 5 碎片，普通首次强化需要 8；教学武器的 +0 -> +1 由塔灵承担。
+    -- 预览与执行共用规则，兼容已停在 step 4 的存档；成功后步骤原子推进，不可重复领取。
+    if TutorialEngine.CurrentStep(state) == 4
+        and item.source == "tutorial_drop"
+        and item.slot == "weapon"
+        and item.rarity == "common"
+        and item.level == 1
+        and enhance == 0
+    then
+        return { gold = LargeNumber.Zero(), fragments = 0, tutorialFree = true }
+    end
     return Catalog.GetStrengthenCost(item, enhance)
 end
 
@@ -799,8 +813,9 @@ function EquipmentEngine.GetStrengthenPreview(inputState, slotId)
     if not item then
         return PlayerTransition.Failure(inputState, os.time(), "ITEM_NOT_FOUND", "slot has no equipped item")
     end
-    local limit = math.max(1, math.floor(working.maxFloor / 10) + 1)
-    local cost = StrengthenCost(item, item.enhance)
+    -- 强化与楼层解耦；与属性计算、存档归一化共用同一个硬上限。
+    local limit = Catalog.MAX_ENHANCE
+    local cost = StrengthenCost(working, item, item.enhance)
     local atMax = item.enhance >= limit
     local goldEnough = PlayerTransition.HasCurrency(working, "gold", cost.gold)
     local fragmentsEnough = PlayerTransition.HasCurrency(working, "fragments", cost.fragments)
@@ -822,6 +837,7 @@ function EquipmentEngine.GetStrengthenPreview(inputState, slotId)
             atMax = atMax,
             goldEnough = goldEnough,
             fragmentsEnough = fragmentsEnough,
+            tutorialFree = cost.tutorialFree == true,
         },
     }
 end
@@ -835,11 +851,11 @@ function EquipmentEngine.Strengthen(inputState, slotId, now)
     if not item then
         return PlayerTransition.Failure(inputState, now, "ITEM_NOT_FOUND", "slot has no equipped item")
     end
-    local limit = math.max(1, math.floor(working.maxFloor / 10) + 1)
+    local limit = Catalog.MAX_ENHANCE
     if item.enhance >= limit then
         return PlayerTransition.Failure(inputState, now, "ENHANCE_LIMIT", "equipment reached the current strengthen limit")
     end
-    local cost = StrengthenCost(item, item.enhance)
+    local cost = StrengthenCost(working, item, item.enhance)
     local goldCost = cost.gold
     local fragmentCost = cost.fragments
     if not PlayerTransition.HasCurrency(working, "gold", goldCost) or not PlayerTransition.HasCurrency(working, "fragments", fragmentCost) then

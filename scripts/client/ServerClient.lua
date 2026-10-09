@@ -494,6 +494,15 @@ function ServerClient.Stop()
     started_ = false
 end
 
+function ServerClient.ClearPresentationRequests()
+    pending_ = {}
+    listeners_ = {}
+end
+function ServerClient.RetryConnection()
+    local connection = network:GetServerConnection()
+    if connection then return BeginSync(connection) end
+    return false
+end
 function ServerClient.IsReady()
     return ready_ and connection_ ~= nil
 end
@@ -743,6 +752,23 @@ function ServerClient.ClaimRewardAdExtra(rewardId, callback)
         { rewardId = rewardId },
         callback
     )
+end
+function ServerClient.ClaimRewardAdExtras(rewardIds, callback)
+    return ServerClient.Send("Reward.ClaimAdExtras", { rewardIds = rewardIds }, callback)
+end
+function ServerClient.CampaignTrial(stageId, action, trialId, page, callback)
+    return ServerClient.Send("Game.CampaignTrial", {
+        stageId = stageId, action = action, trialId = trialId, page = page,
+    }, callback)
+end
+function ServerClient.ListAdGifts(callback)
+    return ServerClient.Send("Reward.ListGifts", {}, callback)
+end
+function ServerClient.PrepareAdGift(kind, callback)
+    return ServerClient.Send("Reward.PrepareGift", { giftKind = kind }, callback)
+end
+function ServerClient.ClaimAdGift(token, callback)
+    return ServerClient.Send("Reward.ClaimGift", { token = token }, callback)
 end
 function ServerClient.ClaimExclusiveAdGift(giftId, callback)
     return ServerClient.Send(

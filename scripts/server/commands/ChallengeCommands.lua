@@ -68,7 +68,7 @@ function ChallengeCommands.Register(router, services)
     router:Register({
         name = "Activity.StrikeAbyssBoss",
         schema = EMPTY_SCHEMA,
-        rate = { refillRate = 8, burst = 12 },
+        rate = { refillRate = 80, burst = 120 },
         handler = AsyncMutation(services, "strike abyss boss", function(state, payload, now)
             return ChallengeEngine.StrikeBoss(state, now)
         end, function(userId, result)

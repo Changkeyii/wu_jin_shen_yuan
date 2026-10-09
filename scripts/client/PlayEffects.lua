@@ -1,3 +1,6 @@
+local ChangedOnly = require("client.UI.ChangedOnly")
+-- Each scene owns its widgets and animation state; tower and trials share this implementation.
+local function New()
 local PlayEffects = {}
 local BigNumber = require("shared.BigNumber")
 
@@ -166,7 +169,9 @@ function PlayEffects.TriggerPickup(options)
     options.image = options.image or Assets().items.crystal
     options.text = options.text or "获得道具"
     options.rarity = options.rarity or "common"
-    if pickup_ then pickupQueue_[#pickupQueue_ + 1] = options else StartPickup(options) end
+    if pickup_ then
+        if #pickupQueue_ < 32 then pickupQueue_[#pickupQueue_ + 1] = options end
+    else StartPickup(options) end
 end
 
 function PlayEffects.SettleLoot(sourceId, outcome)
@@ -252,11 +257,11 @@ function PlayEffects.Update(dt, frame)
                 if context_.playFeedback then context_.playFeedback("lootDrop") end
             end
             if burst.age < 0 then
-                node:SetStyle({ visible = false })
+                ChangedOnly.Style(node, { visible = false })
             elseif burst.age < 0.38 then
                 local t = Clamp(burst.age / 0.38, 0, 1)
                 local ease = 1 - (1 - t) * (1 - t)
-                node:SetStyle({
+                ChangedOnly.Style(node, {
                     visible = true,
                     left = burst.startX + (burst.scatterX - burst.startX) * ease,
                     top = burst.startY + (burst.scatterY - burst.startY) * ease - math.sin(t * math.pi) * 72,
@@ -264,7 +269,7 @@ function PlayEffects.Update(dt, frame)
                 })
             elseif burst.age < 1.18 then
                 local hover = math.sin((burst.age - 0.38) * 10 + index) * 4
-                node:SetStyle({
+                ChangedOnly.Style(node, {
                     visible = true, left = burst.scatterX, top = burst.scatterY + hover,
                     opacity = 1, scale = 1.05 + math.sin(burst.age * 8 + index) * 0.05,
                     backgroundImage = assets.items.gold,
@@ -275,7 +280,7 @@ function PlayEffects.Update(dt, frame)
                 local ease = t * t
                 local targetX = frame.playerScreenX + frame.playerSize * 0.45
                 local targetY = frame.roadY - frame.playerSize * 0.50
-                node:SetStyle({
+                ChangedOnly.Style(node, {
                     visible = t < 1,
                     left = burst.scatterX + (targetX - burst.scatterX) * ease,
                     top = burst.scatterY + (targetY - burst.scatterY) * ease - math.sin(t * math.pi) * 54,
@@ -283,11 +288,11 @@ function PlayEffects.Update(dt, frame)
                     backgroundImage = assets.items.gold,
                 })
             else
-                node:SetStyle({ visible = false })
+                ChangedOnly.Style(node, { visible = false })
                 currencyBursts_[index] = nil
             end
         else
-            node:SetStyle({ visible = false })
+            ChangedOnly.Style(node, { visible = false })
         end
     end
 
@@ -310,7 +315,7 @@ function PlayEffects.Update(dt, frame)
         local endY = temporary and (metrics.height - 56) or (metrics.height - 50)
         if pickup_.age <= hoverEnd then
             local hover = math.sin(pickup_.age * 15) * 5
-            refs_.pickup:SetStyle({
+            ChangedOnly.Style(refs_.pickup, {
                 visible = true, left = pickup_.startX, top = pickup_.startY + hover,
                 width = lootSize, height = lootSize, backgroundImage = pickup_.image,
                 opacity = 1, scale = 1.04 + math.sin(pickup_.age * 10) * profile.pulse,
@@ -319,7 +324,7 @@ function PlayEffects.Update(dt, frame)
                 or Clamp(1 - (pickup_.age - beamEnd) / (hoverEnd - beamEnd), 0, 1)
             local beamLeft = pickup_.startX + lootSize * 0.5 - profile.width * 0.5
             local glowSize = lootSize + profile.glow * 2
-            refs_.lootBeam:SetStyle({
+            ChangedOnly.Style(refs_.lootBeam, {
                 visible = opacity > 0, left = beamLeft,
                 top = pickup_.startY + lootSize - profile.height,
                 width = profile.width, height = profile.height, opacity = opacity,
@@ -332,28 +337,28 @@ function PlayEffects.Update(dt, frame)
                     to = {beamColor[1], beamColor[2], beamColor[3], 0},
                 },
             })
-            refs_.lootGlow:SetStyle({
+            ChangedOnly.Style(refs_.lootGlow, {
                 visible = opacity > 0, left = pickup_.startX - profile.glow,
                 top = pickup_.startY - profile.glow + hover, width = glowSize, height = glowSize,
                 borderRadius = glowSize * 0.5, opacity = opacity * 0.82,
                 backgroundColor = {beamColor[1], beamColor[2], beamColor[3], 62},
                 boxShadow = { { x = 0, y = 0, blur = profile.glow, color = {beamColor[1], beamColor[2], beamColor[3], 135} } },
             })
-            refs_.pickupSpark:SetStyle({visible = false})
+            ChangedOnly.Style(refs_.pickupSpark, {visible = false})
         else
             local t = Clamp((pickup_.age - hoverEnd) / math.max(0.01, pickup_.duration - hoverEnd), 0, 1)
             local ease = 1 - (1 - t) * (1 - t)
             local x = pickup_.startX + (endX - pickup_.startX) * ease
             local y = pickup_.startY + (endY - pickup_.startY) * ease - math.sin(t * math.pi) * 76
             local size = lootSize * (1.0 - 0.62 * ease)
-            refs_.lootBeam:SetStyle({visible = false})
-            refs_.lootGlow:SetStyle({visible = false})
-            refs_.pickup:SetStyle({
+            ChangedOnly.Style(refs_.lootBeam, {visible = false})
+            ChangedOnly.Style(refs_.lootGlow, {visible = false})
+            ChangedOnly.Style(refs_.pickup, {
                 visible = t < 1, left = x, top = y, width = size, height = size,
                 backgroundImage = pickup_.image, opacity = 1.0 - t * 0.12,
                 scale = 1.0 + math.sin(t * math.pi) * 0.22,
             })
-            refs_.pickupSpark:SetStyle({
+            ChangedOnly.Style(refs_.pickupSpark, {
                 visible = t > 0.72 and t < 1 and endY < metrics.height,
                 left = endX - 10, top = endY - 10,
                 opacity = (1 - t) * 2.0, scale = 0.7 + t * 0.8,
@@ -364,10 +369,10 @@ function PlayEffects.Update(dt, frame)
             end
         end
     else
-        refs_.lootBeam:SetStyle({visible = false})
-        refs_.lootGlow:SetStyle({visible = false})
-        refs_.pickup:SetStyle({visible = false})
-        refs_.pickupSpark:SetStyle({visible = false})
+        ChangedOnly.Style(refs_.lootBeam, {visible = false})
+        ChangedOnly.Style(refs_.lootGlow, {visible = false})
+        ChangedOnly.Style(refs_.pickup, {visible = false})
+        ChangedOnly.Style(refs_.pickupSpark, {visible = false})
     end
 
     for index = #enemyBursts_, 1, -1 do
@@ -379,15 +384,15 @@ function PlayEffects.Update(dt, frame)
         local burst = enemyBursts_[index]
         if burst and burst.age >= 0 then
             local age = burst.age
-            label:SetText(burst.text)
-            label:SetStyle({
+            ChangedOnly.Text(label, burst.text)
+            ChangedOnly.Style(label, {
                 visible = age < 0.95,
                 left = burst.baseX + math.sin(age * 22.0 + (burst.variant or 1)) * 7,
                 top = burst.baseY - age * (78 + (burst.variant or 1) * 4),
                 fontColor = {255, 83, 93, math.floor(255 * math.max(0, 1 - age / 0.95))},
                 scale = 1.0 + math.max(0, 1 - age * 4.0) * 0.42,
             })
-        else label:SetStyle({visible = false}) end
+        else ChangedOnly.Style(label, {visible = false}) end
     end
 
     for index = #playerBursts_, 1, -1 do
@@ -400,8 +405,8 @@ function PlayEffects.Update(dt, frame)
         if burst then
             local age = burst.age
             local color = burst.color or Colors().hp
-            label:SetText(burst.text)
-            label:SetStyle({
+            ChangedOnly.Text(label, burst.text)
+            ChangedOnly.Style(label, {
                 visible = age < 1.15,
                 left = metrics.playerAnchorX - 180 + (burst.lane or 0) * 8,
                 top = frame.platformPlayerY - 42 - age * 82 - (burst.lane or 0) * 13,
@@ -409,19 +414,19 @@ function PlayEffects.Update(dt, frame)
                 scale = burst.source == "revive" and (1.18 + math.sin(age * 9) * 0.08)
                     or (1.0 + math.max(0, 1 - age * 5) * 0.25),
             })
-        else label:SetStyle({visible = false}) end
+        else ChangedOnly.Style(label, {visible = false}) end
     end
 
     if floating_ then
         floating_.age = floating_.age + dt
-        refs_.floatLabel:SetText(floating_.text)
-        refs_.floatLabel:SetStyle({
+        ChangedOnly.Text(refs_.floatLabel, floating_.text)
+        ChangedOnly.Style(refs_.floatLabel, {
             visible = floating_.age < 1.0, left = floating_.baseX,
             top = floating_.baseY - floating_.age * 70,
             fontColor = {255, 217, 61, math.floor(255 * math.max(0, 1 - floating_.age))},
         })
         if floating_.age >= 1.0 then floating_ = nil end
-    else refs_.floatLabel:SetStyle({visible = false}) end
+    else ChangedOnly.Style(refs_.floatLabel, {visible = false}) end
 end
 
 function PlayEffects.ResetCombatFeedback()
@@ -444,3 +449,8 @@ function PlayEffects.Reset()
 end
 
 return PlayEffects
+end
+
+local default = New()
+default.New = New
+return default

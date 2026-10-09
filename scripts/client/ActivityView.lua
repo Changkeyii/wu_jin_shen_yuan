@@ -72,7 +72,7 @@ local strikeAdRequestPending_ = false
 local strikeAdSequence_ = 0
 local strikeAdElapsed_ = 0
 local strikeAdFinish_ = nil
-local STRIKE_AD_WATCHDOG_SECONDS = 45
+local STRIKE_AD_WATCHDOG_SECONDS = require("client.RewardVideo").WATCHDOG_SECONDS
 
 -- ===== 页签状态 =====
 -- tab 固定顺序：新手签到 → 轮回签到 → 每日补给 → 热门活动（许愿池/深渊远征/PVP）
@@ -366,7 +366,7 @@ local function StrikeCard(item)
             Toast("广告正在播放，请勿重复点击", "info")
             return
         end
-        local sdk = _G["sdk"]
+        local sdk = _G["sdk"] --[[@as { ShowRewardVideoAd: fun(self: any, callback: function): boolean }?]]
         if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
             Toast("广告暂不可用，请稍后重试", "warning")
             return
@@ -408,7 +408,7 @@ local function StrikeCard(item)
         end
 
         strikeAdFinish_ = Finish
-        local accepted = sdk:ShowRewardVideoAd(function(result)
+        local accepted = require("client.RewardVideo").Play(function(result)
             callbackFired = true
             Finish(result)
         end)
@@ -831,6 +831,28 @@ end
 
 local function HotActivityCards()
     local cards = {}
+    cards[#cards + 1] = HotActivityCard {
+        title = "许愿补给",
+        desc = "4次广告依次领取1、2、3、4张许愿券",
+        status = "每日共10张 · 北京时间零点刷新",
+        opened = true, icon = ASSETS.ui.wishTicket,
+        onClick = function() require("client.AdGiftController").Show("wishSupply") end,
+    }
+    cards[#cards + 1] = HotActivityCard {
+        title = "幸运礼包",
+        desc = "首次通关每10层解锁一次，旧层不重复",
+        status = "每次广告2张许愿券 · 机会可累计",
+        opened = true, icon = ASSETS.ui.wishTicket,
+        onClick = function() require("client.AdGiftController").Show("lucky") end,
+    }
+    cards[#cards + 1] = HotActivityCard {
+        title = "塔灵礼包",
+        desc = "查看全部礼包与剩余领取次数",
+        status = "六种原有补给及许愿券礼包",
+        opened = true,
+        icon = ASSETS.items.crystal,
+        onClick = function() require("client.AdGiftController").Open() end,
+    }
     -- 许愿池：已开放，跳转许愿池页
     cards[#cards + 1] = HotActivityCard {
         title = "许愿池",

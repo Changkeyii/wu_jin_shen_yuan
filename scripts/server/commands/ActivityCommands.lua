@@ -100,7 +100,7 @@ function ActivityCommands.Register(router, services)
     router:Register({
         name = "Activity.Strike",
         schema = ACTIVITY_PAYLOAD_SCHEMA,
-        rate = { refillRate = 8, burst = 12 },
+        rate = { refillRate = 80, burst = 120 },
         handler = AsyncMutation(services, "activity strike", function(state, payload, now)
             return ActivityEngine.Strike(state, payload.activityId, now)
         end, AfterStrikeSettled),

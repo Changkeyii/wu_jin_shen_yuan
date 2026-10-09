@@ -55,6 +55,8 @@ function PlayerTransition.ShallowClone(state, now)
     clone.equipped = state.equipped
     clone.overflowLoot = state.overflowLoot
     clone.quests = state.quests
+    -- 战斗结算会更新广告礼包/助力；必须隔离旧状态，才能生成正确 delta 和失败回滚。
+    clone.rewardClaims = TableUtils.DeepCopy(state.rewardClaims)
     return clone
 end
 

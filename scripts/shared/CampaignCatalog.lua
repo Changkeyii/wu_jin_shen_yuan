@@ -27,12 +27,15 @@ local function storyStage(chapter, stage, title, lines, options)
         chapter = chapter,
         stage = stage,
         title = title,
-        kind = options.kind or "story",
+        kind = options.kind == "boss" and "boss" or "battle",
         recommendedLevel = options.recommendedLevel or math.max(1, chapter * 2),
         exp = options.exp or (stage == "a" and 75 or (stage == "b" and 180 or 240)),
         gold = options.gold or (stage == "a" and 1200 or (stage == "b" and 2600 or 4200)),
         fragments = options.fragments or (stage == "a" and 4 or (stage == "b" and 8 or 14)),
-        enemy = options.enemy,
+        enemy = options.enemy or {
+            name = title .. "·残响",
+            hp = 40 + chapter * 25, atk = 3 + chapter * 2, def = math.floor(chapter / 2),
+        },
         video = options.video,
         illustration = options.illustration,
         dialogue = options.dialogue,
@@ -189,6 +192,8 @@ chapters[40].stages[3].dialogue = {
     { speaker = "你", text = "我知道。这一次，换我来签。" },
     { speaker = "弥娅", text = "无论你选哪条路，尘乡的灯都会记得你。" },
 }
+
+require("shared.CampaignNarrative").Apply(chapters)
 
 function CampaignCatalog.GetChapter(chapter)
     return chapters[math.max(1, math.min(CampaignCatalog.MAX_CHAPTER, math.floor(tonumber(chapter) or 1)))]
