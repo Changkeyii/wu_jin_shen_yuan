@@ -31,6 +31,8 @@ storyGateEvent = function(gate)
 end
 
 maybeQueueStoryGate = function(state, chapter, phase, context, events)
+    -- Chapter narrative lives in the stage selector; tower automation never waits for it.
+    if phase ~= "prologue" then return false end
     chapter = math.max(1, TableUtils.ToInteger(chapter, 1))
     local marker = string.format("story:%d:%s", chapter, phase)
     state.ruleAcknowledgements = state.ruleAcknowledgements or {}

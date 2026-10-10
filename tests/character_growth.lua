@@ -124,15 +124,15 @@ end
 value = state(99)
 local gained = Progression.AddExperience(value, Progression.NextExp(99) + 2000000, now)
 assert(gained == 1 and value.level == 100 and value.exp == 0 and value.nextExp == 0)
-assert(value.growth.masteryFragments == 2)
+assert(value.growth.masteryFragments == Progression.MASTERY_DAILY_FRAGMENTS)
 for _ = 1, 3 do Progression.AddExperience(value, 1000000000, now) end
-assert(value.level == 100 and value.growth.masteryFragments == 100)
+assert(value.level == 100 and value.growth.masteryFragments == Progression.MASTERY_DAILY_FRAGMENTS)
 local persisted = Schema.ToPersistedState(value)
 local restored = Normalizer.Normalize(persisted, now)
-assert(restored.growth.masteryFragments == 100)
+assert(restored.growth.masteryFragments == Progression.MASTERY_DAILY_FRAGMENTS)
 local cloned = Transition.ShallowClone(restored, now + 86400)
-Progression.AddExperience(cloned, 1000000, now + 86400)
-assert(restored.growth.masteryFragments == 100 and cloned.growth.masteryFragments == 1)
+Progression.AddExperience(cloned, Progression.MASTERY_EXP_PER_FRAGMENT, now + 86400)
+assert(restored.growth.masteryFragments == Progression.MASTERY_DAILY_FRAGMENTS and cloned.growth.masteryFragments == 1)
 valid(cloned)
 
 -- Migration archives historical level/core and retains equipment stats/investments and jar stock.

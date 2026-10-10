@@ -837,7 +837,7 @@ function EquipmentEngine.GetStrengthenPreview(inputState, slotId)
             itemId = item.id,
             itemName = item.name,
             currentEnhance = item.enhance,
-            nextEnhance = math.min(limit, item.enhance + 1),
+            nextEnhance = math.max(item.enhance, math.min(limit, item.enhance + 1)),
             enhanceLimit = limit,
             gold = cost.gold,
             goldOwned = LargeNumber.Normalize(working.gold),
@@ -908,6 +908,8 @@ local function StarMaterials(state, item)
     for index, candidate in ipairs(state.inventory or {}) do
         if candidate.id ~= item.id
             and candidate.equipmentId == item.equipmentId
+            and candidate.level == item.level
+            and candidate.legacyLevel == item.legacyLevel
             and (candidate.star or 0) == (item.star or 0)
             and RarityCatalog.NormalizeId(candidate.rarity) == RarityCatalog.NormalizeId(item.rarity)
             and not candidate.locked

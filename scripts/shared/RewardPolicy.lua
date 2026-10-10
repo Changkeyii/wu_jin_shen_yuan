@@ -2,9 +2,10 @@ local BigNumber = require("shared.BigNumber")
 local RarityCatalog = require("shared.RarityCatalog")
 local TowerRules = require("shared.TowerRules")
 
+local Balance = require("shared.GameBalance")
 local RewardPolicy = {}
 
-RewardPolicy.VERSION = 3
+RewardPolicy.VERSION = 4
 RewardPolicy.ONLINE_RATE = 1.0
 RewardPolicy.OFFLINE_RATE = 0.20
 RewardPolicy.WEAK_SLOT_BIAS = 0.65
@@ -39,7 +40,7 @@ RewardPolicy.SLOT_WEIGHTS = {
     earring = 765,
 }
 
-RewardPolicy.STAR_MULTIPLIERS = { 1.00, 1.03, 1.07, 1.12, 1.18, 1.25 }
+RewardPolicy.STAR_MULTIPLIERS = { 1.00, 1.08, 1.17, 1.27, 1.38, 1.50 }
 
 RewardPolicy.DROP_CHANCES = {
     normal = 0.12,
@@ -259,7 +260,8 @@ end
 
 function RewardPolicy.EnhanceMultiplier(level)
     level = math.max(0, tonumber(level) or 0)
-    return 1 + 0.35 * (1 - math.exp(-level / 20))
+    return math.max(1 + 0.025 * math.min(Balance.ENHANCE_LIMIT, level),
+        1 + 0.35 * (1 - math.exp(-level / 20)))
 end
 
 function RewardPolicy.StarMultiplier(star)
@@ -281,7 +283,7 @@ function RewardPolicy.ItemBudgetWithMultiplier(slot, itemLevel, rarity, rollMult
         * clamp(rollMultiplier, 0.95, 1.05)
         * RewardPolicy.EnhanceMultiplier(enhance)
         * RewardPolicy.StarMultiplier(star)
-    return BigNumber.MultiplyScalar(TowerRules.Growth(itemLevel), scalar)
+    return BigNumber.MultiplyScalar(Balance.EquipmentGrowth(itemLevel), scalar)
 end
 
 function RewardPolicy.ItemBudget(slot, itemLevel, rarity, roll, enhance, star)

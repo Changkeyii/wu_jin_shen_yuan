@@ -1,4 +1,5 @@
 local Progression = require("shared.GameProgression")
+local Balance = require("shared.GameBalance")
 local Catalog = require("server.domain.Catalog")
 local StateNormalizer = require("server.domain.StateNormalizer")
 local TableUtils = require("server.domain.TableUtils")
@@ -66,9 +67,9 @@ local function settleMonsterVictory(state, monster, rng, now, events, context)
         TutorialEngine.OnKill(state, events, now, rng)
     end
     local rate = rewardScale(context)
-    local exp = math.floor((state.floor * 5 + 10) * (isBoss and 10 or (isElite and 2.3 or 1)) * rate)
+    local exp = 0 -- Tower XP accrues from authoritative training time, independent of kill speed.
     local gold = LargeNumber.MultiplyScalar(
-        Catalog.GetBattleGold(state.floor, encounterKind),
+        Catalog.GetBattleGold(math.min(state.floor, Balance.RewardLevel(state)), encounterKind),
         rate
     )
     if not LargeNumber.IsZero(gold) then
@@ -400,6 +401,15 @@ local function playerDeath(state, monster, events, context)
 
     local offline = context and context.offline == true
     if not offline then require("server.domain.AdGiftEngine").OnLoss(state, monster, events) end
+    if state.level < Progression.MAX_LEVEL and floor > 1 and state.floorDefeats >= 2 then
+        state.floor, state.position, state.floorDefeats = floor - 1, 0, 0
+        state.aidPending, state.pauseReason = false, nil
+        state.transitionRemaining = 1.2
+        events[#events + 1] = PlayerTransition.Event("floor_reset", {
+            floor = state.floor, fromFloor = floor, room = 1, rewardsRetained = true, trainingRetreat = true,
+        })
+        return
+    end
     local granted = hasAidForFloor(state, floor)
     if not offline and RewardPolicy.ShouldGrantAid(state.floorDefeats, granted) then
         state.aidPending = true
@@ -690,7 +700,7 @@ end
 GameEngine.EnterEncounter = AdventureEngine.EnterEncounter
 GameEngine.ResolveEvent = AdventureEngine.ResolveEvent
 
-function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
+function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep, trainingSeconds)
     timeStep = tonumber(timeStep) or 0
     if timeStep <= 0 then
         return PlayerTransition.NoCommit(inputState, now, "combat_tick_ignored")
@@ -708,6 +718,14 @@ function GameEngine.AdvanceCombatTick(inputState, rng, now, timeStep)
         timeStep,
         { offline = false }
     )
+    if working.autoRun and not working.pendingStoryGate and not working.pendingEvent then
+        local xp = Progression.TrainingExp(working, trainingSeconds or timeStep, false)
+        if xp > 0 then
+            -- Level milestones grant tickets; keep the previous snapshot isolated for rollback/delta.
+            working.abyss = TableUtils.DeepCopy(working.abyss)
+            RewardEngine.AddExp(working, xp, events)
+        end
+    end
     return PlayerTransition.Finalize(inputState, working, now, kind, events, inventoryChanged, false, true)
 end
 

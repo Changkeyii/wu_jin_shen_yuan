@@ -26,7 +26,12 @@ local UILayout = require("client.UI.UILayout")
 local ChangedOnly = require("client.UI.ChangedOnly")
 local LoadingController = require("client.LoadingController")
 
+local DungeonCatalog = require("shared.DungeonCatalog")
 local ActivityView = {}
+---@type table?
+local dungeonView_ = nil
+local selectedDungeonTiers_ = {}
+local selectedAbyssSet_ = "nightmare"
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -338,57 +343,41 @@ end
 
 -- ===== 每日补充玩法卡片（UI.Card + 木桩素材） =====
 local function StrikeCard(item)
+    local tiers = item.dungeons or {}
+    local tierIndex = selectedDungeonTiers_[item.id] or 1
+    local selectedStage = tiers[tierIndex]
     local remaining = item.remaining or 0
     local adCan = item.adCan == true
     local stumpImage = StumpImage(item.rewardKind)
 
     local tierBadges = {}
-    for _, tier in ipairs(item.tiers or {}) do
-        tierBadges[#tierBadges + 1] = UI.Card {
-            width = 250, flexShrink = 0, padding = 12, gap = 4,
-            backgroundColor = SURFACE_DARK,
+    for index, stage in ipairs(tiers) do
+        local available = (GameStateAdapter.GetViewState().level or 1) >= stage.minLevel
+        local active = index == tierIndex
+        local reward = ActivityDefinitions.RewardPreview(stage.reward, stage.recommendedLevel)
+        tierBadges[#tierBadges + 1] = UI.Panel {
+            width = 270, flexShrink = 0, padding = 14, gap = 6, clickable = available,
+            backgroundImage = ASSETS.ui.panelCompact, backgroundFit = "sliced", backgroundSlice = { 12, 12, 12, 12 },
+            borderColor = active and C.gold or C.border, borderWidth = active and 3 or 1,
+            opacity = available and 1 or 0.5,
+            onClick = function() selectedDungeonTiers_[item.id] = index; ActivityController.Refresh() end,
             children = {
-                Kit.CompactTxt(tier.minDamage > 0 and ("伤害 ≥ " .. tostring(tier.minDamage)) or "参与即有奖", 15, C.focus, { width = "100%", height = 24, textAlign = "left", textStroke = { width = 1, color = "#000000" } }),
-                Kit.CompactTxt(RewardText(tier.reward), 13, C.textSecondary, { width = "100%", height = 36, textAlign = "left", maxLines = 2 }),
+                Kit.CompactTxt(DungeonCatalog.DIFFICULTIES[index] .. " · Lv." .. tostring(stage.recommendedLevel), 19, active and C.gold or C.text, { height = 30 }),
+                Kit.MultiTxt(RewardText(reward), 17, C.textSecondary, { width = "100%", minHeight = 44 }),
             },
         }
     end
 
     local function StartStrikeAction()
-        PrepareScene(function()
-            local generation = sceneGeneration_
-            ActivityController.BeginStrike(item.id, function(response)
-                if generation ~= sceneGeneration_ then return end
-                if response and response.ok then
-                    sceneGeneration_ = sceneGeneration_ + 1
-                    sceneMode_ = "strike"
-                    bossActive_ = false
-                    strikeId_ = item.id
-                    ---@type table?
-                    local live
-                    for _, candidate in ipairs(CurrentView().strike or {}) do
-                        if candidate.id == item.id then live = candidate; break end
-                    end
-                    strikeEndsAt_ = ((live and live.sessionStartedAt) or ServerClock.Now()) + (item.duration or 15)
-                    strikeRemaining_ = math.max(0, strikeEndsAt_ - ServerClock.Now())
-                    finishingScene_, finishRequestPending_, attackRequestPending_ = false, false, false
-                    finishRetryTimer_ = 0
-                    strikeTimer_ = 0
-                    strikeAttackTime_ = 0
-                    strikeLastDamage_ = 0
-                    currentStrikeAttackFrames_ = nil
-                    strikeWindup_ = 0
-                    strikeRecovery_ = 0
-                    strikeHitFrame_ = 1
-                    strikeEndFrame_ = 1
-                    strikeSequenceIndex_ = 0
-                    damageLabels_ = {}
-                    strikeRefs_ = {}
-                else
-                    Toast((response and response.reason) or "今日次数已用完", "warning")
-                end
-            end)
-        end)
+        local stage = DungeonCatalog.GetStage(item.dungeonStageId) or selectedStage
+        if not stage or dungeonView_ or strikeId_ or bossActive_ then return end
+        sceneGeneration_ = sceneGeneration_ + 1
+        dungeonView_ = require("client.CampaignBattleView").Create(stage, function()
+            if dungeonView_ then dungeonView_:Destroy(); dungeonView_ = nil end
+            sceneGeneration_ = sceneGeneration_ + 1
+            ActivityController.Refresh()
+        end, function() ActivityController.Refresh() end)
+        ActivityController.Refresh()
     end
 
     local function WatchAdAction()
@@ -475,7 +464,7 @@ local function StrikeCard(item)
                         Kit.CompactTxt(item.desc, 16, C.textSecondary, { width = "100%", height = 26, textAlign = "left" }),
                         Kit.CompactTxt("今日 " .. tostring(item.todayCount or 0) .. " / " .. tostring(item.limit or 0) .. " 次", 18, (remaining or 0) > 0 and C.success or C.textDim, { width = "100%", height = 30, textAlign = "left", textStroke = { width = 1, color = "#000000" } }),
                         Kit.CompactTxt(
-                            "最佳伤害 " .. tostring((GameStateAdapter.GetViewState().challengesView or {}).bestStrikeDamage or 0),
+                            "每类共享次数 · 胜利结算 · 失败或撤退消耗次数",
                             16,
                             C.gold,
                             { width = "100%", height = 26, textAlign = "left" }
@@ -490,8 +479,8 @@ local function StrikeCard(item)
                                 variant = (remaining or 0) > 0 and "success" or "secondary",
                             },
                             -- 互斥操作：有剩余次数 → 进入；无次数且可看广告 → 看广告+1；否则 → 已用完
-                            (remaining or 0) > 0
-                                and Kit.ImageButton("进入", 150, 60, ASSETS.ui.inventoryActionGold, StartStrikeAction, false)
+                            ((remaining or 0) > 0 or item.dungeonStageId)
+                                and Kit.ImageButton(item.dungeonStageId and "继续副本" or "进入", 150, 60, ASSETS.ui.inventoryActionGold, StartStrikeAction, false)
                                 or (adCan and Kit.ImageButton(require("client.RewardVideo").ActionText("看广告 +1次", "免广告 +1次"), 150, 60, ASSETS.ui.buttonBlueWide, WatchAdAction, false))
                                 or Kit.CompactTxt("今日次数已用完", 16, C.textDim, {
                                     width = 160, height = 40, textAlign = "center",
@@ -590,6 +579,13 @@ local function AbyssActivityCard()
     end
 
     local selectedView = nil
+    local setButtons = {}
+    for _, entry in ipairs({ { "nightmare", "噩梦" }, { "lucky", "幸运" }, { "voyage", "远征" }, { "abyss", "深渊" }, { "prophecy", "预言" } }) do
+        local setId, name = entry[1], entry[2]
+        setButtons[#setButtons + 1] = Kit.ActionButton { text = name, width = 160,
+            variant = selectedAbyssSet_ == setId and "reward" or "secondary",
+            onClick = function() selectedAbyssSet_ = setId; ActivityController.Refresh() end }
+    end
     local gradeCards = {}
     for _, item in ipairs(view.grades or {}) do
         if item.id == selectedAbyssGrade_ then selectedView = item end
@@ -692,7 +688,7 @@ local function AbyssActivityCard()
                 else
                     Toast((response and response.reason) or "深渊 Boss 开启失败", "warning")
                 end
-            end)
+            end, selectedAbyssSet_)
         end)
     end
 
@@ -777,6 +773,8 @@ local function AbyssActivityCard()
                 gap = 16,
                 children = gradeCards,
             },
+            Kit.MultiTxt("目标套装 · 主动挑战掉落所选套装；100级只掉100级装备。\n史诗每10次装备掉落保底，神话每40次装备掉落保底。", 18, C.gold, { width = "100%" }),
+            UI.Panel { width = "100%", flexShrink = 0, flexDirection = "row", flexWrap = "wrap", gap = 10, children = setButtons },
             UI.Panel {
                 width = "100%",
                 flexShrink = 0,
@@ -1004,7 +1002,8 @@ local function BuildStrikeScene(item, mode)
         position = "absolute", left = 0, top = 104, width = width, height = 42, textAlign = "center",
         textStroke = { width = 2, color = "#000000" },
     })
-    local targetDamage = isBoss and math.max(1, item.sessionMaxHp or 1) or 2400
+    local targetDamage = isBoss and math.max(1, item.sessionMaxHp or 1)
+        or require("shared.GameBalance").StrikeTarget(GameStateAdapter.GetViewState().level, 3)
     local currentValue = isBoss
         and math.max(0, (item.sessionMaxHp or 0) - (item.sessionHp or 0))
         or (item.sessionDamage or 0)
@@ -1210,6 +1209,7 @@ end
 
 -- ===== 每帧更新：自动攻击 + 伤害检测 + 倒计时 + 动画 =====
 function ActivityView.Update(dt)
+    if dungeonView_ then dungeonView_:Update(dt); return end
     dt = math.max(0, tonumber(dt) or 0)
     finishRetryTimer_ = math.max(0, finishRetryTimer_ - dt)
     if bossActive_ then
@@ -1274,7 +1274,7 @@ function ActivityView.Update(dt)
         strikeLastDamage_ = damage
         if strikeRefs_.damageLabel then strikeRefs_.damageLabel:SetText("累计伤害 " .. tostring(damage)) end
         if strikeRefs_.damageFill then
-            local ratio = math.max(0, math.min(1, damage / 2400))
+            local ratio = math.max(0, math.min(1, damage / require("shared.GameBalance").StrikeTarget(GameStateAdapter.GetViewState().level, 3)))
             strikeRefs_.damageFill:SetStyle({ width = math.floor(796 * ratio) })
         end
     end
@@ -1324,12 +1324,19 @@ local function WrapPage(root)
             return false
         end,
         Destroy = function()
+            if dungeonView_ and root == dungeonView_.root then
+                dungeonView_:Destroy()
+                dungeonView_ = nil
+                sceneGeneration_ = sceneGeneration_ + 1
+                return
+            end
             if root and root.Destroy then root:Destroy() end
         end,
     }
 end
 
 function ActivityView.BuildPage()
+    if dungeonView_ then return WrapPage(dungeonView_.root) end
     local view = CurrentView()
     if not bossActive_ then
         local game = GameStateAdapter.GetViewState()
@@ -1344,7 +1351,7 @@ function ActivityView.BuildPage()
     end
     if not bossActive_ and not strikeId_ then
         for _, item in ipairs(view.strike or {}) do
-            if item.sessionActive then
+            if item.sessionActive and not item.dungeonStageId then
                 sceneMode_, strikeId_ = "strike", item.id
                 strikeEndsAt_ = (item.sessionStartedAt or ServerClock.Now()) + (item.duration or 15)
                 strikeRemaining_ = math.max(0, strikeEndsAt_ - ServerClock.Now())
@@ -1464,6 +1471,7 @@ function ActivityView.BuildPage()
 end
 
 function ActivityView.Reset()
+    if dungeonView_ then dungeonView_:Destroy(); dungeonView_ = nil end
     ResetScene()
     strikeAdSequence_ = strikeAdSequence_ + 1
     strikeAdInFlight_ = false
@@ -1474,7 +1482,7 @@ function ActivityView.Reset()
 end
 
 function ActivityView.IsStriking()
-    return strikeId_ ~= nil or bossActive_
+    return strikeId_ ~= nil or bossActive_ or dungeonView_ ~= nil
 end
 
 -- 打桩伤害飘字：监听服务端活动事件（权威实际伤害，含暴击）

@@ -252,10 +252,10 @@ function MarketEngine.Purchase(inputState, payload, now)
             "挂单价格低于该装备的最低上架价")
     end
 
-    if not MarketCatalog.CanPurchaseLevel(record.level, inputState.floor) then
+    if not MarketCatalog.CanPurchaseLevel(record.level, inputState.level) then
         return failure(inputState, now, "LEVEL_GATE_BLOCKED", string.format(
             "当前层数仅可购买 %d 级以内的装备",
-            MarketCatalog.GetPurchaseLevelCap(inputState.floor)))
+            MarketCatalog.GetPurchaseLevelCap(inputState.level)))
     end
     if not hasCurrency(inputState, "gold", price) then
         return failure(inputState, now, "INSUFFICIENT_GOLD", "金币不足")

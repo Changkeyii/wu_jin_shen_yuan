@@ -5,6 +5,7 @@
 local ItemTradeRules = require("shared.ItemTradeRules")
 local LargeNumber = require("shared.LargeNumber")
 
+local Balance = require("shared.GameBalance")
 local MarketCatalog = {}
 
 --- 可上架品质：神器及以上。
@@ -246,14 +247,14 @@ end
 function MarketCatalog.CanPurchaseLevel(itemLevel, buyerFloor)
     local level = math.max(1, math.floor(tonumber(itemLevel) or 1))
     local floor = math.max(1, math.floor(tonumber(buyerFloor) or 1))
-    return level <= floor + MarketCatalog.PURCHASE_LEVEL_HEADROOM
+    return level <= math.min(100, floor + MarketCatalog.PURCHASE_LEVEL_HEADROOM)
 end
 
 ---@param buyerFloor number
 ---@return integer
 function MarketCatalog.GetPurchaseLevelCap(buyerFloor)
     local floor = math.max(1, math.floor(tonumber(buyerFloor) or 1))
-    return floor + MarketCatalog.PURCHASE_LEVEL_HEADROOM
+    return math.min(100, floor + MarketCatalog.PURCHASE_LEVEL_HEADROOM)
 end
 
 --- 分桶键。浏览时只读取命中的桶，避免全量拉取。

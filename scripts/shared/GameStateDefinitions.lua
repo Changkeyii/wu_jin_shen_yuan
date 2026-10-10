@@ -145,7 +145,7 @@ local ITEM_SCHEMA = {
         equipmentId = { type = "string", minLength = 36, maxLength = 36 },
         level = { type = "integer", min = 5, max = 100, validate = function(value) return value % 5 == 0 end },
         legacyLevel = { type = "integer", min = 1, max = 1000000 },
-        statVersion = { type = "integer", enum = { 5 } },
+        statVersion = { type = "integer", enum = { 5, 6 } },
         budget = NONNEGATIVE_NUMBER_SCHEMA,
         budgetBig = BIG_NUMBER_SCHEMA,
         rarity = { type = "string", enum = GameStateSchema.RARITIES },
@@ -710,6 +710,8 @@ local ABYSS_SCHEMA = {
     fields = {
         tickets = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         dryStreak = { type = "integer", min = 0, max = 5 },
+        epicMisses = { type = "integer", min = 0, max = 9 },
+        mythMisses = { type = "integer", min = 0, max = 39 },
         activeRuns = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         randomRuns = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         equipmentDrops = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
@@ -729,6 +731,7 @@ local CHALLENGE_BOSS_SESSION_SCHEMA = {
     fields = {
         runId = { type = "string", minLength = 1, maxLength = 96, pattern = "^[%w%._:%-]+$" },
         gradeId = { type = "string", enum = { "rift", "mutated", "calamity" } },
+        setId = { type = "string", enum = { "nightmare", "lucky", "voyage", "abyss", "prophecy" } },
         ticketCost = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         startedAt = { type = "integer", min = 0, max = LargeNumber.MAX_SAFE_INTEGER },
         lastHitAt = { type = "number", min = 0 },

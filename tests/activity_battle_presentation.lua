@@ -11,6 +11,7 @@ local function Widget(props)
         self:SetStyle{text = t}
     end
     function w:Destroy() self.destroyed = true end
+    function w:SetVisible(v) self.props.visible = v end
     for _, c in ipairs(w.props.children or {}) do w:AddChild(c) end
     return w
 end
@@ -29,7 +30,8 @@ local preload
 package.loaded['client.LoadingController'] = {EnsurePlayAssetsReady = function(cb) preload = cb end}
 local function Text(t, _, _, p) p = p or {}; p.text = t; return Widget(p) end
 package.loaded['client.ViewKit'] = {
-    Txt = Text, CompactTxt = Text, RewardCell = Widget, BackButton = function(p) p.text = '返回'; return Widget(p) end,
+    Txt = Text, CompactTxt = Text, MultiTxt = Text, RewardCell = Widget, BackButton = function(p) p.text = '返回'; return Widget(p) end,
+    ActionButton = function(p) return Widget(p) end,
     FormatInt = tostring, FormatDuration = tostring,
     ImageButton = function(t, w, h, image, cb, disabled)
         return Widget{text = t, width = w, height = h, onClick = cb, disabled = disabled}
@@ -38,6 +40,7 @@ package.loaded['client.ViewKit'] = {
 local Factory = require('server.domain.StateFactory')
 local Activity = require('server.domain.ActivityEngine')
 local Boss = require('server.domain.ChallengeEngine')
+local trialCommand, trialSession
 local state, adapter, deltaListener
 local calls, failures, deferred, late = {}, {}, {}, nil
 local function Apply(p)
@@ -47,7 +50,7 @@ local function Apply(p)
     if deltaListener then deltaListener(p.delta) end
     return {ok = true}
 end
-package.loaded['client.ServerClient'] = {
+local server = {
     On = function(kind, cb) if kind == 'delta' then deltaListener = cb end end,
     RequestSnapshot = function() assert(adapter.ApplySnapshot(state)) end,
     Send = function(cmd, payload, cb)
@@ -58,7 +61,7 @@ package.loaded['client.ServerClient'] = {
             if cmd == 'Activity.BeginStrike' then p = Activity.BeginStrike(state, payload.activityId, now)
             elseif cmd == 'Activity.Strike' then p = Activity.Strike(state, payload.activityId, now)
             elseif cmd == 'Activity.FinishStrike' then p = Activity.FinishStrike(state, payload.activityId, now)
-            elseif cmd == 'Activity.BeginAbyssBoss' then p = Boss.BeginBoss(state, payload.gradeId, now)
+            elseif cmd == 'Activity.BeginAbyssBoss' then p = Boss.BeginBoss(state, payload.gradeId, now, payload.setId)
             elseif cmd == 'Activity.StrikeAbyssBoss' then p = Boss.StrikeBoss(state, now)
             elseif cmd == 'Activity.FinishAbyssBoss' then p = Boss.FinishBoss(state, now)
             else error(cmd) end
@@ -67,6 +70,35 @@ package.loaded['client.ServerClient'] = {
         if deferred[cmd] then late = Deliver else Deliver() end
     end,
 }
+function server.CampaignTrial(stageId, action, trialId, pageNo, cb)
+    local key = 'trial:' .. action
+    calls[key] = (calls[key] or 0) + 1
+    local function Deliver()
+        if failures[key] then failures[key] = nil; cb({ok = false, reason = 'temporary failure'}); return end
+        trialSession.state = state
+        trialCommand.handler({uid = 'p'}, {stageId = stageId, action = action, trialId = trialId, page = pageNo},
+            function(_, response) cb(response) end)
+    end
+    if deferred[key] then late = Deliver else Deliver() end
+end
+package.loaded['client.ServerClient'] = server
+local services = {profileService = {}, sendDelta = function(_, delta)
+    assert(adapter.ApplyDelta(delta)); if deltaListener then deltaListener(delta) end
+end}
+function services.profileService:GetSession() return trialSession end
+function services.profileService:Apply(_, _, mutate, cb)
+    local proposal = mutate(state, math.floor(now + 0.0001))
+    if not proposal.ok then cb({ok = false, code = proposal.error.code, reason = proposal.error.reason}); return end
+    state, trialSession.state = proposal.state, proposal.state
+    cb({ok = true, data = {state = state, delta = proposal.delta}})
+end
+require('server.commands.CampaignTrialCommands').Register({Register = function(_, d) trialCommand = d end}, services)
+local playedFrames = 0
+package.loaded['client.PlayPresentation'] = {CreateIsolated = function() return {
+    BuildPage = function() return Widget{} end, Update = function() end,
+    HandleDelta = function() playedFrames = playedFrames + 1 end,
+    ClearCombatPresentation = function() end, Reset = function() end,
+} end}
 adapter = require('client.GameStateAdapter')
 local Controller = require('client.ActivityController')
 local View = require('client.ActivityView')
@@ -95,6 +127,15 @@ end
 local function New()
     View.Reset(); Controller.Recover(); adapter.Reset()
     state = Factory.Create(math.floor(now)); state.level = 40; state.abyss.tickets = 100000
+    local catalog = require('server.domain.Catalog')
+    for _, item in ipairs(state.inventory) do
+        item.level = 40
+        local def = require('shared.EquipmentCatalog').Get(item.equipmentId)
+        for key, value in pairs(catalog.CreateItemStats(def, 40, item.rarity, 1, 0, 0)) do item[key] = value end
+    end
+    state = require('server.domain.StateNormalizer').Normalize(state, math.floor(now))
+    require('server.domain.PlayerTransition').RefreshDerived(state)
+    trialSession = {state = state, generation = 1}
     adapter.ApplySnapshot(state); adapter.SetPage('activity')
     page = View.BuildPage(); refreshPending = false; calls = {}; failures = {}; deferred = {}; late = nil; damageTexts = 0
 end
@@ -114,23 +155,19 @@ for index, id in ipairs(require('shared.ActivityDefinitions').StrikeIds) do
     Collect(page:GetRoot()); assert(#entries == 3)
     local list = page
     entries[index].props.onClick()
-    assert(not calls['Activity.BeginStrike'], 'preload must finish before consuming daily attempt')
+    assert(not calls['trial:prepare'], 'preload must finish before consuming daily attempt')
     Ready()
     assert(View.IsStriking() and page ~= list and list:GetRoot().destroyed)
     local scene = page
-    assert(TextIs(scene:GetRoot(), '剩余 15 秒'))
-    Step(3)
-    assert(calls['Activity.Strike'] and state.activities[id].session.damage > 0)
-    assert(page == scene, 'hit delta must preserve the battle scene')
-    assert(TextIs(scene:GetRoot(), '剩余 12 秒'))
-    -- Rebuilding a page during recovery must preserve the authoritative deadline.
-    page:Destroy(); page = View.BuildPage()
-    assert(TextIs(page:GetRoot(), '剩余 12 秒'))
-    if index == 1 then failures['Activity.FinishStrike'] = true end
-    Step(15)
-    assert(not View.IsStriking() and not state.activities[id].session)
-    assert(state.activities[id].strikeCount == 1 and state.challenges.lastStrikeDamage > 0)
-    assert(calls['Activity.FinishStrike'] == (index == 1 and 2 or 1))
+    assert(calls['trial:frames'] and state.activities[id].session.dungeonStageId)
+    if index == 1 then failures['trial:finish'] = true end
+    Step(95)
+    if index == 1 then Click('重试结算') end
+    assert(page == scene, 'battle and reward deltas must preserve the common scene')
+    assert(not state.activities[id].session and state.activities[id].strikeCount == 1)
+    assert(calls['trial:finish'] == (index == 1 and 2 or 1) and playedFrames > 0)
+    Click('返回副本')
+    assert(not View.IsStriking() and scene:GetRoot().destroyed)
 end
 
 New(); Click('热门活动'); Click('挑战 Boss'); Ready()
@@ -143,10 +180,14 @@ assert(damageTexts > 0, 'Boss hit must display authoritative damage text')
 -- Rift must be reachable with the full existing A/B/C animation cadence.
 Step(18)
 assert(not View.IsStriking() and not state.challenges.bossSession and state.challenges.bossKills == 1)
-assert(state.challenges.lastBossKilled and calls['Activity.StrikeAbyssBoss'] >= 6)
+assert(state.challenges.lastBossKilled and calls['Activity.StrikeAbyssBoss'] >= 3)
 
 -- Exit waits for an in-flight hit, then retries settlement without losing the scene.
-New(); Click('每日补给'); Click('进入'); Ready()
+local function LegacyScene()
+    New(); Apply(Activity.BeginStrike(state, 'act_daily_gold', now))
+    page:Destroy(); page = View.BuildPage()
+end
+LegacyScene()
 deferred['Activity.Strike'] = true
 Step(1)
 assert(late)
@@ -160,12 +201,17 @@ Step(3); assert(not View.IsStriking() and calls['Activity.FinishStrike'] == 2)
 -- Logout/recovery invalidates a late preparation callback; a new server session
 -- is restored with its original deadline on the next authenticated page build.
 New(); Click('每日补给'); Click('进入')
-View.Reset(); Ready(); assert(not calls['Activity.BeginStrike'])
-deferred['Activity.BeginStrike'] = true
+View.Reset(); Ready(); assert(not calls['trial:prepare'])
+page:Destroy(); page = View.BuildPage()
+deferred['trial:prepare'] = true
 Click('进入'); Ready(); assert(late)
 View.Reset(); Controller.Recover()
 late(); assert(not View.IsStriking(), 'late response must not revive a reset scene')
-now = now + 10; adapter.ApplySnapshot(state)
-page = View.BuildPage(); assert(View.IsStriking() and TextIs(page:GetRoot(), '剩余 5 秒'))
+assert(calls['trial:abort'] == 1 and not state.activities.act_daily_gold.session)
+-- A legacy timed challenge remains recoverable with its original deadline.
+LegacyScene(); now = state.activities.act_daily_gold.session.startedAt + 10; adapter.ApplySnapshot(state)
+View.Update(0)
+page:Destroy(); page = View.BuildPage()
+assert(View.IsStriking() and TextIs(page:GetRoot(), '剩余 5 秒'))
 Step(6); assert(not View.IsStriking())
 print('activity_battle_presentation: PASS')

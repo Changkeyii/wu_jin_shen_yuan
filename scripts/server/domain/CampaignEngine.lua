@@ -13,6 +13,9 @@ local QuestEngine = require("server.domain.QuestEngine")
 local RewardClaimEngine = require("server.domain.RewardClaimEngine")
 local LargeNumber = require("shared.LargeNumber")
 
+local Balance = require("shared.GameBalance")
+local DungeonCatalog = require("shared.DungeonCatalog")
+local DungeonEngine = require("server.domain.DungeonEngine")
 local CampaignEngine = {}
 
 local function Failure(state, now, code, reason)
@@ -24,13 +27,8 @@ local function StageNumber(stageId)
     return chapter and tonumber(chapter) or nil, stage
 end
 
-local function IsStageUnlocked(campaign, stage)
-    local chapter, stageCode = StageNumber(stage.id)
-    if not chapter or chapter > (campaign.highestUnlockedChapter or 1) then return false end
-    if stageCode == "a" then return true end
-    local previousCode = stageCode == "b" and "a" or "b"
-    local previous = campaign.completedStages["main:c" .. string.format("%02d", chapter) .. ":" .. previousCode]
-    return previous ~= nil
+local function IsStageUnlocked(state, stage)
+    return Balance.Level(state.level) >= (stage.minLevel or stage.recommendedLevel or 1)
 end
 
 local function AddReward(state, stage, events)
@@ -62,19 +60,17 @@ local function PlayerCombatStats(state)
 end
 
 local function ScaleEnemy(stage, player)
-    local enemy = stage.enemy or { name = "记忆回响", hp = 120, atk = 10, def = 3 }
-    local level = math.max(1, stage.recommendedLevel or 1)
-    local hp = math.max(40, math.floor((enemy.hp or 80) + player.atk * 1.6 + level * 18))
-    local atk = math.max(4, math.floor((enemy.atk or 8) + player.def * 0.18 + level * 1.4))
-    local def = math.max(1, math.floor((enemy.def or 2) + level * 0.6))
-    return {
-        name = enemy.name or "记忆回响",
-        hp = hp,
-        maxHp = hp,
-        atk = atk,
-        def = def,
-        atkSpeed = 0.85,
-    }
+    local enemy = stage.enemy or {}
+    if stage.dungeon then
+        return { name = enemy.name, hp = enemy.hp, maxHp = enemy.hp,
+            atk = enemy.atk, def = enemy.def, atkSpeed = 0.85 }
+    end
+    local growth = Balance.TrialGrowth(stage.recommendedLevel)
+    local boss = stage.kind == "boss"
+    local hp = math.floor((boss and 850 or 420) * growth * 0.85)
+    return { name = enemy.name or "记忆回响", hp = hp, maxHp = hp,
+        atk = math.floor((boss and 100 or 45) * growth),
+        def = math.floor((boss and 40 or 25) * growth), atkSpeed = 0.85 }
 end
 
 local function ResolveMechanic(stage, player, enemy)
@@ -99,8 +95,8 @@ local function ResolveMechanic(stage, player, enemy)
             enemy.atk = math.floor(enemy.atk * (1 + (3 - lamps) * 0.18))
         end
     elseif mechanic == "mirror" then
-        enemy.atk = math.max(enemy.atk, math.floor(player.atk * 0.72))
-        enemy.def = math.max(enemy.def, math.floor(player.def * 0.45))
+        enemy.atk = math.floor(enemy.atk * 1.08)
+        enemy.def = math.floor(enemy.def * 1.15)
     elseif mechanic == "oathbreak" then
         enemy.def = math.floor(enemy.def * 1.15)
         enemy.hp = math.floor(enemy.hp * 1.08)
@@ -130,7 +126,7 @@ local function SimulateBattle(state, stage, rng)
         combat.stats.atkBig = BigNumber.MultiplyScalar(DomainMath.StatMagnitude(combat.stats, "atk"), 0.92)
     end
     DomainMath.SetPlayerHp(combat, DomainMath.StatMagnitude(combat.stats, "hp"))
-    local waves = (extras.mechanic == "gatekeeper" or extras.mechanic == "clear_minions")
+    local waves = (stage.dungeon ~= nil or extras.mechanic == "gatekeeper" or extras.mechanic == "clear_minions")
         and math.min(9, math.max(1, math.floor(tonumber(stage.waves) or 3))) or 1
     if extras.mechanic == "gatekeeper" then waves = waves + 1 end
     local report = { frames = {}, playerMaxHp = BigNumber.Clone(combat.hpBig), waves = waves,
@@ -157,8 +153,8 @@ local function SimulateBattle(state, stage, rng)
         local boss = finalWave and stage.kind == "boss"
         local generated = {
             name = finalWave and enemy.name or ("无名影卒 " .. tostring(wave)),
-            hpBig = BigNumber.FromNumber(math.max(1, enemy.hp * (finalWave and 1 or 0.25))),
-            atkBig = BigNumber.FromNumber(math.max(1, enemy.atk * (finalWave and 1 or 0.55))),
+            hpBig = BigNumber.FromNumber(math.max(1, enemy.hp * (finalWave and 1 or (stage.dungeon and 0.5 or 0.25)))),
+            atkBig = BigNumber.FromNumber(math.max(1, enemy.atk * (finalWave and 1 or (stage.dungeon and 0.8 or 0.55)))),
             defBig = BigNumber.FromNumber(enemy.def),
             encounter = { room = wave, floor = combat.floor, kind = boss and "boss" or "normal",
                 eventType = boss and "boss" or "monster", isChapterBoss = false },
@@ -353,14 +349,14 @@ local function CompleteStage(inputState, stage, now, action, battle)
 end
 
 function CampaignEngine.PlayStage(inputState, stageId, action, now)
-    local stage = CampaignCatalog.GetStage(stageId)
+    local stage = CampaignCatalog.GetStage(stageId) or DungeonCatalog.GetStage(stageId)
     if not stage then return Failure(inputState, now, "CAMPAIGN_STAGE_UNKNOWN", "剧情关卡不存在") end
     if action ~= "complete" and action ~= "challenge" then
         return Failure(inputState, now, "CAMPAIGN_ACTION_INVALID", "剧情操作无效")
     end
     local workingCampaign = inputState.campaign or CampaignDefinitions.NewState()
-    if not IsStageUnlocked(workingCampaign, stage) then
-        return Failure(inputState, now, "CAMPAIGN_STAGE_LOCKED", "请先完成前置剧情")
+    if not IsStageUnlocked(inputState, stage) then
+        return Failure(inputState, now, "CAMPAIGN_STAGE_LOCKED", "达到推荐等级后可直接选关")
     end
     if stage.kind ~= "story" and action ~= "challenge" then
         return Failure(inputState, now, "CAMPAIGN_ACTION_INVALID", "战斗关卡需要发起挑战")
@@ -376,17 +372,18 @@ function CampaignEngine.PlayStage(inputState, stageId, action, now)
 end
 
 function CampaignEngine.PrepareTrial(state, stageId, rng)
-    local stage = CampaignCatalog.GetStage(stageId)
+    local stage = CampaignCatalog.GetStage(stageId) or DungeonCatalog.GetStage(stageId)
     if not stage or stage.kind == "story" then return nil, "请选择战斗关卡" end
-    if not IsStageUnlocked(state.campaign or CampaignDefinitions.NewState(), stage) then
-        return nil, "请先完成前置剧情"
+    if not IsStageUnlocked(state, stage) then
+        return nil, "达到推荐等级后可直接选关"
     end
     return SimulateBattle(state, stage, rng)
 end
 
 -- outcome comes only from the server session; clients submit an opaque trial ID.
-function CampaignEngine.SettleTrial(state, stageId, outcome, now)
-    local stage = CampaignCatalog.GetStage(stageId)
+function CampaignEngine.SettleTrial(state, stageId, outcome, now, runId)
+    local stage = CampaignCatalog.GetStage(stageId) or DungeonCatalog.GetStage(stageId)
+    if stage and stage.dungeon then return DungeonEngine.Settle(state, stage, outcome, now, runId) end
     if not stage or not outcome or not outcome.won then
         return PlayerTransition.NoCommit(state, now, "campaign_trial_lost")
     end
@@ -446,7 +443,7 @@ local function EnsureDaily(campaign, now)
 end
 
 function CampaignEngine.SweepStage(inputState, stageId, now)
-    local stage = CampaignCatalog.GetStage(stageId)
+    local stage = CampaignCatalog.GetStage(stageId) or DungeonCatalog.GetStage(stageId)
     if not stage then return Failure(inputState, now, "CAMPAIGN_STAGE_UNKNOWN", "剧情关卡不存在") end
     local working = PlayerTransition.Copy(inputState, now)
     working.campaign = CampaignDefinitions.Sanitize(working.campaign)
@@ -467,7 +464,7 @@ function CampaignEngine.SweepStage(inputState, stageId, now)
 end
 
 function CampaignEngine.ClaimEcho(inputState, stageId, now)
-    local stage = CampaignCatalog.GetStage(stageId)
+    local stage = CampaignCatalog.GetStage(stageId) or DungeonCatalog.GetStage(stageId)
     if not stage then return Failure(inputState, now, "CAMPAIGN_STAGE_UNKNOWN", "剧情关卡不存在") end
     local working = PlayerTransition.Copy(inputState, now)
     working.campaign = CampaignDefinitions.Sanitize(working.campaign)

@@ -1,4 +1,5 @@
 local Progression = require("shared.GameProgression")
+local Balance = require("shared.GameBalance")
 local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
 local BigNumber = require("shared.BigNumber")
@@ -497,14 +498,11 @@ local function pickOfflineDropKind(counts, rng)
 end
 
 local function offlineAverageReward(floor, kind)
-    local multiplier = kind == "chapterBoss" and 10
-        or (kind == "boss" and 10 or (kind == "elite" and 2.3 or 1))
-    local baseExp = math.floor((floor * 5 + 10) * multiplier * Catalog.OFFLINE_REWARD_RATE)
     local baseGold = LargeNumber.MultiplyScalar(
         Catalog.GetBattleGold(floor, kind),
         Catalog.OFFLINE_REWARD_RATE
     )
-    return baseGold, baseExp
+    return baseGold
 end
 
 local function offlinePityAfterMisses(pity, misses, floor)
@@ -550,18 +548,18 @@ local function simulateOfflineCollection(inputState, now, rng)
     local expectedDrops = 0
     for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
         local count = encounterCounts[kind] or 0
-        local gold, exp = offlineAverageReward(floor, kind)
+        local gold = offlineAverageReward(math.min(floor, Balance.RewardLevel(working)), kind)
         summary.gold = LargeNumber.Add(
             summary.gold,
             LargeNumber.MultiplyScalar(gold, count)
         )
-        summary.exp = summary.exp + count * exp
         expectedDrops = expectedDrops + count * (RewardPolicy.DropChance(kind, true) or 0)
     end
     local events = {}
     if not LargeNumber.IsZero(summary.gold) then
         PlayerTransition.AddCurrency(working, "gold", summary.gold)
     end
+    summary.exp = Progression.TrainingExp(working, cycles * Catalog.OFFLINE_STEP_SECONDS, true)
     if summary.exp > 0 then addExp(working, summary.exp, events) end
     events[#events + 1] = PlayerTransition.Event("battle_reward", {
         gold = summary.gold,
@@ -705,6 +703,8 @@ function RewardEngine.FreezeOfflineReward(inputState, now, rng)
         seconds = reward.processedSeconds or 0,
         gold = reward.gold or LargeNumber.Zero(),
         exp = reward.exp or 0,
+        trainingFractionDelta = ((simulation.working.growth or {}).trainingFraction or 0)
+            - ((inputState.growth or {}).trainingFraction or 0),
         fragments = reward.fragments or 0,
         items = items,
         rewardPity = TableUtils.DeepCopy(simulation.working.rewardPity),
@@ -734,9 +734,11 @@ function RewardEngine.ClaimOfflineReward(inputState, ledger, now)
     if (ledger.fragments or 0) > 0 then
         PlayerTransition.AddCurrency(working, "fragments", ledger.fragments)
     end
-    if (ledger.exp or 0) > 0 then
-        addExp(working, ledger.exp, events)
-    end
+    local xp = math.max(0, (ledger.exp or 0) + (ledger.trainingFractionDelta or 0)
+        + (working.growth.trainingFraction or 0))
+    local wholeXP = math.floor(xp + 0.00000001)
+    working.growth.trainingFraction = math.max(0, xp - wholeXP)
+    if wholeXP > 0 then addExp(working, wholeXP, events) end
 
     working.overflowLoot = working.overflowLoot or {}
     local used = {}

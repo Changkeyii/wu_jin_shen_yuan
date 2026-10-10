@@ -12,7 +12,7 @@ local View = {}
 function View.Create(stage, onBack, onSettled)
     local view = { disposed = false, elapsed = 0, cursor = 1, frames = {}, ready = false }
     local root = UI.Panel { width = "100%", height = "100%", position = "relative", overflow = "hidden" }
-    local status = Kit.CompactTxt("正在准备章节试炼…", 22, C.gold,
+    local status = Kit.CompactTxt(stage.dungeon and "正在准备每日副本…" or "正在准备关卡试炼…", 22, C.gold,
         { position = "absolute", left = 36, top = 20, width = 700, height = 52 })
     local exitLabel = Kit.CompactTxt("撤退", 20, C.text, { width = "100%", height = 72, textAlign = "center" })
     local exitButton = UI.Panel {
@@ -51,9 +51,10 @@ function View.Create(stage, onBack, onSettled)
                 return
             end
             self.settled = true
-            exitLabel:SetText("返回章节")
+            exitLabel:SetText(stage.dungeon and "返回副本" or "返回关卡")
             local result = response.data or {}
-            SetStatus(result.won and ("试炼胜利 · " .. tostring(result.stars) .. " 星 · 奖励已结算") or "试炼失败 · 提升装备后可再次挑战")
+            SetStatus(result.won and (stage.dungeon and "副本胜利 · 奖励已结算" or "试炼胜利 · " .. tostring(result.stars) .. " 星 · 奖励已结算")
+                or (stage.dungeon and "副本失败 · 本次次数已消耗，奖励未发放" or "试炼失败 · 提升装备后可再次挑战"))
             if onSettled then onSettled(result) end
         end)
     end
@@ -100,13 +101,13 @@ function View.Create(stage, onBack, onSettled)
         root:AddChild(sceneRoot)
         root:AddChild(status); root:AddChild(exitButton); root:AddChild(resultBar)
         view.ready = true
-        SetStatus("第 " .. tostring(stage.chapter) .. " 章 · " .. stage.title)
+        SetStatus(stage.title .. " · 推荐 Lv." .. tostring(stage.recommendedLevel))
     end
     local function ReadPage(page)
         Request("frames", page, function(response)
             if not response or not response.ok or not response.data or response.data.trialId ~= view.trialId then
                 SetStatus((response and response.reason) or "战斗数据加载失败，请返回重试")
-                exitLabel:SetText("返回章节")
+                exitLabel:SetText(stage.dungeon and "返回副本" or "返回关卡")
                 return
             end
             for _, frame in ipairs(response.data.frames or {}) do view.frames[#view.frames + 1] = frame end
@@ -119,7 +120,7 @@ function View.Create(stage, onBack, onSettled)
         Request("prepare", nil, function(response)
             if not response or not response.ok or not response.data then
                 SetStatus((response and response.reason) or "试炼准备失败，请返回重试")
-                exitLabel:SetText("返回章节")
+                exitLabel:SetText(stage.dungeon and "返回副本" or "返回关卡")
                 return
             end
             view.meta, view.trialId = response.data, response.data.trialId

@@ -75,7 +75,7 @@ function MarketCommands.Register(router, services)
                 slot = payload.slot,
                 limit = payload.limit,
                 viewerUid = context.uid,
-                buyerFloor = state.floor,
+                buyerFloor = state.level,
             }, function(result)
                 done(result.ok, result)
             end)

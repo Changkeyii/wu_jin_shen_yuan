@@ -1,6 +1,8 @@
 local Router = require("server.core.CommandRouter")
 local Engine = require("server.domain.CampaignEngine")
 local Transition = require("server.domain.PlayerTransition")
+local DungeonCatalog = require("shared.DungeonCatalog")
+local DungeonEngine = require("server.domain.DungeonEngine")
 local Commands = {}
 local PAGE_SIZE = 80 -- Bounded below the 60 KiB command envelope, even at maximum attack speed.
 
@@ -33,17 +35,28 @@ function Commands.Register(router, services)
                         trial = session.campaignTrial
                         return Transition.NoCommit(state, now, "campaign_trial_prepared")
                     end
+                    if session.campaignTrial and DungeonCatalog.GetStage(session.campaignTrial.stageId)
+                        and now <= session.campaignTrial.expiresAt then
+                        return Transition.Failure(state, now, "DUNGEON_ACTIVE", "请先结束当前副本")
+                    end
                     local report, outcome = Engine.PrepareTrial(state, payload.stageId)
                     if not report then return Transition.Failure(state, now, "CAMPAIGN_STAGE_LOCKED", outcome) end
                     local serial = (session.campaignTrialSerial or 0) + 1
                     trial = { id = "trial:" .. tostring(session.generation or 0) .. ":" .. tostring(now) .. ":" .. tostring(serial),
                         serial = serial, stageId = payload.stageId, report = report, outcome = outcome,
                         finishAt = now + math.ceil(report.duration), expiresAt = now + 900 }
+                    local stage = DungeonCatalog.GetStage(payload.stageId)
+                    if stage then
+                        local proposal = DungeonEngine.Reserve(state, stage, now)
+                        if proposal.ok then trial.dungeonRunId = proposal.state.activities[stage.activityId].session.dungeonRunId end
+                        return proposal
+                    end
                     return Transition.NoCommit(state, now, "campaign_trial_prepared")
                 end, function(result)
                     if not result.ok then Fail(result.code, result.reason); return end
                     if services.profileService:GetSession(context.uid) ~= session then Fail("SESSION_CHANGED", "连接已改变，请重新进入试炼"); return end
                     session.campaignTrial, session.campaignTrialSerial = trial, trial.serial
+                    if result.data.delta then services.sendDelta(context.uid, result.data.delta) end
                     Reply(Metadata(trial))
                 end)
                 return Router.PENDING
@@ -57,8 +70,18 @@ function Commands.Register(router, services)
                 return Fail("CAMPAIGN_TRIAL_EXPIRED", "本次试炼已结束或连接已改变，请重新挑战")
             end
             if payload.action == "abort" then
-                session.campaignTrial = nil
-                return Reply({ aborted = true })
+                services.profileService:Apply(context.uid, "abort trial", function(state, now)
+                    if services.profileService:GetSession(context.uid) ~= session or session.campaignTrial ~= trial then
+                        return Transition.Failure(state, now, "CAMPAIGN_TRIAL_EXPIRED", "试炼已改变")
+                    end
+                    return Engine.SettleTrial(state, trial.stageId, { won = false }, now, trial.dungeonRunId)
+                end, function(result)
+                    if not result.ok then Fail(result.code, result.reason); return end
+                    if session.campaignTrial == trial then session.campaignTrial = nil end
+                    if result.data.delta then services.sendDelta(context.uid, result.data.delta) end
+                    Reply({ aborted = true })
+                end)
+                return Router.PENDING
             end
             if payload.action == "frames" then
                 local page = payload.page or 1
@@ -70,10 +93,12 @@ function Commands.Register(router, services)
                 return Reply({ trialId = trial.id, page = page, frames = frames })
             end
             services.profileService:Apply(context.uid, "settle campaign trial", function(state, now)
-                if session.campaignTrial ~= trial then return Transition.Failure(state, now, "CAMPAIGN_TRIAL_EXPIRED", "试炼已改变") end
+                if services.profileService:GetSession(context.uid) ~= session or session.campaignTrial ~= trial then
+                    return Transition.Failure(state, now, "CAMPAIGN_TRIAL_EXPIRED", "试炼已改变")
+                end
                 if now < trial.finishAt then return Transition.Failure(state, now, "CAMPAIGN_BATTLE_RUNNING", "战斗尚未结束，请稍后领取") end
                 if now > trial.expiresAt then return Transition.Failure(state, now, "CAMPAIGN_TRIAL_EXPIRED", "试炼已过期，请重新挑战") end
-                return Engine.SettleTrial(state, trial.stageId, trial.outcome, now)
+                return Engine.SettleTrial(state, trial.stageId, trial.outcome, now, trial.dungeonRunId)
             end, function(result)
                 if not result.ok then Fail(result.code, result.reason); return end
                 if result.data.delta then services.sendDelta(context.uid, result.data.delta) end

@@ -12,7 +12,6 @@ local EquipmentEngine = require("server.domain.EquipmentEngine")
 local DomainMath = require("server.domain.DomainMath")
 local BigNumber = require("shared.BigNumber")
 local TowerRules = require("shared.TowerRules")
-local CombatSequence = require("shared.CombatSequence")
 
 local ChallengeEngine = {}
 
@@ -30,33 +29,8 @@ local function activeSession(challenges)
     return session
 end
 
-local function playerAtk(state)
-    local stats = type(state.stats) == "table" and state.stats or {}
-    local atk = DomainMath.StatMagnitude(stats, "atk")
-    local number = BigNumber.ToNumber(atk)
-    if type(number) == "number" and number == number and number > 0 then
-        return math.max(1, math.floor(number))
-    end
-    return math.max(1, math.floor(tonumber(stats.atk) or 1))
-end
-
 function ChallengeEngine.ComputeBossHp(state, gradeId)
-    local mul = ChallengeDefinitions.BossHpMul(gradeId)
-    -- The existing scene plays full A/B/C animations. INTERVAL is a request
-    -- throttle, not its attack speed; using it made the normal Boss unreachable.
-    local expectedHits, elapsed, index = 0, 0, 1
-    while elapsed < BOSS.DURATION do
-        local sequence = CombatSequence.Get(index)
-        ---@type number[]
-        local hitFrames = sequence.hitFrames
-        local windup = (hitFrames[1] - 1) / sequence.fps
-        if elapsed + windup >= BOSS.DURATION then break end
-        expectedHits = expectedHits + 1
-        elapsed = elapsed + sequence.endFrame / sequence.fps + 0.15
-        index = index % 3 + 1
-    end
-    local hp = math.floor(playerAtk(state) * 2.0 * expectedHits * mul)
-    return ChallengeDefinitions.ClampScore(math.max(1000, hp))
+    return ChallengeDefinitions.ClampScore(AbyssDefinitions.BossHp(state.level, gradeId))
 end
 
 local function recordBest(challenges, damage, now, gradeId, killed)
@@ -91,7 +65,10 @@ local function strikeDamage(working)
     return ChallengeDefinitions.ClampScore(totalDamage), lastCritical, lastLucky
 end
 
-function ChallengeEngine.BeginBoss(inputState, gradeId, now)
+function ChallengeEngine.BeginBoss(inputState, gradeId, now, setId)
+    if setId and not Catalog.SETS[setId] then
+        return PlayerTransition.Failure(inputState, now, "INVALID_SET", "未知目标套装")
+    end
     now = PlayerTransition.Now(now)
     local current = inputState.challenges and activeSession(inputState.challenges)
     if current then
@@ -156,7 +133,7 @@ function ChallengeEngine.BeginBoss(inputState, gradeId, now)
     local runId = AbyssEngine.MakeRunId(working, "boss", now)
     challenges.bossSession = {
         runId = runId,
-        gradeId = gradeId,
+        gradeId = gradeId, setId = setId,
         ticketCost = ticketCost,
         startedAt = now,
         lastHitAt = 0,
@@ -247,7 +224,8 @@ function ChallengeEngine.FinishBoss(inputState, now, previousState, pendingEvent
             session.runId,
             nil,
             now,
-            events
+            events,
+            { setId = session.setId }
         )
         if not settled then
             return PlayerTransition.Failure(previous, now, code, reason)

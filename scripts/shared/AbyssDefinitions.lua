@@ -1,10 +1,11 @@
 local Progression = require("shared.GameProgression")
+local Balance = require("shared.GameBalance")
 local AbyssDefinitions = {}
 
 AbyssDefinitions.VERSION = 1
 AbyssDefinitions.STARTER_TICKETS = 120
-AbyssDefinitions.BASE_TICKET_COST = 40
-AbyssDefinitions.TICKET_COST_PER_LEVEL_BAND = 10
+AbyssDefinitions.BASE_TICKET_COST = 20
+AbyssDefinitions.TICKET_COST_PER_LEVEL_BAND = 2
 AbyssDefinitions.LEVEL_BAND_SIZE = 10
 AbyssDefinitions.HARD_PITY_ATTEMPT = 6
 AbyssDefinitions.RANDOM_TRIGGER_CHANCE = 0.04
@@ -27,12 +28,12 @@ local GRADES = {
         minLevel = 1,
         color = { 41, 182, 255, 255 },
         colorHex = "#29B6FF",
-        dropChance = 0.35,
+        dropChance = 0.70,
         fragments = 12,
         randomWeight = 70,
         qualityWeights = {
-            common = 12, advanced = 28, rare = 35, artifact = 19,
-            legendary = 5.4, epic = 0.58, myth = 0.02,
+            common = 0, advanced = 0, rare = 20, artifact = 40,
+            legendary = 30, epic = 9.5, myth = 0.5,
         },
     },
     mutated = {
@@ -43,12 +44,12 @@ local GRADES = {
         minLevel = 20,
         color = { 177, 92, 255, 255 },
         colorHex = "#B15CFF",
-        dropChance = 0.65,
+        dropChance = 0.85,
         fragments = 24,
         randomWeight = 25,
         qualityWeights = {
-            common = 2, advanced = 10, rare = 36, artifact = 34,
-            legendary = 15.5, epic = 2.4, myth = 0.1,
+            common = 0, advanced = 0, rare = 0, artifact = 30,
+            legendary = 44, epic = 25, myth = 1,
         },
     },
     calamity = {
@@ -59,12 +60,12 @@ local GRADES = {
         minLevel = 40,
         color = { 255, 138, 36, 255 },
         colorHex = "#FF8A24",
-        dropChance = 0.90,
+        dropChance = 1.00,
         fragments = 40,
         randomWeight = 5,
         qualityWeights = {
-            common = 0, advanced = 2, rare = 20, artifact = 38,
-            legendary = 33, epic = 6.7, myth = 0.3,
+            common = 0, advanced = 0, rare = 0, artifact = 0,
+            legendary = 55, epic = 42, myth = 3,
         },
     },
 }
@@ -83,7 +84,7 @@ function AbyssDefinitions.IsUnlocked(gradeId, level)
 end
 
 function AbyssDefinitions.BaseTicketCost(level)
-    level = math.max(1, math.floor(tonumber(level) or 1))
+    level = Progression.Level(level)
     local band = math.floor((level - 1) / AbyssDefinitions.LEVEL_BAND_SIZE)
     return AbyssDefinitions.BASE_TICKET_COST
         + band * AbyssDefinitions.TICKET_COST_PER_LEVEL_BAND
@@ -99,24 +100,23 @@ function AbyssDefinitions.DropPoolFloor(state)
     state = type(state) == "table" and state or {}
     local level = math.max(1, math.floor(tonumber(state.level) or 1))
     local floor = math.max(1, math.floor(tonumber(state.maxFloor or state.floor) or 1))
-    return math.max(level, floor)
+    return Progression.Level(level)
 end
 
 function AbyssDefinitions.EquipmentLevelPool(level)
     local maximum = Progression.EquipmentLevel(level)
-    return math.max(5, maximum - 5), maximum, math.max(1, math.floor(maximum / 5))
+    return maximum == 100 and 100 or math.max(5, maximum - 5), maximum, math.max(1, math.floor(maximum / 5))
+end
+
+function AbyssDefinitions.BossHp(level, gradeId)
+    local mul = ({ rift = 0.8, mutated = 1.15, calamity = 1.6 })[gradeId] or 0.8
+    return math.floor(1400 * Balance.TrialGrowth(Progression.EquipmentLevel(level)) * mul)
 end
 
 function AbyssDefinitions.RecommendedPower(level, gradeId)
-    local TowerRules = require("shared.TowerRules")
     local BigNumber = require("shared.BigNumber")
-    local grade = GRADES[gradeId] or GRADES.rift
-    local _, maxLevel = AbyssDefinitions.EquipmentLevelPool(level)
-    local equivalentFloor = math.max(1, maxLevel * 2)
-    return BigNumber.MultiplyScalar(
-        TowerRules.RecommendedPower(equivalentFloor),
-        grade.multiplier
-    )
+    local mul = ({ rift = 0.8, mutated = 1.15, calamity = 1.6 })[gradeId] or 0.8
+    return BigNumber.MultiplyScalar(Balance.EquipmentGrowth(Progression.EquipmentLevel(level)), 100000 * mul)
 end
 
 function AbyssDefinitions.DailyAdTickets(level)
@@ -143,7 +143,7 @@ end
 function AbyssDefinitions.NewState()
     return {
         tickets = AbyssDefinitions.STARTER_TICKETS,
-        dryStreak = 0,
+        dryStreak = 0, epicMisses = 0, mythMisses = 0,
         activeRuns = 0,
         randomRuns = 0,
         equipmentDrops = 0,
@@ -181,6 +181,8 @@ function AbyssDefinitions.BuildView(state)
         tickets = math.max(0, math.floor(tonumber(abyss.tickets) or 0)),
         dryStreak = math.max(0, math.floor(tonumber(abyss.dryStreak) or 0)),
         guaranteeAt = AbyssDefinitions.HARD_PITY_ATTEMPT,
+        epicMisses = abyss.epicMisses or 0, mythMisses = abyss.mythMisses or 0,
+        epicGuaranteeAt = 10, mythGuaranteeAt = 40,
         baseTicketCost = AbyssDefinitions.BaseTicketCost(level),
         dailyAdTickets = AbyssDefinitions.DailyAdTickets(level),
         dailyAdLimit = AbyssDefinitions.DAILY_AD_TICKET_LIMIT,

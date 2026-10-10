@@ -9,6 +9,7 @@ local now = 1791455000
 local state = Factory.Create(now)
 state.tutorial.completed = true
 local function Unlock(s)
+    s.level = 100
     s.campaign.highestUnlockedChapter = 40
     for _, chapter in ipairs(Catalog.GetAllChapters()) do
         for _, stage in ipairs(chapter.stages) do s.campaign.completedStages[stage.id] = {
@@ -16,7 +17,8 @@ local function Unlock(s)
         } end
     end
 end
-assert(not Engine.PrepareTrial(state, "main:c01:b"), "locked battle must be rejected")
+assert(Engine.PrepareTrial(state, "main:c01:b"), "same-level stages must allow direct selection")
+assert(not Engine.PrepareTrial(state, "main:c40:b"), "higher-level stages must remain locked")
 assert(not Engine.PlayStage(state, "main:c01:a", "complete", now).ok, "first section must also require combat")
 local openingReport, openingOutcome = Engine.PrepareTrial(state, "main:c01:a", function() return 0.5 end)
 assert(openingReport and openingOutcome.won)

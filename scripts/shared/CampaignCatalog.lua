@@ -1,3 +1,4 @@
+local Balance = require("shared.GameBalance")
 local CampaignCatalog = {}
 
 CampaignCatalog.ID = "main"
@@ -194,6 +195,20 @@ chapters[40].stages[3].dialogue = {
 }
 
 require("shared.CampaignNarrative").Apply(chapters)
+
+-- Selection unlocks by character tier. Narrative remains optional in each detail.
+for index, chapter in ipairs(chapters) do
+    local level = math.max(1, math.ceil(index * 100 / 40 / 5) * 5)
+    if index == 1 then level = 1 end
+    chapter.recommendedLevel = level
+    for _, stage in ipairs(chapter.stages) do
+        stage.recommendedLevel = level
+        stage.exp = Balance.BattleExp(level) * (stage.kind == "boss" and 3 or 1)
+        stage.gold = 22000 * (1 + level / 100) ^ 5.1 * (stage.kind == "boss" and 4 or 2)
+        stage.gold = math.floor(stage.gold)
+        stage.fragments = stage.kind == "boss" and 15 or 5
+    end
+end
 
 function CampaignCatalog.GetChapter(chapter)
     return chapters[math.max(1, math.min(CampaignCatalog.MAX_CHAPTER, math.floor(tonumber(chapter) or 1)))]

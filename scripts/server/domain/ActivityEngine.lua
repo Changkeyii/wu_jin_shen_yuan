@@ -170,7 +170,7 @@ function ActivityEngine.BeginStrike(inputState, activityId, now)
         return PlayerTransition.Failure(inputState, now, "STRIKE_LIMIT", "今日次数已用完")
     end
     record.strikeCount = record.strikeCount + 1
-    record.session = { startedAt = now, lastHitAt = 0, damage = 0, finished = false }
+    record.session = { startedAt = now, lastHitAt = 0, damage = 0, finished = false, rewardLevel = working.level }
     local events = {
         PlayerTransition.Event("activity_strike_begin", {
             activityId = activityId,
@@ -191,6 +191,9 @@ function ActivityEngine.Strike(inputState, activityId, now)
     local today = serverDayKey(now)
     local record = EnsureRecord(working, activityId, today, now)
     local session = type(record.session) == "table" and record.session or nil
+    if session and session.dungeonStageId then
+        return PlayerTransition.Failure(inputState, now, "DUNGEON_TRIAL_REQUIRED", "请在副本战斗中完成挑战")
+    end
     if not session or session.finished then
         return PlayerTransition.Failure(inputState, now, "STRIKE_NOT_STARTED", "打桩尚未开始")
     end
@@ -244,6 +247,9 @@ function ActivityEngine.FinishStrike(inputState, activityId, now)
     local today = serverDayKey(now)
     local record = EnsureRecord(working, activityId, today, now)
     local session = type(record.session) == "table" and record.session or nil
+    if session and session.dungeonStageId then
+        return PlayerTransition.Failure(inputState, now, "DUNGEON_TRIAL_REQUIRED", "请在副本战斗中完成挑战")
+    end
     if not session or session.finished then
         return PlayerTransition.NoCommit(inputState, now, "strike_not_active", {})
     end
@@ -251,8 +257,9 @@ function ActivityEngine.FinishStrike(inputState, activityId, now)
     record.session = nil
     local damage = math.max(0, math.floor(tonumber(session.damage) or 0))
     local tier = def.tiers and def.tiers[1] or nil
-    for _, candidate in ipairs(def.tiers or {}) do
-        if damage >= (candidate.minDamage or 0) then tier = candidate end
+    for index, candidate in ipairs(def.tiers or {}) do
+        local target = index == 1 and 0 or require("shared.GameBalance").StrikeTarget(session.rewardLevel or working.level, index)
+        if damage >= target then tier = candidate end
     end
     local events = {}
     local reward = tier and QuestEngine.GrantReward(working, { reward = tier.reward }, now, events) or nil

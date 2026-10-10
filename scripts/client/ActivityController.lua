@@ -68,8 +68,8 @@ function ActivityController.EnterAbyss(gradeId, onDone)
     Send("Activity.EnterAbyss", { gradeId = gradeId }, onDone, true)
 end
 
-function ActivityController.BeginAbyssBoss(gradeId, onDone)
-    Send("Activity.BeginAbyssBoss", { gradeId = gradeId }, onDone, true)
+function ActivityController.BeginAbyssBoss(gradeId, onDone, setId)
+    Send("Activity.BeginAbyssBoss", { gradeId = gradeId, setId = setId }, onDone, true)
 end
 
 function ActivityController.StrikeAbyssBoss(onDone)

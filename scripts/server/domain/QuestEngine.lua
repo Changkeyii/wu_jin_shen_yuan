@@ -162,7 +162,7 @@ end
 -- 发放任务奖励（金币/碎片/经验），返回奖励明细。
 function QuestEngine.GrantReward(state, def, now, events)
     local referenceFloor = math.max(QuestDefinitions.REFERENCE_FLOOR_MIN,
-        math.floor(tonumber(state and state.maxFloor) or QuestDefinitions.REFERENCE_FLOOR_MIN))
+        math.floor(tonumber(state and state.level) or QuestDefinitions.REFERENCE_FLOOR_MIN))
     local preview = QuestDefinitions.RewardPreview(def and def.reward, referenceFloor)
     if not LargeNumber.IsZero(preview.gold) then
         PlayerTransition.AddCurrency(state, "gold", preview.gold)

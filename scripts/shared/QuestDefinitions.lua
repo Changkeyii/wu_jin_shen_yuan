@@ -7,6 +7,7 @@
 local BigNumber = require("shared.BigNumber")
 local LargeNumber = require("shared.LargeNumber")
 
+local Balance = require("shared.GameBalance")
 local QuestDefinitions = {}
 
 -- 与 server/domain/Catalog 相同的金币经济模型：
@@ -18,21 +19,12 @@ QuestDefinitions.BATTLE_GOLD_BASE = 22000
 QuestDefinitions.REFERENCE_FLOOR_MIN = 5
 
 function QuestDefinitions.EconomyValue(level, scalar)
-    level = math.floor(tonumber(level) or 1)
-    if level < 1 then level = 1 end
-    scalar = math.max(0, tonumber(scalar) or 0)
-    if scalar == 0 then return LargeNumber.Zero() end
-    local levelLog10 = math.log(1 + level / QuestDefinitions.ECONOMY_LEVEL_SOFT_START)
-        / math.log(10) * QuestDefinitions.ECONOMY_LEVEL_EXPONENT
-    return LargeNumber.FromBigNumber(BigNumber.Floor(
-        BigNumber.FromLog10(levelLog10 + math.log(scalar) / math.log(10))
-    ))
+    return Balance.EconomyValue(level, scalar)
 end
 
 -- 单场普通战斗经验（与 GameEngine 结算一致）
 function QuestDefinitions.BattleExp(floor)
-    floor = math.floor(tonumber(floor) or 1)
-    return math.max(1, floor * 5 + 10)
+    return Balance.BattleExp(floor)
 end
 
 -- 奖励预览：把「等效场数」换算成可展示的绝对值（按参考楼层缩放）。
@@ -371,7 +363,7 @@ function QuestDefinitions.BuildView(state, today)
                     completed = completed,
                     claimed = claimed,
                     state = claimed and "claimed" or (completed and "claimable" or "inProgress"),
-                    reward = QuestDefinitions.RewardPreview(def.reward, state.maxFloor),
+                    reward = QuestDefinitions.RewardPreview(def.reward, Balance.RewardLevel(state)),
                 }
             end
         end

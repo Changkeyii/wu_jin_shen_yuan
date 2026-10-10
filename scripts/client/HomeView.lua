@@ -186,7 +186,7 @@ local function StoryEntry()
     return SideEntryItem {
         id = "tutorialFeatureStory",
         icon = ASSETS.ui.storyMemoryIcon,
-        label = "剧情",
+        label = "闯关",
         labelColor = C.gold,
         onClick = function()
             CampaignView.Show()

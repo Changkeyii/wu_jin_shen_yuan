@@ -1,8 +1,9 @@
 local BigNumber = require("shared.BigNumber")
 
+local Balance = require("shared.GameBalance")
 local TowerRules = {}
 
-TowerRules.VERSION = 3
+TowerRules.VERSION = 4
 TowerRules.LOG10_2 = math.log(2) / math.log(10)
 TowerRules.FLOORS_PER_DOUBLING = 50
 TowerRules.RECOMMENDED_POWER_BASE = 90000
@@ -68,6 +69,7 @@ TowerRules.ATTACK_SEQUENCES = {
     },
 }
 
+---@type string[]
 TowerRules.ATTACK_SEQUENCE_ORDER = { "attackA", "attackB", "attackC", "attackD" }
 
 local KIND_ALIASES = {
@@ -112,7 +114,7 @@ end
 function TowerRules.GrowthLog10(floor)
     floor = tonumber(floor) or 1
     if not finite(floor) then floor = 1 end
-    return (floor - 1) * TowerRules.LOG10_2 / TowerRules.FLOORS_PER_DOUBLING
+    return Balance.TowerGrowthLog10(floor)
 end
 
 function TowerRules.Growth(floor)

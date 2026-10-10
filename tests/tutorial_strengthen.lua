@@ -100,7 +100,8 @@ end
 
 local normal = reachStrengthen()
 normal.tutorial.completed = true
-normal.gold, normal.fragments = LargeNumber.FromNumber(10000), LargeNumber.FromNumber(100)
+local cost = Catalog.GetStrengthenCost(Transition.FindItem(normal, normal.equipped.weapon), 0)
+normal.gold, normal.fragments = LargeNumber.Add(cost.gold, 10000), LargeNumber.FromNumber(100)
 local preview = Equipment.GetStrengthenPreview(normal, "weapon").data
 local result = Equipment.Strengthen(normal, "weapon", now + 3)
 assert(result.ok and not preview.tutorialFree)

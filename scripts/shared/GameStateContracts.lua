@@ -2,7 +2,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 
 local GameStateContracts = {}
 
-GameStateContracts.VERSION = 11
+GameStateContracts.VERSION = 12
 GameStateContracts.SLOTS = {
     "weapon", "shoulder", "coat", "pants", "belt", "shoes",
     "bracelet", "necklace", "ring", "support", "magicstone", "earring",

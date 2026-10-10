@@ -59,7 +59,6 @@ local chapterState = Factory.Create(now)
 chapterState.pendingStoryGate = StoryCatalog.GetGate(1, "opening")
 chapterState.pendingStoryGate.lineIndex = 1
 local chapter = Adventure.SetAutoRun(chapterState, true, now)
-assert(chapter.ok and chapter.state.pendingStoryGate
-    and chapter.state.pendingStoryGate.storyId == chapterState.pendingStoryGate.storyId,
-    "must not discard unrelated chapter gates")
+assert(chapter.ok and not chapter.state.pendingStoryGate,
+    "obsolete chapter gates must not block free-select progression")
 print("tutorial_prologue_battle: PASS")

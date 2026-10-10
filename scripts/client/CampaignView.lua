@@ -77,11 +77,7 @@ end
 local function IsAvailable(game, stage)
     if not stage then return false end
     local campaign = game.campaign or {}
-    local highest = math.max(1, math.floor(tonumber(campaign.highestUnlockedChapter) or 1))
-    if stage.chapter > highest then return false end
-    if stage.stage == "a" then return true end
-    local previous = stage.stage == "b" and "a" or "b"
-    return IsComplete(game, string.format("main:c%02d:%s", stage.chapter, previous))
+    return (tonumber(game.level) or 1) >= stage.recommendedLevel
 end
 
 local function PlayVideo(stage, onDone)
@@ -217,7 +213,7 @@ ShowStage = function(stage)
     end
     body[#body + 1] = Kit.MultiTxt("首通奖励  ·  经验 " .. tostring(stage.exp) .. "  /  金币 " .. tostring(stage.gold) .. "  /  碎片 " .. tostring(stage.fragments), 20, C.gold)
     if not available then
-        body[#body + 1] = Kit.MultiTxt("完成前置关卡后开启本段记忆。", 20, C.textDim)
+        body[#body + 1] = Kit.MultiTxt("达到推荐等级即可挑战，本关没有剧情前置。", 20, C.textDim)
     end
     body[#body + 1] = Kit.MultiTxt("每日回响 · 已通关关卡的每日补给\n每日从已完成小节中选出最多 3 节，每节可领取一次约首通 20% 的金币、经验和碎片，无需战斗，不含装备。每日 0 点（北京时间）刷新；未入选关卡不能领取。", 18, C.textSecondary, { lineHeight = 1.4 })
     local actionText = complete and "再次挑战" or "开始挑战"
@@ -329,7 +325,7 @@ local function ChapterRows(game)
     local highest = math.max(1, math.floor(tonumber(game.campaign and game.campaign.highestUnlockedChapter) or 1))
     local rows, nextStage = {}, nil
     for index, chapter in ipairs(CampaignCatalog.GetAllChapters()) do
-        local unlocked = index <= highest
+        local unlocked = (tonumber(game.level) or 1) >= chapter.recommendedLevel
         local cards, completed = {}, 0
         for _, stage in ipairs(chapter.stages) do
             cards[#cards + 1] = StageCard(game, stage)
@@ -369,7 +365,7 @@ function CampaignView.BuildPage()
     end
     UpdateProgress()
     local function ProgressKey(state)
-        local parts = { tostring(state.campaign and state.campaign.highestUnlockedChapter or 1) }
+        local parts = { tostring(state.level or 1), tostring(state.campaign and state.campaign.highestUnlockedChapter or 1) }
         for _, chapter in ipairs(CampaignCatalog.GetAllChapters()) do
             for _, stage in ipairs(chapter.stages) do
                 parts[#parts + 1] = IsComplete(state, stage.id) and "1" or "0"
@@ -401,14 +397,14 @@ function CampaignView.BuildPage()
             UI.Panel { id = "campaignHeader", width = "100%", height = PAGE.headerHeight, flexShrink = 0, gap = 12, children = {
                 UI.Panel { width = "100%", height = 64, position = "relative", flexShrink = 0, children = {
                     Kit.BackButton { onClick = function() NavigationController.SwitchPage("home") end },
-                    Kit.Txt("万灵记忆", 34, C.gold, { position = "absolute", left = 110, right = 0, top = 8, height = 48 }),
+                    Kit.Txt("记忆闯关", 34, C.gold, { position = "absolute", left = 110, right = 0, top = 8, height = 48 }),
                 } },
                 UI.Panel { width = "100%", height = 80, flexShrink = 0, flexDirection = "row", gap = 24, alignItems = "center", children = {
                     UI.Panel { flexGrow = 1, flexBasis = 0, minWidth = 0, gap = 8, children = {
                         progressLabel,
-                        Kit.CompactTxt("循着记忆前行，找回失落的名字。", 18, C.textSecondary, { width = "100%", height = 28 }),
+                        Kit.CompactTxt("自由选关 · 叙事可选 · 首通奖励仅领取一次", 18, C.textSecondary, { width = "100%", height = 28 }),
                     } },
-                    Kit.ActionButton { text = "继续剧情", width = 240, onClick = function()
+                    Kit.ActionButton { text = "推荐关卡", width = 240, onClick = function()
                         if nextStage then ShowStage(nextStage) else Toast("全部记忆已归档，可选择章节重温") end
                     end },
                 } },

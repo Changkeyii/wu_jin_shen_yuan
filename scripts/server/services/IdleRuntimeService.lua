@@ -11,6 +11,8 @@ local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 ---@field onError function
 ---@field rng function?
 ---@field elapsed table<string|number, number>
+---@field trainingElapsed table<string|number, number>
+---@field trainingGeneration table<string|number, number>
 ---@field pending table<string|number, table>
 ---@field combatPlayers table<string|number, boolean>
 ---@field idlePlayers table<string|number, boolean>
@@ -30,6 +32,8 @@ function IdleRuntimeService.New(options)
         onError = options.onError or function() end,
         rng = options.rng,
         elapsed = {},
+        trainingElapsed = {},
+        trainingGeneration = {},
         pending = {},
         combatPlayers = {},
         idlePlayers = {},
@@ -55,10 +59,13 @@ end
 
 function IdleRuntimeService:Reset(userId)
     self.elapsed[userId] = 0
+    self.trainingElapsed[userId] = 0
 end
 
 function IdleRuntimeService:Remove(userId)
     self.elapsed[userId] = nil
+    self.trainingElapsed[userId] = nil
+    self.trainingGeneration[userId] = nil
     self.pending[userId] = nil
     self.combatPlayers[userId] = nil
     self.idlePlayers[userId] = nil
@@ -137,6 +144,9 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
             or session.state.pendingStoryGate
             or session.state.pendingEvent
         then finish(); return end
+        local accumulated = self.trainingElapsed[userId]
+        local trainingSeconds = math.min(60, accumulated or elapsedSeconds)
+        self.trainingElapsed[userId] = math.max(0, (accumulated or 0) - trainingSeconds)
         self.profileService:ApplyRuntime(userId, "auto combat tick", function(state, now)
             local current = self.profileService:GetSession(userId)
             if not self.profileService:IsOnline(userId)
@@ -150,7 +160,7 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
                     commit = { kind = "none" },
                 }
             end
-            return GameEngine.AdvanceCombatTick(state, rng, now, elapsedSeconds)
+            return GameEngine.AdvanceCombatTick(state, rng, now, elapsedSeconds, trainingSeconds)
         end, function(result)
             if result.ok then
                 local events = result.data.delta and result.data.delta.events or {}
@@ -166,10 +176,14 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
                             .. " position=" .. tostring(result.data.state and result.data.state.position))
                     end
                 end
-                if #events > 0 then
+                if #events > 0 or (result.data.delta and result.data.delta.changed and result.data.delta.changed.exp ~= nil) then
                     self.onDelta(userId, result.data.delta)
                 end
             else
+                local current = self.profileService:GetSession(userId)
+                if current and current.generation == generation and current.state.autoRun then
+                    self.trainingElapsed[userId] = (self.trainingElapsed[userId] or 0) + trainingSeconds
+                end
                 self.onError(userId, result)
             end
             finish()
@@ -192,11 +206,21 @@ function IdleRuntimeService:Update(timeStep)
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         online[userId] = true
         local state = self.profileService:GetState(userId)
-        if HasIndependentBattle(self.profileService:GetSession(userId)) then
+        local currentSession = self.profileService:GetSession(userId)
+        local generation = currentSession and currentSession.generation or 0
+        if self.trainingGeneration[userId] ~= generation then
+            self.trainingGeneration[userId] = generation
+            self.elapsed[userId], self.trainingElapsed[userId] = 0, 0
+        end
+        local independent = HasIndependentBattle(currentSession)
+        if state and state.autoRun and not independent and not state.pendingStoryGate and not state.pendingEvent then
+            self.trainingElapsed[userId] = (self.trainingElapsed[userId] or 0) + timeStep
+        else self.trainingElapsed[userId] = 0 end
+        if independent then
             self.idlePlayers[userId] = true
         elseif state and state.pendingEvent then
             self.pendingTimeoutPlayers[userId] = true
-        elseif state and state.autoRun and state.currentMonster
+        elseif state and state.autoRun
             and not state.pendingStoryGate and not state.pendingEvent then
             self.combatPlayers[userId] = true
         else
@@ -212,7 +236,7 @@ function IdleRuntimeService:Update(timeStep)
                 (self.elapsed[userId] or 0)
                 + timeStep
             local interval =
-                Catalog.STEP_SECONDS
+                5 -- Includes movement/encounter gaps in training time, without cloud writes.
 
             if state.currentMonster then
                 local monster = state.currentMonster
@@ -249,6 +273,11 @@ function IdleRuntimeService:Update(timeStep)
     end
     for userId in pairs(self.elapsed) do
         if not online[userId] then self.elapsed[userId] = nil end
+    end
+    for userId in pairs(self.trainingElapsed) do
+        if not online[userId] then
+            self.trainingElapsed[userId], self.trainingGeneration[userId] = nil, nil
+        end
     end
 end
 

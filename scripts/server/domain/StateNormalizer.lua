@@ -188,7 +188,7 @@ local function sanitizeEquipment(rawItem, itemId, sourceVersion)
     local definition = Catalog.ResolveEquipment(rawItem)
     if not definition then return nil end
     local level = clampInteger(rawItem.level, 1, 1000000, definition.level or 1)
-    local enhance = clampInteger(rawItem.enhance, 0, Catalog.MAX_ENHANCE, 0)
+    local enhance = clampInteger(rawItem.enhance, 0, Catalog.STORED_MAX_ENHANCE, 0)
     local star = clampInteger(rawItem.star, 0, Catalog.MAX_STAR, 0)
     local rarity = RarityCatalog.NormalizeId(rawItem.rarity or definition.rarity)
     local setEnabled = rawItem.setEnabled
@@ -215,6 +215,14 @@ local function sanitizeEquipment(rawItem, itemId, sourceVersion)
     local defBig = normalizeMagnitude(rawItem.defBig, def, definition.def or 0)
     local hpBig = normalizeMagnitude(rawItem.hpBig, hp, definition.hp or 0)
     local budgetBig = normalizeMagnitude(rawItem.budgetBig, rawItem.budget, 0)
+    -- Upgrade the finite-tier generation exactly once; preserve legacy magnitudes.
+    if (sourceVersion or 3) >= 11 and not rawItem.legacyLevel and (tonumber(rawItem.statVersion) or 5) < 6 then
+        local ratio = 2 ^ ((Progression.EquipmentLevel(level) - 1) / 50)
+        atkBig = BigNumber.MultiplyScalar(atkBig, ratio)
+        defBig = BigNumber.MultiplyScalar(defBig, ratio)
+        hpBig = BigNumber.MultiplyScalar(hpBig, ratio)
+        budgetBig = BigNumber.MultiplyScalar(budgetBig, ratio)
+    end
     if BigNumber.IsZero(budgetBig) and (sourceVersion or 3) < 4 then
         budgetBig = BigNumber.FromNumber(
             math.max(0, atk or 0) * 7
@@ -259,7 +267,7 @@ local function sanitizeEquipment(rawItem, itemId, sourceVersion)
         acquiredAt = math.max(0, TableUtils.ToInteger(rawItem.acquiredAt, 0)),
         source = type(rawItem.source) == "string" and rawItem.source:match("^[%w%._:%-]+$") and rawItem.source or "legacy",
         tradeable = rawItem.tradeable == true,
-        statVersion = 5,
+        statVersion = 6,
         budget = projectMagnitude(budgetBig),
         budgetBig = budgetBig,
         investedGold = LargeNumber.IsLargeNumber(
@@ -326,7 +334,7 @@ local function sanitizeEquipmentCollection(value)
             result[equipmentId] = {
                 powerBig = powerBig,
                 level = clampInteger(record.level, 1, 1000000, 1),
-                enhance = clampInteger(record.enhance, 0, Catalog.MAX_ENHANCE, 0),
+                enhance = clampInteger(record.enhance, 0, Catalog.STORED_MAX_ENHANCE, 0),
                 star = clampInteger(record.star, 0, Catalog.MAX_STAR, 0),
                 rarity = RarityCatalog.NormalizeId(record.rarity),
             }
@@ -493,6 +501,9 @@ local function sanitizeActivities(value)
                 lastHitAt = math.max(0, TableUtils.ToInteger(raw.session.lastHitAt, 0)),
                 damage = math.max(0, math.min(TableUtils.ToInteger(raw.session.damage, 0), Catalog.MAX_VALUE)),
                 finished = raw.session.finished == true,
+                dungeonStageId = require("shared.DungeonCatalog").GetStage(raw.session.dungeonStageId) and raw.session.dungeonStageId or nil,
+                dungeonRunId = type(raw.session.dungeonRunId) == "string" and raw.session.dungeonRunId:sub(1, 96) or nil,
+                rewardLevel = clampInteger(raw.session.rewardLevel, 1, 100, 1),
             }
         end
         result[id] = {
@@ -606,6 +617,8 @@ local function sanitizeAbyss(value)
             AbyssDefinitions.HARD_PITY_ATTEMPT - 1,
             0
         ),
+        epicMisses = clampInteger(value.epicMisses, 0, 9, 0),
+        mythMisses = clampInteger(value.mythMisses, 0, 39, 0),
         activeRuns = math.max(0, TableUtils.ToInteger(value.activeRuns, 0)),
         randomRuns = math.max(0, TableUtils.ToInteger(value.randomRuns, 0)),
         equipmentDrops = math.max(0, TableUtils.ToInteger(value.equipmentDrops, 0)),
@@ -635,6 +648,7 @@ local function sanitizeChallenges(value)
         session = {
             runId = rawSession.runId,
             gradeId = rawSession.gradeId,
+            setId = Catalog.SETS[rawSession.setId] and rawSession.setId or nil,
             ticketCost = math.max(0, TableUtils.ToInteger(rawSession.ticketCost, 0)),
             startedAt = math.max(0, TableUtils.ToInteger(rawSession.startedAt, 0)),
             lastHitAt = math.max(0, TableUtils.ToInteger(rawSession.lastHitAt, 0)),
@@ -1020,7 +1034,11 @@ function StateNormalizer.Normalize(rawState, now)
         end
     end
 
-    Progression.NormalizeState(state, now, sourceVersion < 11)
+    Progression.NormalizeState(state, now, sourceVersion < 11, sourceVersion < 12)
+    if state.pendingStoryGate and state.pendingStoryGate.phase ~= "prologue" then
+        state.pendingStoryGate = nil
+        if state.pauseReason == "story_gate" then state.pauseReason = nil end
+    end
     state.maxFloor = math.max(state.maxFloor, state.floor)
     local oldGifts = rawState.rewardClaims and rawState.rewardClaims.gifts
     if oldGifts and (tonumber(oldGifts.version) or 1) < 2 then

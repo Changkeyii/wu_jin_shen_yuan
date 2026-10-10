@@ -1,4 +1,5 @@
 local Progression = require("shared.GameProgression")
+local Balance = require("shared.GameBalance")
 local Catalog = {}
 local BigNumber = require("shared.BigNumber")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
@@ -42,7 +43,8 @@ function Catalog.GetInventoryFreeSlots(state)
     return math.max(0, capacity - used), capacity, used
 end
 Catalog.MAX_STAR = 5
-Catalog.MAX_ENHANCE = 1000
+Catalog.MAX_ENHANCE = Balance.ENHANCE_LIMIT
+Catalog.STORED_MAX_ENHANCE = 1000
 Catalog.MAX_VIP_LEVEL = 10
 Catalog.VIP_DAMAGE_RATE_PER_LEVEL = 0.005
 Catalog.DECOMPOSE_BASE_REFUND_RATE = 0.25
@@ -252,6 +254,7 @@ function Catalog.GetEconomyLevelFactor(level)
 end
 
 function Catalog.GetBattleGold(level, encounterKind)
+    level = Balance.Level(level)
     local multiplier = encounterKind == "chapterBoss" and 8
         or (encounterKind == "boss" and 8
             or (encounterKind == "elite" and 2 or 1))
@@ -263,6 +266,7 @@ end
 
 -- 交互事件奖励/成本按 variant 分档，服务端确定性计算。
 function Catalog.GetEventChestGold(level, variant)
+    level = Balance.Level(level)
     variant = Catalog.Clamp(math.floor(tonumber(variant) or 1), 1, 3)
     return EconomyValue(
         level,
@@ -271,6 +275,7 @@ function Catalog.GetEventChestGold(level, variant)
 end
 
 function Catalog.GetEventMerchantCost(level, variant)
+    level = Balance.Level(level)
     variant = Catalog.Clamp(math.floor(tonumber(variant) or 1), 1, 3)
     return EconomyValue(
         level,
@@ -279,6 +284,7 @@ function Catalog.GetEventMerchantCost(level, variant)
 end
 
 function Catalog.GetChestGold(level, roll)
+    level = Balance.Level(level)
     roll = Catalog.Clamp(tonumber(roll) or 0, 0, 1)
     local multiplier = Catalog.CHEST_GOLD_MULTIPLIER_MIN
         + (Catalog.CHEST_GOLD_MULTIPLIER_MAX
@@ -295,6 +301,7 @@ function Catalog.GetChestGoldRange(level)
 end
 
 function Catalog.GetMerchantGoldCost(level)
+    level = Balance.Level(level)
     return EconomyValue(
         level,
         Catalog.BATTLE_GOLD_BASE
@@ -303,6 +310,7 @@ function Catalog.GetMerchantGoldCost(level)
 end
 
 function Catalog.GetWishGold(level)
+    level = Balance.Level(level)
     return EconomyValue(
         level,
         Catalog.BATTLE_GOLD_BASE
@@ -326,6 +334,11 @@ local function GetEquipmentEconomyBase(item)
 end
 
 function Catalog.GetStrengthenCost(item, enhance)
+    if item and (item.legacyLevel or (item.level or 1) > 100) then
+        local historical = Catalog.Clamp(math.floor(tonumber(enhance) or 0), 0, Catalog.STORED_MAX_ENHANCE)
+        return { gold = LargeNumber.MultiplyScalar(GetEquipmentEconomyBase(item), 0.2 * 1.22 ^ historical),
+            fragments = math.floor(8 * (1 + historical / 6) ^ 2.35) }
+    end
     enhance = Catalog.Clamp(
         math.floor(tonumber(enhance) or 0),
         0,
@@ -333,22 +346,24 @@ function Catalog.GetStrengthenCost(item, enhance)
     )
     return {
         gold = LargeNumber.MultiplyScalar(
-            GetEquipmentEconomyBase(item),
-            Catalog.STRENGTHEN_GOLD_RATE
-                * Catalog.STRENGTHEN_GOLD_GROWTH ^ enhance
+            Catalog.GetBattleGold(item and item.level or 1),
+            (3 + enhance * 2) ^ 1.5
         ),
         fragments = math.min(
             Catalog.MAX_VALUE,
             math.floor(
-                Catalog.STRENGTHEN_FRAGMENT_BASE
-                    * (1 + enhance / Catalog.STRENGTHEN_FRAGMENT_SCALE)
-                        ^ Catalog.STRENGTHEN_FRAGMENT_EXPONENT
+                8 + enhance * 2 + enhance * enhance * 0.6
             )
         ),
     }
 end
 
 function Catalog.GetStarCost(item, star)
+    if item and (item.legacyLevel or (item.level or 1) > 100) then
+        local historical = Catalog.Clamp(math.floor(tonumber(star) or 0), 0, 5)
+        return { gold = LargeNumber.MultiplyScalar(GetEquipmentEconomyBase(item), 0.75 * 1.65 ^ historical),
+            fragments = math.floor(20 * 2.6 ^ historical), duplicateCount = 1 }
+    end
     star = Catalog.Clamp(
         math.floor(tonumber(star) or 0),
         0,
@@ -356,15 +371,13 @@ function Catalog.GetStarCost(item, star)
     )
     return {
         gold = LargeNumber.MultiplyScalar(
-            GetEquipmentEconomyBase(item),
-            Catalog.STAR_GOLD_RATE
-                * Catalog.STAR_GOLD_GROWTH ^ star
+            Catalog.GetBattleGold(item and item.level or 1),
+            30 * 1.6 ^ star
         ),
         fragments = math.min(
             Catalog.MAX_VALUE,
             math.floor(
-                Catalog.STAR_FRAGMENT_BASE
-                    * Catalog.STAR_FRAGMENT_GROWTH ^ star
+                20 * 1.9 ^ star
             )
         ),
         duplicateCount = 1,
@@ -395,7 +408,7 @@ function Catalog.GetItemEffectiveStats(item)
     local critDmg = item.critDmg ~= nil and item.critDmg or (definition and definition.critDmg or 0)
     local atkSpeed = item.atkSpeed ~= nil and item.atkSpeed or (definition and definition.atkSpeed or 0)
     local level = Catalog.Clamp(math.floor(item.level or 1), 1, 1000000)
-    local enhance = Catalog.Clamp(math.floor(item.enhance or 0), 0, Catalog.MAX_ENHANCE)
+    local enhance = Catalog.Clamp(math.floor(item.enhance or 0), 0, Catalog.STORED_MAX_ENHANCE)
     local star = Catalog.Clamp(math.floor(item.star or 0), 0, Catalog.MAX_STAR)
     local generated = (tonumber(item.statVersion) or 0) >= 4 or item.roll ~= nil
     local levelFactor = generated and 1 or (1 + (level - 1) * 0.06)
@@ -469,7 +482,7 @@ function Catalog.CreateItemStats(definition, floor, rarityId, roll, enhance, sta
     local hpBig = BigNumber.MultiplyScalar(budgetBig, split.hp * FULL_SET_EQUIPMENT_STATS.hp
         / (85000 * FULL_SET_AXIS_SHARE.hp))
     local stats = {
-        statVersion = 5,
+        statVersion = 6,
         roll = roll,
         budget = BigNumber.ToNumber(budgetBig),
         budgetBig = budgetBig,
@@ -819,6 +832,7 @@ local function EquipmentRevision(state)
         tostring(state.maxFloor or 1),
         tostring(Progression.CoreLevel(state)),
         tostring(state.permanentBonus or 0),
+        tostring(state.floorKillBonus or 0),
         tostring(#(state.inventory or {})),
     }
     for slot, itemId in pairs(equipped) do
@@ -840,7 +854,7 @@ function Catalog.CalculateStats(state, options)
     end
     local permanentBonus = math.max(0, state.permanentBonus or 0)
     -- Character growth ends at level 100. Only migrated historical power is frozen above it.
-    local coreGrowth = TowerRules.Growth(Progression.CoreLevel(state))
+    local coreGrowth = Progression.CoreGrowth(state)
     local stats = {
         atkBig = BigNumber.MultiplyScalar(coreGrowth,
             90 * RARE_STANDARD_RATIO * 0.15 * (1 + permanentBonus)),

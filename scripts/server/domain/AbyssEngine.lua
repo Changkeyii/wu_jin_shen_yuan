@@ -88,7 +88,8 @@ local function updateHighestGrade(abyss, gradeId)
     end
 end
 
-local function settleWorking(working, source, gradeId, ticketCost, runId, rng, now, events)
+local function settleWorking(working, source, gradeId, ticketCost, runId, rng, now, events, options)
+    options = options or {}
     local grade = AbyssDefinitions.Get(gradeId)
     local abyss = ensureState(working)
     local equipmentDropped, guaranteed = shouldDrop(abyss, grade, rng)
@@ -138,8 +139,14 @@ local function settleWorking(working, source, gradeId, ticketCost, runId, rng, n
         )
     end
     if equipmentDropped then
-        local floor = dropFloor(working)
+        local floor = AbyssDefinitions.DropPoolFloor(working)
         rarity = rollRarity(grade, floor, rng)
+        if floor >= 100 and (abyss.mythMisses or 0) >= 39 then rarity = "myth"
+        elseif floor >= 50 and (abyss.epicMisses or 0) >= 9 and rarity ~= "myth" then rarity = "epic" end
+        if floor >= 50 then abyss.epicMisses = (rarity == "epic" or rarity == "myth") and 0 or (abyss.epicMisses or 0) + 1 end
+        if floor >= 100 then abyss.mythMisses = rarity == "myth" and 0 or (abyss.mythMisses or 0) + 1 end
+        local poolMin, poolMax = AbyssDefinitions.EquipmentLevelPool(working.level)
+        local itemLevel = DomainMath.RandomFloat(rng) < 0.5 and poolMin or poolMax
         local added, generated, changed = RewardEngine.AddGeneratedDrop(
             working,
             rarity,
@@ -149,7 +156,7 @@ local function settleWorking(working, source, gradeId, ticketCost, runId, rng, n
             source == "random" and "abyss_random" or "abyss_activity",
             events,
             {
-                floor = floor,
+                floor = floor, equipmentLevel = itemLevel, setId = options.setId,
                 rollTradeable = true,
                 requireInventory = source ~= "random",
             }
@@ -212,84 +219,8 @@ local function settleWorking(working, source, gradeId, ticketCost, runId, rng, n
 end
 
 function AbyssEngine.EnterActivity(inputState, gradeId, now, rng)
-    local grade = AbyssDefinitions.Get(gradeId)
-    if not grade then
-        return PlayerTransition.Failure(inputState, now, "INVALID_ABYSS_GRADE", "未知深渊档位")
-    end
-    if not AbyssDefinitions.IsUnlocked(gradeId, inputState.level) then
-        return PlayerTransition.Failure(
-            inputState,
-            now,
-            "ABYSS_GRADE_LOCKED",
-            string.format("该深渊需达到 Lv.%d", grade.minLevel)
-        )
-    end
-    if #inputState.inventory >= Catalog.GetInventoryCapacity(inputState)
-        and not EquipmentEngine.HasAutoDispositionPolicy(inputState)
-    then
-        return PlayerTransition.Failure(
-            inputState,
-            now,
-            "INVENTORY_FULL",
-            "背包已满，请先分解、出售或点击容量后的 +50 扩容"
-        )
-    end
-
-    local ticketCost = AbyssDefinitions.TicketCost(inputState.level, gradeId)
-    local currentTickets = inputState.abyss and inputState.abyss.tickets
-        or AbyssDefinitions.STARTER_TICKETS
-    if currentTickets < ticketCost then
-        return PlayerTransition.Failure(
-            inputState,
-            now,
-            "ABYSS_TICKET_INSUFFICIENT",
-            string.format("深渊票不足，需要 %d 张", ticketCost)
-        )
-    end
-
-    local working = PlayerTransition.Copy(inputState, now)
-    local abyss = ensureState(working)
-    abyss.tickets = abyss.tickets - ticketCost
-    local runId = makeRunId(working, "activity", now)
-    local events = {
-        PlayerTransition.Event("abyss_started", {
-            runId = runId,
-            source = "activity",
-            gradeId = gradeId,
-            ticketCost = ticketCost,
-            dropChance = grade.dropChance,
-        }),
-    }
-    local settled, code, reason, inventoryChanged = settleWorking(
-        working,
-        "activity",
-        gradeId,
-        ticketCost,
-        runId,
-        rng,
-        now,
-        events
-    )
-    if not settled then
-        return PlayerTransition.Failure(inputState, now, code, reason)
-    end
-
-    print(string.format(
-        "[Abyss] enter source=activity grade=%s level=%d cost=%d tickets=%d",
-        gradeId,
-        working.level,
-        ticketCost,
-        abyss.tickets
-    ))
-    return PlayerTransition.Finalize(
-        inputState,
-        working,
-        now,
-        "abyss_completed",
-        events,
-        inventoryChanged,
-        false
-    )
+    -- Compatibility entry: reserve the same authoritative Boss battle as the current UI.
+    return require("server.domain.ChallengeEngine").BeginBoss(inputState, gradeId, now)
 end
 
 function AbyssEngine.RollRandomGrade(level, rng)

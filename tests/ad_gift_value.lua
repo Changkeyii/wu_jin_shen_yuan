@@ -32,7 +32,7 @@ assert(T.Copy(saved, now).rewardClaims.gifts.quote.benefit == p.state.rewardClai
 s.gold, s.fragments = Large.Zero(), Large.Zero()
 weapon.enhance = 100
 p = E.Prepare(s, "forge", now)
-assert(p.ok and p.state.rewardClaims.gifts.quote.benefit:find("仍需积累", 1, true))
+assert(p.ok and p.state.rewardClaims.gifts.quote.benefit:find("后续", 1, true), "max-enhanced gear must offer materials without promising another upgrade")
 
 s = fresh()
 E.OnBossVictory(s, Large.FromNumber(101), {})

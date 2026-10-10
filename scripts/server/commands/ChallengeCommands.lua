@@ -12,6 +12,7 @@ local GRADE_SCHEMA = {
     required = { "gradeId" },
     allowUnknown = false,
     fields = {
+        setId = { type = "string", enum = { "nightmare", "lucky", "voyage", "abyss", "prophecy" } },
         gradeId = {
             type = "string",
             enum = { "rift", "mutated", "calamity" },
@@ -61,7 +62,7 @@ function ChallengeCommands.Register(router, services)
         schema = GRADE_SCHEMA,
         rate = ServerConfig.RATES.Progression,
         handler = AsyncMutation(services, "begin abyss boss", function(state, payload, now)
-            return ChallengeEngine.BeginBoss(state, payload.gradeId, now)
+            return ChallengeEngine.BeginBoss(state, payload.gradeId, now, payload.setId)
         end),
     })
 

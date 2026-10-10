@@ -6,6 +6,7 @@
 local QuestDefinitions = require("shared.QuestDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 
+local DungeonCatalog = require("shared.DungeonCatalog")
 ---@class ActivityDefinitions
 local ActivityDefinitions = {}
 
@@ -191,7 +192,7 @@ function ActivityDefinitions.BuildView(state, now)
     now = math.max(0, math.floor(tonumber(now) or os.time()))
     local today = math.floor((now + 8 * 60 * 60) / (24 * 60 * 60))
     local referenceFloor = math.max(QuestDefinitions.REFERENCE_FLOOR_MIN,
-        math.floor(tonumber(state.maxFloor) or QuestDefinitions.REFERENCE_FLOOR_MIN))
+        math.floor(tonumber(state.level) or QuestDefinitions.REFERENCE_FLOOR_MIN))
     local view = { signin = {}, strike = {} }
     local redDot = 0
 
@@ -241,15 +242,17 @@ function ActivityDefinitions.BuildView(state, now)
         local tiers = {}
         for _, tier in ipairs(def.tiers) do
             tiers[#tiers + 1] = {
-                minDamage = tier.minDamage,
+                minDamage = tier.minDamage == 0 and 0 or require("shared.GameBalance").StrikeTarget(state.level, tier.minDamage == 1000 and 2 or 3),
                 reward = ActivityDefinitions.RewardPreview(tier.reward, referenceFloor),
             }
         end
         if info.remaining > 0 or info.sessionActive then redDot = redDot + 1 end
+        local dungeons = DungeonCatalog.ForActivity(def.id)
         view.strike[#view.strike + 1] = {
             id = def.id,
-            title = def.title,
-            desc = def.desc,
+            title = dungeons[1].title:gsub(" · 普通", ""),
+            desc = dungeons[1].desc,
+            dungeons = dungeons,
             type = def.type,
             rewardKind = def.rewardKind,
             todayCount = info.todayCount,
@@ -257,7 +260,8 @@ function ActivityDefinitions.BuildView(state, now)
             remaining = info.remaining,
             adUsed = info.adUsed,
             adCan = info.adCan,
-            sessionActive = info.sessionActive,
+            sessionActive = info.sessionActive and not ((state.activities or {})[def.id] or {}).session.dungeonStageId,
+            dungeonStageId = info.sessionActive and ((state.activities or {})[def.id] or {}).session.dungeonStageId or nil,
             sessionDamage = info.sessionDamage,
             sessionStartedAt = info.sessionStartedAt,
             sessionRemaining = info.sessionRemaining,
