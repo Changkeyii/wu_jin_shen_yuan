@@ -21,6 +21,14 @@ local HomeView = {}
 local homeRoot_ = nil
 local homeRefs_ = {}
 
+-- Hero asset: 1000x620, visible frame x0..1000/y28..591, contain in 1048x620.
+-- Growth content x554..872/y188..298 stays above actions (y316) and left of help (x874).
+local GROWTH_RECT = { left = 554, top = 188, width = 318, height = 110 }
+
+local function CurrentLevelText(game)
+    return "当前等级 " .. Progression.Level(game.level) .. " / 100"
+end
+
 ---@class HomeStatCard : Panel
 ---@field _valueLabel Label
 ---@return HomeStatCard
@@ -262,13 +270,18 @@ function HomeView.Build(context)
     local statGridH = statCardH * 3 + statRowGapY * 2
     local statGridX = math.floor((CONFIG.DesignW - statGridW) * 0.5)
 
-    -- 背景板容器：玩家信息、标题、VIP 徽标、三个按钮全部作为其子项，
+    -- 背景板容器：玩家信息、成长目标、VIP 徽标、三个按钮全部作为其子项，
     -- 保证这些内容绘制在背景板图片之上，不会被遮挡。
     local goal = Progression.BuildGoal(game)
-    -- Reuse hero content at x596..866/y254..306, inside the inspected inner frame.
-    homeRefs_.goal = Kit.MultiTxt(goal.label .. "\n" .. goal.progress, 20, C.focus, {
-        position = "absolute", left = 596, top = 254, width = 270, height = 52,
-        maxLines = 2, textAlign = "center", textStroke = { width = 2, color = "#000000" },
+    homeRefs_.levelText = CurrentLevelText(game)
+    homeRefs_.goalText = goal.label
+    homeRefs_.level = Kit.Txt(homeRefs_.levelText, 28, C.text, {
+        height = 46, flexShrink = 0, lineHeight = 1.2, overflow = "visible",
+        textAlign = "center", textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
+    })
+    homeRefs_.goal = Kit.Txt(homeRefs_.goalText, 24, C.focus, {
+        height = 44, flexShrink = 0, lineHeight = 1.2, overflow = "visible",
+        textAlign = "center", textStroke = { width = 2, color = "#000000" }, pointerEvents = "none",
     })
     local function showGoal()
         local current = homeRefs_.game or game
@@ -291,6 +304,7 @@ function HomeView.Build(context)
     end
     local heroPanel = UI.Panel {
         width = 1048, height = 620, flexShrink = 0, position = "relative",
+        overflow = "visible",
         backgroundImage = ASSETS.ui.heroPanel, backgroundFit = "contain",
         children = {
             UI.Panel {
@@ -316,20 +330,20 @@ function HomeView.Build(context)
                 id = "tutorialFeatureVip",
                 onOpen = context.onOpenDailyVip,
             },
-            Kit.Txt("登塔", 34, C.text, {
-                position = "absolute", left = 596, top = 196,
-                width = 270, textAlign = "center",
-                textStroke = { width = 4, color = "#000000" },
-            }),
             UI.Panel {
                 position = "absolute", left = 874, top = 184,
                 width = 64, height = 64, clickable = true,
                 backgroundImage = "image/ui/dialog/help_button.png", backgroundFit = "contain",
                 onClick = function() ShowRules(game) end,
             },
-            homeRefs_.goal,
-            UI.Panel { position = "absolute", left = 596, top = 254, width = 270, height = 52,
-                clickable = true, onClick = showGoal },
+            UI.Panel {
+                id = "homeGrowth",
+                position = "absolute", left = GROWTH_RECT.left, top = GROWTH_RECT.top,
+                width = GROWTH_RECT.width, height = GROWTH_RECT.height,
+                flexDirection = "column", alignItems = "center", justifyContent = "center", gap = 8,
+                overflow = "visible", clickable = true, onClick = showGoal,
+                children = { homeRefs_.level, homeRefs_.goal },
+            },
             HomeActionButton("任务", 596, 316, function()
                 QuestController.Open()
             end, QuestController.CountClaimable(game, "newbie")
@@ -482,9 +496,13 @@ end
 function HomeView.Update(game)
     game = game or {}
     homeRefs_.game = game
+    if homeRefs_.level then
+        local text = CurrentLevelText(game)
+        if text ~= homeRefs_.levelText then homeRefs_.level:SetText(text); homeRefs_.levelText = text end
+    end
     if homeRefs_.goal then
         local goal = Progression.BuildGoal(game)
-        local text = goal.label .. "\n" .. goal.progress
+        local text = goal.label
         if text ~= homeRefs_.goalText then homeRefs_.goal:SetText(text); homeRefs_.goalText = text end
     end
     local unread = math.max(0, math.floor(tonumber((game.mailSummary or {}).unread) or 0))
