@@ -1,4 +1,4 @@
--- 数值模型回归测试：星级单价、可交易概率、VIP10、递增碎片、交互事件、离线 20%
+-- 数值模型回归测试：星级单价、可交易概率、VIP10、递增碎片、交互事件、离线 10%
 local Catalog = require("server.domain.Catalog")
 local GameEngine = require("server.domain.GameEngine")
 local GameStateSchema = require("shared.GameStateSchema")
@@ -128,7 +128,7 @@ local function testVipFee()
     nearly(MarketCatalog.GetFeeRate(-5), 0.08, "negative vip clamps to base fee", 1e-6)
 
     -- schema 上限同步
-    local state = StateFactory.NewState(1)
+    local state = StateFactory.Create(1)
     state.vipLevel = 11
     local normalized = StateNormalizer.Normalize(state)
     truthy(normalized.vipLevel <= 10, "normalizer clamps vip to 10")
@@ -137,7 +137,7 @@ end
 -- 4. 每日签到 +1 级，服务端权威且当日只能一次
 local function testDailyVip()
     local now = 1700000000
-    local state = StateFactory.NewState(1)
+    local state = StateFactory.Create(1)
     state.vipLevel = 0
 
     local first = GameEngine.ClaimDailySignInVip(state, now)
@@ -235,7 +235,7 @@ local function testInteractiveEvents()
 
     -- 超时必须跳过，且绝不代替玩家花费金币
     local now = 1700000000
-    local state = StateFactory.NewState(1)
+    local state = StateFactory.Create(1)
     state.gold = LargeNumber.FromNumber(1000000)
     state.pendingEvent = {
         eventId = "evt-1",
@@ -322,7 +322,7 @@ local function testInteractiveEvents()
     equal(stale.ok, false, "stale event id rejected")
 
     -- schema 必须要求 skip 始终可用，否则玩家可能被事件永久卡住
-    local noSkipState = StateFactory.NewState(1)
+    local noSkipState = StateFactory.Create(1)
     noSkipState.pendingEvent = {
         eventId = "evt-5",
         eventType = "chest",
@@ -343,33 +343,33 @@ local function testInteractiveEvents()
     equal(validOk, true, "schema accepts pending event with skip")
 end
 
--- 7. 离线金币为在线 20%，且最多 100 件装备
+-- 7. 离线金币与掉落按在线10%折算一次
 local function testOfflineEconomy()
-    equal(Catalog.OFFLINE_REWARD_RATE, 0.20, "offline reward rate is 20%")
-    equal(RewardPolicy.OFFLINE_RATE, 0.20, "offline drop rate is 20%")
+    equal(Catalog.OFFLINE_REWARD_RATE, 0.10, "offline reward rate is 10%")
+    equal(RewardPolicy.OFFLINE_RATE, 0.10, "offline drop rate is 10%")
 
-    -- 离线金币恰好是同层在线金币的 20%
+    -- 离线金币恰好是同层在线金币的10%
     for _, floor in ipairs({ 1, 25, 100, 500 }) do
         for _, kind in ipairs({ "normal", "elite", "boss" }) do
             local online = Catalog.GetBattleGold(floor, kind)
             local offline = LargeNumber.MultiplyScalar(online, Catalog.OFFLINE_REWARD_RATE)
-            local expected = LargeNumber.MultiplyScalar(online, 0.20)
+            local expected = LargeNumber.MultiplyScalar(online, 0.10)
             equal(
                 LargeNumber.ToString(offline),
                 LargeNumber.ToString(expected),
-                string.format("offline gold is 20%% of online at floor %d %s", floor, kind)
+                string.format("offline gold is 10%% of online at floor %d %s", floor, kind)
             )
             truthy(LargeNumber.Compare(offline, online) < 0,
                 "offline gold is strictly less than online")
         end
     end
 
-    -- 掉落概率同样按 20% 折算，未被重复缩放
+    -- 掉落概率同样按10%折算，未被重复缩放
     for _, kind in ipairs({ "normal", "elite", "boss" }) do
         local online = RewardPolicy.DropChance(kind, "online") or 0
         local offline = RewardPolicy.DropChance(kind, true) or 0
-        nearly(offline, online * 0.20,
-            "offline drop chance is exactly 20% of online for " .. kind, 1e-9)
+        nearly(offline, online * 0.10,
+            "offline drop chance is exactly 10% of online for " .. kind, 1e-9)
     end
 
     -- 100 件装备在容量足够时属于正常上限

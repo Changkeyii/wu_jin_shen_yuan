@@ -533,9 +533,7 @@ local function HandleClientIdentity(eventType, eventData)
 
     local existingSession = profileService_:GetSession(userId)
     if existingSession then
-        existingSession.connection = connection
-        existingSession.generation = entry.generation
-        existingSession.ready = false
+        profileService_:Resume(userId, connection, entry.generation)
         if replaced and replaced.connection and replaced.connection ~= connection then replaced.connection:Disconnect(50) end
         if entry.ready then FinalizeReadyAfterBroadcast(entry) end
         return

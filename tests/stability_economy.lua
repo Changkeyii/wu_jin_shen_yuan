@@ -60,7 +60,7 @@ assert(old.version==D.VERSION and not old.offers.boss and old.offers.journey.jar
 for _,seconds in ipairs({899,900,13*3600}) do
     s=fresh(); s.lastActiveAt=now-seconds
     local accrued=Rewards.AccrueOffline(s,now)
-    assert(accrued.state.pendingOfflineSeconds==(seconds<900 and 0 or math.min(seconds,12*3600)))
+    assert(accrued.state.pendingOfflineSeconds==(seconds<900 and 0 or math.min(seconds,24*3600)))
     local ledger=Rewards.FreezeOfflineReward(accrued.state,now,function() return 0.99 end)
     assert((ledger~=nil)==(seconds>=900))
     if ledger then

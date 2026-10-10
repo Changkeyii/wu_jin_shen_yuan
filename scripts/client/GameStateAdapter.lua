@@ -312,8 +312,8 @@ local function EventText(value)
         return "背包已满，本次无法处理的装备掉落已跳过，挂机继续。"
     elseif kind == "offline_collected" then
         local equipmentText = (value.equipment or 0) > 0 and ("、装备" .. tostring(value.equipment) .. "件") or ""
-        local remainingText = value.interrupted and "，背包已满，剩余离线收益保留" or ""
-        return "领取离线收益（在线1/5）：金币" .. FormatValue(value.gold) .. "、经验" .. FormatValue(value.exp) .. "、碎片" .. FormatValue(value.fragments) .. equipmentText .. remainingText .. "。"
+        local remainingText = (value.remainingSeconds or 0) > 0 and "，剩余离线时长保留" or ""
+        return "领取离线收益（在线1/10）：金币" .. FormatValue(value.gold) .. "、经验" .. FormatValue(value.exp) .. "、碎片" .. FormatValue(value.fragments) .. equipmentText .. remainingText .. "。"
     elseif kind == "equipment_equipped" then
         return "装备已穿戴至" .. tostring(value.slot or "目标槽位") .. "。"
     elseif kind == "equipment_unequipped" then

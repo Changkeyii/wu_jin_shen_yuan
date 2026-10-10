@@ -3,7 +3,7 @@ local ServerConfig = {}
 ServerConfig.SCHEMA_VERSION = 1
 ServerConfig.STEP_SECONDS = 3
 ServerConfig.COMBAT_TICK_SECONDS = 0.10
-ServerConfig.OFFLINE_MAX_SECONDS = 12 * 60 * 60
+ServerConfig.OFFLINE_MAX_SECONDS = require("shared.GameStatePolicy").OFFLINE_MAX_SECONDS
 ServerConfig.INVENTORY_CAP = 300
 -- 含广告扩容后的绝对上限（基础 300 + 最多 700）。
 ServerConfig.INVENTORY_HARD_CAP = 1000

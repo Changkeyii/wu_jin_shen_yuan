@@ -5,6 +5,7 @@ local Balance = {}
 Balance.VERSION = 2
 Balance.MAX_LEVEL = 100
 Balance.TRAINING_SECONDS = 86400
+Balance.OFFLINE_RATE = 0.10
 Balance.ENHANCE_LIMIT = 20
 Balance.BATTLE_GOLD_BASE = 22000
 

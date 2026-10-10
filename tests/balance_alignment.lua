@@ -59,7 +59,12 @@ for _, offline in ipairs({ false, true }) do
         if tick % 100 == 0 then state = Normalizer.Normalize(Schema.ToPersistedState(state), now + tick * 10) end
         if tick == 8639 then assert(state.level < 100) end
     end
-    assert(state.level == 100, "24 hours must reach level 100")
+    if offline then
+        local online = Factory.Create(now)
+        Progression.AddExperience(online, Progression.TrainingExp(online, 8640, false), now + 86400)
+        assert(state.level == online.level and state.exp == online.exp,
+            "24 offline hours must equal 2h24m of online training")
+    else assert(state.level == 100, "24 online hours must reach level 100") end
     validate(state)
 end
 
@@ -118,7 +123,10 @@ for half = 1, 2 do
     offline = Normalizer.Normalize(Schema.ToPersistedState(offline), now + half * 43200)
     validate(offline)
 end
-assert(offline.level == 100, '24 cumulative offline hours must survive freeze/claim/reconnect rounding')
+local online = Factory.Create(now)
+Progression.AddExperience(online, Progression.TrainingExp(online, 8640, false), now + 86400)
+assert(offline.level == online.level and offline.exp == online.exp,
+    '24 cumulative offline hours must equal 2h24m online across freeze/claim/reconnect')
 
 -- Strengthening then selling/decomposing cannot pay for its own investment.
 for level = 5, 100, 5 do

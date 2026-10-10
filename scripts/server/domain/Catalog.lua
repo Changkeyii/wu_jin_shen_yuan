@@ -14,7 +14,7 @@ local TowerRules = require("shared.TowerRules")
 Catalog.SCHEMA_VERSION = GameStateContracts.VERSION
 Catalog.STEP_SECONDS = 12
 Catalog.COMBAT_TICK_SECONDS = 0.10
-Catalog.OFFLINE_REWARD_RATE = 0.20
+Catalog.OFFLINE_REWARD_RATE = Balance.OFFLINE_RATE
 -- The reward is scaled at settlement. Scaling the step count too would apply
 -- the offline penalty twice.
 Catalog.OFFLINE_STEP_SECONDS = Catalog.STEP_SECONDS

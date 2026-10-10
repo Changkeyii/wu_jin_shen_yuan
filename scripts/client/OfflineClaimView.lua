@@ -46,12 +46,14 @@ local function BuildTimeSummary(value, preview, currentFloor)
     local secondaryValue = preview and Kit.FormatDuration(value.processedSeconds or 0)
         or ("第" .. tostring(value.floor or currentFloor or 1) .. "层")
     local note
-    if value.interrupted then
+    if value.interrupted and (value.remainingSeconds or 0) > 0 then
         note = "背包空间不足，未结算时间会继续保留"
+    elseif (value.temporaryEquipment or 0) > 0 then
+        note = "背包空间不足，装备已保存至临时掉落，请整理背包"
     elseif (value.remainingSeconds or 0) > 0 then
         note = (preview and "领取后保留 " or "剩余离线 ") .. Kit.FormatDuration(value.remainingSeconds)
     else
-        note = preview and "收益按在线效率的20%计算，装备结果已锁定"
+        note = preview and "收益按在线效率的10%计算，装备结果已锁定"
             or "奖励已经服务器确认并同步到当前角色"
     end
     local function Stat(label, text, color, textAlign)

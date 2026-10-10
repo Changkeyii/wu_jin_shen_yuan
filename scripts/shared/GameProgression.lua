@@ -97,13 +97,14 @@ end
 function Progression.TrainingExp(state, seconds, offline)
     state.growth = state.growth or Progression.NewGrowth()
     seconds = math.max(0, tonumber(seconds) or 0)
+    if offline then seconds = seconds * Balance.OFFLINE_RATE end
     local level, exp = Progression.Level(state.level), (tonumber(state.exp) or 0) + (state.growth.trainingFraction or 0)
     local earned = 0
     while seconds > 0.000001 do
         local reference = math.min(99, level)
         local rate = Balance.NextExp(reference) / Balance.LevelSeconds(reference)
         if level >= 100 then
-            earned = earned + seconds * rate * (offline and 0.2 or 1)
+            earned = earned + seconds * rate
             break
         end
         local needed = Progression.NextExp(level) - exp

@@ -49,15 +49,22 @@ function PlayerProfileService.New(options)
         onResynced = options.onResynced or function() end,
         onConflict = options.onConflict or function() end,
     }, PlayerProfileService)
-    self.repository.onReconciled = function(uid, result)
+    self.repository.onReconciled = function(uid, result, applied)
         local session = self.sessions[uid]
         if not session or not result.data.state then return end
-        session.state = result.data.state
-        session.persistedState = TableUtils.DeepCopy(result.data.state)
+        local unchanged = applied == false and session.persistedState
+            and result.data.state.storageVersion == session.persistedState.storageVersion
+        -- A confirmed rollback must retain the login's runtime accrual and the
+        -- frozen quote, since neither was included in the old cloud snapshot.
+        if not unchanged then
+            session.state = result.data.state
+            session.persistedState = TableUtils.DeepCopy(result.data.state)
+            session.offlineReceipts = {}
+            session.offlineQuoteToken = nil
+        end
         session.writeBlocked = false
-        session.offlineReceipts = {}
-        session.offlineQuoteToken = nil
-        self:FreezeOfflineReward(uid)
+        local resumed = self:_applyOfflineResume(session)
+        if not unchanged or resumed then self:FreezeOfflineReward(uid) end
         self.onResynced(uid)
         if not session.connection then self.sessions[uid] = nil end
     end
@@ -91,7 +98,8 @@ function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplet
             return
         end
     end
-    if proposal.ok and proposal.commit and proposal.commit.kind ~= "none" then
+    if proposal.ok and (proposal.state.lastActiveAt ~= state.lastActiveAt
+        or proposal.state.pendingOfflineSeconds ~= state.pendingOfflineSeconds) then
         -- 登录不能等待云写回。离线秒数先放入当前权威会话，之后由正常玩法提交或断线检查点持久化。
         proposal.state.revision = state.revision
         proposal.state.updatedAt = state.updatedAt
@@ -200,6 +208,38 @@ function PlayerProfileService:MarkDisconnected(userId, generation)
     session.ready = false
     session.disconnectedAt = self.clock()
     return true
+end
+
+-- A checkpoint with an uncertain result retains the session. Count only the
+-- disconnected interval, and merge it AFTER any in-flight save is reconciled.
+function PlayerProfileService:_applyOfflineResume(session)
+    if not session.resumeActiveAt or session.writing or session.writeBlocked
+        or (self.repository.IsWriteBlocked and self.repository:IsWriteBlocked(session.userId)) then return false end
+    local state = TableUtils.DeepCopy(session.state)
+    local credited = session.resumeOfflineSeconds or 0
+    state.pendingOfflineSeconds = math.min(Catalog.OFFLINE_MAX_SECONDS,
+        (state.pendingOfflineSeconds or 0) + credited)
+    state.lastActiveAt = math.max(state.lastActiveAt or 0, session.resumeActiveAt)
+    session.state = state
+    session.resumeActiveAt, session.resumeOfflineSeconds = nil, nil
+    if credited > 0 then session.offlineQuoteToken = nil end
+    return credited > 0
+end
+
+function PlayerProfileService:Resume(userId, connection, generation)
+    local session = self.sessions[userId]
+    if not session then return nil end
+    local now = self.clock()
+    if not session.connection and session.disconnectedAt then
+        local elapsed = math.max(0, now - session.disconnectedAt)
+        session.resumeOfflineSeconds = (session.resumeOfflineSeconds or 0)
+            + (elapsed >= Catalog.OFFLINE_MIN_SECONDS and elapsed or 0)
+        session.resumeActiveAt = now
+    end
+    session.connection, session.generation, session.ready = connection, generation, false
+    session.disconnectedAt = nil
+    if self:_applyOfflineResume(session) then self:FreezeOfflineReward(userId) end
+    return session
 end
 
 local function PruneOfflineReceipts(session, now)
@@ -471,6 +511,7 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
                 elseif commitResult.data.conflictState then
                     session.state = commitResult.data.conflictState
                     session.persistedState = TableUtils.DeepCopy(session.state)
+                    if self:_applyOfflineResume(session) then self:FreezeOfflineReward(userId) end
                     self.onResynced(userId)
                 end
             end
@@ -483,6 +524,7 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
                 -- Reconcile with the committed state but never clear the new connection.
                 session.state = proposal.state
                 session.persistedState = TableUtils.DeepCopy(proposal.state)
+                if self:_applyOfflineResume(session) then self:FreezeOfflineReward(userId) end
                 self.onResynced(userId)
             end
             onComplete(Result(false, {}, "STALE_SESSION", "session changed while cloud transaction was pending"))
@@ -604,6 +646,12 @@ end
 
 function PlayerProfileService:Update()
     if self.repository.Update then self.repository:Update() end
+    for uid, session in pairs(self.sessions) do
+        if self:_applyOfflineResume(session) then
+            self:FreezeOfflineReward(uid)
+            self.onResynced(uid)
+        end
+    end
 end
 
 function PlayerProfileService:DropSession(userId, generation)

@@ -7,7 +7,7 @@ local RewardPolicy = {}
 
 RewardPolicy.VERSION = 4
 RewardPolicy.ONLINE_RATE = 1.0
-RewardPolicy.OFFLINE_RATE = 0.20
+RewardPolicy.OFFLINE_RATE = Balance.OFFLINE_RATE
 RewardPolicy.WEAK_SLOT_BIAS = 0.65
 RewardPolicy.AUTO_EQUIP_MINIMUM_GAIN = 0.02
 RewardPolicy.AUTO_EQUIP_MINIMUM_ELITE_RETENTION = 0.99

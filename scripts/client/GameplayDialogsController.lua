@@ -128,7 +128,7 @@ function GameplayDialogsController.ShowTowerRules()
         kind = "rules",
         queueKey = "rules:" .. StoryCatalog.RULE_ID,
         title = "无尽万灵塔规则",
-        message = "在线战斗收益100%，离线固定奖励与最终掉落概率均为20%，只折算一次。",
+        message = "在线战斗收益100%，离线经验、金币与最终掉落概率均为10%，只折算一次。",
         lines = {
             "每层10场：7普通、2精英、1 Boss；每10层为章节 Boss。",
             "死亡后回到本层第1场，双方满血，已获得奖励保留。",

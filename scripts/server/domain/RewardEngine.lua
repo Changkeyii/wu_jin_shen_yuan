@@ -505,6 +505,20 @@ local function offlineAverageReward(floor, kind)
     return baseGold
 end
 
+local function offlineExpectedDrops(counts)
+    local total = 0
+    for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
+        total = total + (counts[kind] or 0) * RewardPolicy.DropChance(kind, true)
+    end
+    return total
+end
+
+local function offlineDropCount(counts, roll)
+    local expected = offlineExpectedDrops(counts)
+    local count = math.floor(expected)
+    return count + (roll < expected - count and 1 or 0)
+end
+
 local function offlinePityAfterMisses(pity, misses, floor)
     pity = type(pity) == "table" and pity or {}
     local result = {
@@ -535,7 +549,27 @@ local function simulateOfflineCollection(inputState, now, rng)
     end
 
     local position = math.max(0, TableUtils.ToInteger(working.position, 0))
+    local requestedCycles = cycles
+    local availableSlots = math.max(0, Catalog.GetInventoryCapacity(working) - #working.inventory)
+    if availableSlots == 0 then
+        return nil, "INVENTORY_FULL", "背包已满，请先整理背包；离线时长已保留"
+    end
+    -- Use one rounding roll for the whole quote. When space is insufficient,
+    -- process the largest prefix that fits, preserving ALL unprocessed time.
+    local dropRoll = DomainMath.RandomFloat(rng)
     local encounterCounts = offlineEncounterCounts(floor, position, cycles)
+    if offlineDropCount(encounterCounts, dropRoll) > availableSlots then
+        local low, high = 0, cycles - 1
+        while low < high do
+            local middle = math.floor((low + high + 1) / 2)
+            if offlineDropCount(offlineEncounterCounts(floor, position, middle), dropRoll) <= availableSlots then
+                low = middle
+            else high = middle - 1 end
+        end
+        cycles = low
+        if cycles == 0 then return nil, "INVENTORY_FULL", "背包空间不足，离线时长已保留" end
+        encounterCounts = offlineEncounterCounts(floor, position, cycles)
+    end
     local summary = {
         gold = LargeNumber.Zero(),
         exp = 0,
@@ -545,15 +579,13 @@ local function simulateOfflineCollection(inputState, now, rng)
         equipmentById = {},
         equipmentGroups = {},
     }
-    local expectedDrops = 0
     for _, kind in ipairs({ "normal", "elite", "boss", "chapterBoss" }) do
         local count = encounterCounts[kind] or 0
         local gold = offlineAverageReward(math.min(floor, Balance.RewardLevel(working)), kind)
         summary.gold = LargeNumber.Add(
             summary.gold,
-            LargeNumber.MultiplyScalar(gold, count)
+            LargeNumber.MultiplyRatio(gold, count, 1)
         )
-        expectedDrops = expectedDrops + count * (RewardPolicy.DropChance(kind, true) or 0)
     end
     local events = {}
     if not LargeNumber.IsZero(summary.gold) then
@@ -571,10 +603,8 @@ local function simulateOfflineCollection(inputState, now, rng)
         floor = floor,
     })
 
-    local dropCount = math.floor(expectedDrops)
-    if DomainMath.RandomFloat(rng) < expectedDrops - dropCount then dropCount = dropCount + 1 end
-    local availableSlots = math.max(0, Catalog.GetInventoryCapacity(working) - #working.inventory)
-    local generatedDrops = math.min(dropCount, availableSlots)
+    local dropCount = offlineDropCount(encounterCounts, dropRoll)
+    local generatedDrops = dropCount
     local generatedChapterDrops = 0
     local generatedChapterRarities = {}
 
@@ -629,7 +659,7 @@ local function simulateOfflineCollection(inputState, now, rng)
     end
     local _, boundOnOptimize = EquipmentEngine.OptimizeLoadout(working, now, events)
 
-    local bossCycles = encounterCounts.chapterBoss or 0
+    local bossCycles = math.floor((encounterCounts.chapterBoss or 0) * Catalog.OFFLINE_REWARD_RATE)
     local missedBossCycles = math.max(0, bossCycles - generatedChapterDrops)
     if floor % 10 == 0 and missedBossCycles > 0 then
         working.rewardPity = offlinePityAfterMisses(working.rewardPity, missedBossCycles, floor)
@@ -648,8 +678,9 @@ local function simulateOfflineCollection(inputState, now, rng)
     working.currentMonster = nil
     working.position = (position + cycles) % TowerRules.ENCOUNTERS_PER_FLOOR
     working.floorKillBonus = working.position * 0.01
-    working.pauseReason = generatedDrops < dropCount and "inventory_full" or nil
-    if generatedDrops < dropCount then working.autoRun = false end
+    local capacityLimited = cycles < requestedCycles
+    working.pauseReason = capacityLimited and "inventory_full" or nil
+    if capacityLimited then working.autoRun = false end
     PlayerTransition.RefreshDerived(working)
 
     local processedSeconds = cycles * Catalog.OFFLINE_STEP_SECONDS
@@ -665,10 +696,10 @@ local function simulateOfflineCollection(inputState, now, rng)
         equipmentItems = summary.equipmentItems,
         floor = floor,
         fixedFloor = true,
-        interrupted = generatedDrops < dropCount,
+        interrupted = capacityLimited,
         droppedEquipment = dropCount,
         generatedEquipment = generatedDrops,
-        discardedEquipment = dropCount - generatedDrops,
+        discardedEquipment = 0,
     }
     events[#events + 1] = PlayerTransition.Event("offline_collected", TableUtils.DeepCopy(reward))
     return {
@@ -725,6 +756,12 @@ function RewardEngine.ClaimOfflineReward(inputState, ledger, now)
     then
         return PlayerTransition.Failure(inputState, now, "NO_OFFLINE_REWARD", "offline reward was already collected")
     end
+    local room = math.max(0, Catalog.GetInventoryCapacity(working) - #working.inventory)
+        + math.max(0, require("shared.GameStatePolicy").TEMPORARY_LOOT_CAP - #(working.overflowLoot or {}))
+    if #(ledger.items or {}) > room then
+        return PlayerTransition.Failure(inputState, now, "INVENTORY_FULL",
+            "背包及临时掉落空间不足，请先整理；本次奖励和离线时长已保留")
+    end
     working.pendingOfflineSeconds = working.pendingOfflineSeconds - consumed
 
     local events = {}
@@ -767,9 +804,10 @@ function RewardEngine.ClaimOfflineReward(inputState, ledger, now)
     local reward = TableUtils.DeepCopy(ledger.reward)
     reward.processedSeconds = consumed
     reward.remainingSeconds = working.pendingOfflineSeconds
-    reward.interrupted = overflowed > 0
-    reward.generatedEquipment = stored
-    reward.discardedEquipment = overflowed
+    reward.interrupted = reward.interrupted == true or overflowed > 0
+    reward.generatedEquipment = stored + overflowed
+    reward.temporaryEquipment = overflowed
+    reward.discardedEquipment = 0
     events[#events + 1] = PlayerTransition.Event("offline_collected", reward)
     require("server.domain.AdGiftEngine").OnOffline(working, reward, events)
 
