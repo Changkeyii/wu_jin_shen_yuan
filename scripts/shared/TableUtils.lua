@@ -1,5 +1,17 @@
 local TableUtils = {}
 
+function TableUtils.DeepEqual(left, right)
+    if left == right then return true end
+    if type(left) ~= "table" or type(right) ~= "table" then return false end
+    for key, value in pairs(left) do
+        if not TableUtils.DeepEqual(value, right[key]) then return false end
+    end
+    for key in pairs(right) do
+        if left[key] == nil then return false end
+    end
+    return true
+end
+
 function TableUtils.DeepCopy(value, seen)
     if type(value) ~= "table" then return value end
     seen = seen or {}

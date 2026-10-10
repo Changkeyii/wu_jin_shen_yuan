@@ -203,10 +203,10 @@ for index, chapter in ipairs(chapters) do
     chapter.recommendedLevel = level
     for _, stage in ipairs(chapter.stages) do
         stage.recommendedLevel = level
-        stage.exp = Balance.BattleExp(level) * (stage.kind == "boss" and 3 or 1)
-        stage.gold = 22000 * (1 + level / 100) ^ 5.1 * (stage.kind == "boss" and 4 or 2)
+        stage.exp = Balance.TrainingRewardExp(level, stage.kind == "boss" and 360 or 180)
+        stage.gold = 22000 * (1 + level / 100) ^ 5.1 * (stage.kind == "boss" and 30 or 15)
         stage.gold = math.floor(stage.gold)
-        stage.fragments = stage.kind == "boss" and 15 or 5
+        stage.fragments = stage.kind == "boss" and 30 or 10
     end
 end
 

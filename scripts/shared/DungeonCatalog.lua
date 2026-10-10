@@ -29,13 +29,16 @@ function Dungeon.GetStage(id)
     local gold = def.gold --[[@as number[]?]]
     local fragments = def.fragments --[[@as number[]?]]
     local tickets = def.tickets --[[@as number[]?]]
+    ---@type number[]
+    local expScenes = { 15, 30, 50 }
     return { id = id, dungeon = kind, difficulty = tier, activityId = def.activityId,
         title = def.title .. " · " .. Dungeon.DIFFICULTIES[tier], desc = def.desc,
         recommendedLevel = level, minLevel = tier == 1 and 1 or level,
         kind = "boss", mechanic = "dungeon", waves = def.waves, timeLimit = def.limit,
         enemy = { name = def.title .. "守卫", hp = def.hp * growth * multiplier,
             atk = def.atk * growth * multiplier, def = def.def * growth },
-        reward = { goldScenes = gold and gold[tier] or 0,
+        reward = { expScenes = expScenes[tier],
+            goldScenes = gold and gold[tier] or 0,
             fragments = fragments and fragments[tier] or 0,
             abyssTickets = tickets and tickets[tier] or 0 },
     }

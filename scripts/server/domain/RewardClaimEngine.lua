@@ -145,7 +145,10 @@ function RewardClaimEngine.CreateAdOffer(state, spec, now)
         or source == "floor_milestone" and floor > 0 and floor % 50 == 0
     if not eligible then return nil end
     local base = normalizedReward(spec.baseReward)
-    base.exp, base.abyssTickets = 0, 0
+    -- Chapter finales include XP in the advertised fivefold reward.
+    -- Tower milestone quotes and all ticket supplies retain their existing limits.
+    if source ~= "campaign" then base.exp = 0 end
+    base.abyssTickets = 0
     if emptyReward(base) then return nil end
     local extra = {
         gold = LargeNumber.MultiplyRatio(

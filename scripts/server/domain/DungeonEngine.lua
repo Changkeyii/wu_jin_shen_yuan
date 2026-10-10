@@ -51,6 +51,7 @@ function Dungeon.Settle(state, stage, outcome, now, runId)
         Transition.AddCurrency(working, "gold", reward.gold)
         Transition.AddCurrency(working, "fragments", reward.fragments)
         require("server.domain.AbyssEngine").GrantTickets(working, reward.abyssTickets)
+        Quest.AddExperience(working, reward.exp, events)
         Quest.Track(working, "campaign_battle_clear", 1, now)
         events[#events + 1] = Transition.Event("activity_claimed", {
             activityId = stage.activityId, dungeonId = stage.id, reward = reward,

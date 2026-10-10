@@ -18,6 +18,7 @@ local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
 
 local EquipmentActionController = {}
+---@type table?
 local context_ = nil
 
 local function CollectDecomposeCandidateItems(selection)
@@ -178,6 +179,7 @@ actionFns_.AutoEquipBest = function()
             end
             if not context_.actionResult(response, "已自动穿戴最高战力装备") then return end
             if context_.requestPageRefresh then context_.requestPageRefresh() end
+            ServerClient.RequestSnapshot()
             return
         end
         context_.actionResult(response)

@@ -25,6 +25,7 @@ local RarityCatalog = require("shared.RarityCatalog")
 local UILayout = require("client.UI.UILayout")
 local ChangedOnly = require("client.UI.ChangedOnly")
 local LoadingController = require("client.LoadingController")
+local Tables = require("shared.TableUtils")
 
 local DungeonCatalog = require("shared.DungeonCatalog")
 local ActivityView = {}
@@ -117,7 +118,7 @@ local function BuildTabBar()
             backgroundImage = active and ASSETS.ui.inventoryTabOn or ASSETS.ui.inventoryTabOff,
             backgroundFit = "sliced",
             backgroundSlice = { 12, 18, 12, 18 },
-            borderWidth = active and 2 or 1,
+            borderWidth = 2,
             borderColor = active and C.focus or C.border,
             opacity = active and 1.0 or 0.78,
             onClick = function()
@@ -134,11 +135,25 @@ local function BuildTabBar()
             },
         }
     end
-    return UI.Panel {
+    local bar = UI.Panel {
         width = "100%", flexShrink = 0,
         flexDirection = "row", justifyContent = "center", gap = 16,
         children = children,
     }
+    local function UpdateSelection()
+        for index, entry in ipairs(ACTIVITY_TABS) do
+            local active = activityTab_ == entry.id
+            ChangedOnly.Style(children[index], {
+                backgroundImage = active and ASSETS.ui.inventoryTabOn or ASSETS.ui.inventoryTabOff,
+                borderColor = active and C.focus or C.border, opacity = active and 1 or 0.78,
+            })
+            ChangedOnly.Style(children[index].children[1], {
+                fontSize = active and 24 or 20, fontColor = active and C.text or C.textDim,
+                textStroke = { width = active and 2 or 1, color = "#000000" },
+            })
+        end
+    end
+    return bar, UpdateSelection
 end
 
 local function StumpImage(rewardKind)
@@ -345,7 +360,10 @@ end
 local function StrikeCard(item)
     local tiers = item.dungeons or {}
     local tierIndex = selectedDungeonTiers_[item.id] or 1
-    local selectedStage = tiers[tierIndex]
+    if not tiers[tierIndex] or (GameStateAdapter.GetViewState().level or 1) < tiers[tierIndex].minLevel then
+        tierIndex = 1
+        selectedDungeonTiers_[item.id] = 1
+    end
     local remaining = item.remaining or 0
     local adCan = item.adCan == true
     local stumpImage = StumpImage(item.rewardKind)
@@ -358,7 +376,7 @@ local function StrikeCard(item)
         tierBadges[#tierBadges + 1] = UI.Panel {
             width = 270, flexShrink = 0, padding = 14, gap = 6, clickable = available,
             backgroundImage = ASSETS.ui.panelCompact, backgroundFit = "sliced", backgroundSlice = { 12, 12, 12, 12 },
-            borderColor = active and C.gold or C.border, borderWidth = active and 3 or 1,
+            borderColor = active and C.gold or C.border, borderWidth = 3,
             opacity = available and 1 or 0.5,
             onClick = function() selectedDungeonTiers_[item.id] = index; ActivityController.Refresh() end,
             children = {
@@ -369,7 +387,7 @@ local function StrikeCard(item)
     end
 
     local function StartStrikeAction()
-        local stage = DungeonCatalog.GetStage(item.dungeonStageId) or selectedStage
+        local stage = DungeonCatalog.GetStage(item.dungeonStageId) or tiers[selectedDungeonTiers_[item.id] or 1]
         if not stage or dungeonView_ or strikeId_ or bossActive_ then return end
         sceneGeneration_ = sceneGeneration_ + 1
         dungeonView_ = require("client.CampaignBattleView").Create(stage, function()
@@ -439,7 +457,7 @@ local function StrikeCard(item)
         end
     end
 
-    return UI.Panel {
+    local card = UI.Panel {
         width = "100%",
         flexShrink = 0,
         padding = 20,
@@ -497,6 +515,14 @@ local function StrikeCard(item)
             },
         },
     }
+    card.UpdateSelection = function()
+        for index, badge in ipairs(tierBadges) do
+            local active = index == (selectedDungeonTiers_[item.id] or 1)
+            ChangedOnly.Style(badge, { borderColor = active and C.gold or C.border })
+            ChangedOnly.Style(badge.children[1], { fontColor = active and C.gold or C.text })
+        end
+    end
+    return card
 end
 
 local function PlayerPower(game)
@@ -580,8 +606,10 @@ local function AbyssActivityCard()
 
     local selectedView = nil
     local setButtons = {}
+    local setIds = {}
     for _, entry in ipairs({ { "nightmare", "噩梦" }, { "lucky", "幸运" }, { "voyage", "远征" }, { "abyss", "深渊" }, { "prophecy", "预言" } }) do
         local setId, name = entry[1], entry[2]
+        setIds[#setIds + 1] = setId
         setButtons[#setButtons + 1] = Kit.ActionButton { text = name, width = 160,
             variant = selectedAbyssSet_ == setId and "reward" or "secondary",
             onClick = function() selectedAbyssSet_ = setId; ActivityController.Refresh() end }
@@ -602,7 +630,7 @@ local function AbyssActivityCard()
             clickable = item.unlocked == true,
             opacity = item.unlocked and 1.0 or 0.48,
             backgroundColor = SURFACE_DARK,
-            borderWidth = active and 4 or 2,
+            borderWidth = 4,
             borderColor = active and item.color or C.border,
             boxShadow = active and {
                 color = { item.color[1], item.color[2], item.color[3], 100 },
@@ -701,7 +729,21 @@ local function AbyssActivityCard()
     local dailyTickets = view.dailyAdTickets or AbyssDefinitions.DailyAdTickets(game.level)
     local dailyFull = dailyUsed >= dailyLimit
 
-    return UI.Panel {
+    local function BuildBossAction()
+        return UI.Panel {
+            flexGrow = 1, flexBasis = 0, height = 64,
+            flexDirection = "row", justifyContent = "flex-end",
+            alignItems = "center", gap = 10,
+            children = {
+                TicketCostRow(selectedView.ticketCost, selectedView.color, 110),
+                Kit.ImageButton("挑战 Boss", 220, 64,
+                    canEnter and ASSETS.ui.inventoryActionGold or ASSETS.ui.buttonBlueWide,
+                    EnterAbyssBoss, not canEnter),
+            },
+        }
+    end
+    local bossActionHost = BuildBossAction()
+    local card = UI.Panel {
         width = "100%",
         flexShrink = 0,
         padding = 22,
@@ -796,26 +838,39 @@ local function AbyssActivityCard()
                         end,
                         dailyFull
                     ),
-                    UI.Panel {
-                        flexGrow = 1, flexBasis = 0, height = 64,
-                        flexDirection = "row", justifyContent = "flex-end",
-                        alignItems = "center", gap = 10,
-                        children = {
-                            TicketCostRow(selectedView.ticketCost, selectedView.color, 110),
-                            Kit.ImageButton(
-                                "挑战 Boss",
-                                220,
-                                64,
-                                canEnter and ASSETS.ui.inventoryActionGold or ASSETS.ui.buttonBlueWide,
-                                EnterAbyssBoss,
-                                not canEnter
-                            ),
-                        },
-                    },
+                    bossActionHost,
                 },
             },
         },
     }
+    local displayedGrade = selectedAbyssGrade_
+    card.UpdateSelection = function()
+        for index, item in ipairs(view.grades or {}) do
+            local active = item.id == selectedAbyssGrade_
+            if active then selectedView = item end
+            ChangedOnly.Style(gradeCards[index], {
+                borderColor = active and item.color or C.border,
+                boxShadow = { color = { item.color[1], item.color[2], item.color[3], active and 100 or 0 },
+                    offsetX = 6, offsetY = 6, blurRadius = 0 },
+            })
+        end
+        for index, button in ipairs(setButtons) do
+            ChangedOnly.Style(button, { backgroundImage = selectedAbyssSet_ == setIds[index]
+                and ASSETS.ui.inventoryActionGold or ASSETS.ui.buttonBlue })
+        end
+        ChangedOnly.Style(card, { borderColor = selectedView.color })
+        if displayedGrade ~= selectedAbyssGrade_ then
+            displayedGrade = selectedAbyssGrade_
+            canAfford = view.tickets >= selectedView.ticketCost
+            canEnter = selectedView.unlocked and canAfford
+            local parent = bossActionHost.parent
+            parent:RemoveChild(bossActionHost)
+            bossActionHost:Destroy()
+            bossActionHost = BuildBossAction()
+            parent:AddChild(bossActionHost)
+        end
+    end
+    return card
 end
 
 -- ===== 热门活动入口卡片（许愿池 / 深渊远征 / PVP）=====
@@ -1310,18 +1365,18 @@ function ActivityView.ListChildren(signinCards, strikeCards)
     return children
 end
 
-local function WrapPage(root)
+local function WrapPage(root, updateList)
     local pageTab = activityTab_
     local pageScene = sceneMode_
     local pageStrikeId, pageBossActive, generation = strikeId_, bossActive_, sceneGeneration_
     return {
         GetRoot = function() return root end,
         Update = function()
-            if activityTab_ ~= pageTab or sceneMode_ ~= pageScene
-                or strikeId_ ~= pageStrikeId or bossActive_ ~= pageBossActive
-                or sceneGeneration_ ~= generation then return false end
-            if ActivityView.IsStriking() then return true end
-            return false
+            if sceneMode_ ~= pageScene or strikeId_ ~= pageStrikeId
+                or bossActive_ ~= pageBossActive or sceneGeneration_ ~= generation then return false end
+            if updateList then updateList(); return true end
+            if activityTab_ ~= pageTab then return false end
+            return ActivityView.IsStriking()
         end,
         Destroy = function()
             if dungeonView_ and root == dungeonView_.root then
@@ -1431,12 +1486,69 @@ function ActivityView.BuildPage()
         end
     end
 
-    local signinCards = {}
-    for _, item in ipairs(view.signin or {}) do signinCards[#signinCards + 1] = SigninCard(item) end
-    local strikeCards = {}
-    for _, item in ipairs(view.strike or {}) do strikeCards[#strikeCards + 1] = StrikeCard(item) end
+    -- Stable boundary: root > header/tabs > viewport > cards. Keep viewport and
+    -- its scroll state; replace a card only when its authoritative model changes.
+    local tabs, UpdateTabs = BuildTabBar()
+    local content = UI.Panel { width = "100%", flexShrink = 0, gap = 14, paddingBottom = 24 }
+    local scroll = UI.ScrollView {
+        width = "100%", flexGrow = 1, flexBasis = 0,
+        scrollY = true, scrollX = false, showScrollbar = false, children = { content },
+    }
+    local listTab, cards, models = "", {}, {}
+    local tabScroll = {}
+    local function RemoveCard(card)
+        content:RemoveChild(card)
+        card:Destroy()
+    end
+    local function UpdateList()
+        local game, current = GameStateAdapter.GetViewState(), CurrentView()
+        local changedTab = listTab ~= activityTab_
+        if changedTab then
+            tabScroll[listTab] = scroll.state.scrollY or 0
+            for _, card in ipairs(cards) do RemoveCard(card) end
+            cards, models, listTab = {}, {}, activityTab_
+            scroll:SetScrollDirect(0, tabScroll[listTab] or 0)
+            UpdateTabs()
+        end
+        local entries = {}
+        if listTab == "strike" then
+            for _, item in ipairs(current.strike or {}) do
+                entries[#entries + 1] = { model = { item = item, level = game.level,
+                    ad = require("client.RewardVideo").ActionText("ad", "free") },
+                    build = function() return StrikeCard(item) end }
+            end
+        elseif listTab == "act_hot" then
+            if changedTab then
+                for _, card in ipairs(HotActivityCards()) do cards[#cards + 1] = card; content:AddChild(card) end
+            end
+            for index = 1, #cards do
+                entries[index] = { model = index == 5 and {
+                    abyss = game.abyssView or AbyssDefinitions.BuildView(game),
+                    power = PlayerPower(game), level = game.level,
+                    exclusive = game.rewardClaims and game.rewardClaims.exclusive,
+                    day = math.floor((ServerClock.Now() + 28800) / 86400),
+                    ad = require("client.RewardVideo").ActionText("ad", "free"),
+                } or {}, build = AbyssActivityCard }
+            end
+        else
+            for _, item in ipairs(current.signin or {}) do
+                if item.id == listTab then
+                    entries[#entries + 1] = { model = item, build = function() return SigninCard(item) end }
+                end
+            end
+        end
+        for index, entry in ipairs(entries) do
+            if not cards[index] or (models[index] and not Tables.DeepEqual(models[index], entry.model)) then
+                if cards[index] then RemoveCard(cards[index]) end
+                cards[index] = entry.build()
+                content:InsertChild(cards[index], index)
+            end
+            models[index] = Tables.DeepCopy(entry.model)
+            if cards[index].UpdateSelection then cards[index].UpdateSelection() end
+        end
+    end
 
-    return WrapPage(UI.Panel {
+    local root = UI.Panel {
         width = "100%", height = "100%", flexShrink = 0, position = "relative",
         children = {
             UI.Panel {
@@ -1453,21 +1565,14 @@ function ActivityView.BuildPage()
                             },
                         },
                     },
-                    BuildTabBar(),
-                    UI.ScrollView {
-                        width = "100%", flexGrow = 1, flexBasis = 0,
-                        scrollY = true, scrollX = false, showScrollbar = false,
-                        children = {
-                            UI.Panel {
-                                width = "100%", flexShrink = 0, gap = 14, paddingBottom = 24,
-                                children = ActivityView.ListChildren(signinCards, strikeCards),
-                            },
-                        },
-                    },
+                    tabs,
+                    scroll,
                 },
             },
         },
-    })
+    }
+    UpdateList()
+    return WrapPage(root, UpdateList)
 end
 
 function ActivityView.Reset()

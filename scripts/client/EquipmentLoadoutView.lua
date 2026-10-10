@@ -5,6 +5,7 @@ local EquipmentItemSlot = require("client.EquipmentItemSlot")
 local GridVirtualList = require("client.UI.GridVirtualList")
 local EquipmentQuickFilter = require("client.EquipmentQuickFilter")
 local ItemView = require("client.ItemView")
+local EquipmentPageState = require("client.EquipmentPageState")
 
 local EquipmentLoadoutView = {}
 
@@ -93,6 +94,7 @@ function EquipmentLoadoutView.Build(context)
             and EquipmentQuickFilter.Matches("equip", item)
     end
 
+    ---@return table[]
     local function CollectSlotCandidates(slotId)
         local list = {}
         for _, item in ipairs(game.inventory or {}) do
@@ -1258,6 +1260,9 @@ function EquipmentLoadoutView.Build(context)
         },
     }
     equipmentPageScrollView.state.scrollY = math.max(0, GetEquipmentPageScrollY() or 0)
+    pageSlot = state.getSelectedSlot()
+    selectedInventoryId = state.getSelectedInventoryId()
+    local presentation = EquipmentPageState.Loadout(game, selectedInventoryId)
     return {
         GetRoot = function() return equipmentPageScrollView end,
         Update = function(_, nextGame)
@@ -1269,6 +1274,14 @@ function EquipmentLoadoutView.Build(context)
             if nextSlot ~= pageSlot then return false end
             local nextSelected = state.getSelectedInventoryId()
             if nextSelected ~= selectedInventoryId then return false end
+            if not EquipmentPageState.Equal(presentation, EquipmentPageState.Loadout(game, nextSelected)) then
+                -- Rebuild static slots, stats and actions together, preserving both scrolls.
+                SetEquipmentPageScrollY(equipmentPageScrollView.state.scrollY or 0)
+                if equipmentListScrollView and equipmentListScrollView.scrollView_ then
+                    SetEquipmentScrollY(equipmentListScrollView.scrollView_.state.scrollY or 0)
+                end
+                return false
+            end
             if equipmentListScrollView and equipmentListScrollView.scrollView_ then
                 GridVirtualList.UpdateData(equipmentListScrollView, CollectSlotCandidates(nextSlot), { columns = 4 })
                 return true

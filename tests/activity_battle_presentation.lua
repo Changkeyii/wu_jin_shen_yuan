@@ -3,8 +3,15 @@
 local now = 1791455000
 local damageTexts = 0
 local function Widget(props)
-    local w = {props = props or {}, children = {}, writes = 0}
-    function w:AddChild(c) self.children[#self.children + 1] = c end
+    local w = {props = props or {}, children = {}, writes = 0, state = {scrollY = 0, scrollX = 0}}
+    function w:AddChild(c) self.children[#self.children + 1] = c; c.parent = self end
+    function w:InsertChild(c, i) table.insert(self.children, i, c); c.parent = self end
+    function w:RemoveChild(c)
+        for i, child in ipairs(self.children) do
+            if child == c then table.remove(self.children, i); c.parent = nil; return end
+        end
+    end
+    function w:SetScrollDirect(x, y) self.state.scrollX, self.state.scrollY = x, y end
     function w:SetStyle(p) self.writes = self.writes + 1; for k,v in pairs(p) do self.props[k] = v end end
     function w:SetText(t)
         if tonumber(t) or tostring(t):match('^暴击 %d') then damageTexts = damageTexts + 1 end
@@ -145,6 +152,47 @@ end
 local function Ready()
     assert(preload); local cb = preload; preload = nil; cb(); Refresh()
 end
+
+-- Clicking selections, failed responses and unrelated deltas keep the same
+-- viewport and cards. Enter must use the newly selected tier/set/grade.
+New()
+state.level = 100
+require('server.domain.PlayerTransition').RefreshDerived(state)
+adapter.ApplySnapshot(state)
+Click('每日补给')
+local listPage, listRoot = page, page:GetRoot()
+local viewport = listRoot.children[1].children[3]
+local content = viewport.children[1]
+local goldCard, fragmentCard = content.children[1], content.children[3]
+viewport:SetScrollDirect(0, 380)
+Click('困难 · Lv.50')
+assert(page == listPage and page:GetRoot() == listRoot and viewport.state.scrollY == 380)
+assert(content.children[1] == goldCard and content.children[3] == fragmentCard)
+failures['Activity.UnlockExtraStrike'] = true
+Controller.UnlockExtraStrike('act_daily_gold', function(r) assert(not r.ok) end); Refresh()
+assert(page == listPage and content.children[1] == goldCard)
+state.gold = require('shared.LargeNumber').Add(state.gold, 1)
+adapter.ApplySnapshot(state); Controller.Refresh(); Refresh()
+assert(content.children[1] == goldCard and viewport.state.scrollY == 380)
+Click('进入'); Ready()
+assert(state.activities.act_daily_exp.session.dungeonStageId == 'dungeon:tickets:2')
+View.Reset(); page:Destroy()
+
+New(); state.level = 100; require('server.domain.PlayerTransition').RefreshDerived(state)
+adapter.ApplySnapshot(state); Click('热门活动')
+local hotPage, hotRoot = page, page:GetRoot()
+local hotScroll = hotRoot.children[1].children[3]
+local abyssCard = hotScroll.children[1].children[5]
+hotScroll:SetScrollDirect(0, 650)
+Click('幸运'); Click('灾厄深渊')
+assert(page == hotPage and hotScroll.state.scrollY == 650)
+assert(hotScroll.children[1].children[5] == abyssCard)
+Click('每日补给'); Click('热门活动')
+assert(page == hotPage and hotScroll.state.scrollY == 650)
+Click('挑战 Boss'); Ready()
+assert(state.challenges.bossSession.gradeId == 'calamity' and state.challenges.bossSession.setId == 'lucky')
+New(); Click('热门活动'); Click('裂隙深渊'); Click('噩梦')
+
 for index, id in ipairs(require('shared.ActivityDefinitions').StrikeIds) do
     New(); Click('每日补给')
     local entries = {}

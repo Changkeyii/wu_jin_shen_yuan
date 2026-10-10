@@ -31,7 +31,8 @@ for _, chapter in ipairs(Catalog.GetAllChapters()) do
         if stage.stage == 'c' then
             assert(offer and not seen[offer.rewardId], 'only chapter finale offers fivefold')
             assert(Large.Compare(offer.baseReward.gold, stage.gold) == 0)
-            assert(offer.baseReward.exp == 0 and offer.baseReward.abyssTickets == 0)
+            assert(offer.baseReward.exp == stage.exp and offer.baseReward.abyssTickets == 0)
+            assert(offer.extraReward.exp == stage.exp * 4)
             assert(offer.baseReward.fragments == stage.fragments)
             assert(Large.Compare(offer.extraReward.gold, stage.gold * 4) == 0)
             seen[offer.rewardId] = true; firstId = firstId or offer.rewardId; count = count + 1
@@ -56,6 +57,7 @@ for _, event in ipairs(claimed.delta.events) do
         event.type = event.kind
         local valid, reason = Events.Validate(event); assert(valid, reason)
         assert(Large.Compare(event.totalReward.gold, Catalog.GetStage('main:c01:c').gold * 5) == 0)
+        assert(event.totalReward.exp == Catalog.GetStage('main:c01:c').exp * 5)
     end
 end
 print('campaign_ad_entitlements: PASS (40 chapter finales + 50 milestone offers)')

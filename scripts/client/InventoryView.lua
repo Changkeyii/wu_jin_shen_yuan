@@ -6,6 +6,7 @@ local EquipmentIcon = require("client.EquipmentIcon")
 local BackpackItemSlot = require("client.BackpackItemSlot")
 local EquipmentItemSlot = require("client.EquipmentItemSlot")
 local InventoryGridView = require("client.InventoryGridView")
+local EquipmentPageState = require("client.EquipmentPageState")
 
 local InventoryView = {}
 
@@ -913,6 +914,7 @@ local function CreateInventoryPage()
     pageRefs.category = selectedCategory
     pageRefs.selectedId = selectedInventoryId
     pageRefs.empty = #items == 0
+    pageRefs.detailState = EquipmentPageState.Detail(game, selectedInventoryId)
     if #items == 0 then
         pageChildren[#pageChildren + 1] = UI.Panel {
             width = "100%",
@@ -1011,6 +1013,8 @@ function InventoryView.BuildInventoryPage(context)
             if context.getSelectedInventoryId() ~= refs.selectedId then
                 return false
             end
+            if not EquipmentPageState.Equal(refs.detailState,
+                EquipmentPageState.Detail(context.game, refs.selectedId)) then return false end
             return true
         end,
         Destroy = function()

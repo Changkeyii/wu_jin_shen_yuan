@@ -57,9 +57,12 @@ end
 
 function Balance.BattleExp(level)
     -- Supplemental quests, sign-in and trials: twelve seconds of training per scene.
-    level = Balance.Level(level)
-    local reference = math.min(99, level)
-    return math.max(1, math.floor(Balance.NextExp(reference) / Balance.LevelSeconds(reference) * 12))
+    return Balance.TrainingRewardExp(level, 12)
+end
+
+function Balance.TrainingRewardExp(level, seconds)
+    local reference = math.min(99, Balance.Level(level))
+    return math.max(1, math.floor(Balance.NextExp(reference) / Balance.LevelSeconds(reference) * seconds))
 end
 
 function Balance.TrialGrowth(level)
