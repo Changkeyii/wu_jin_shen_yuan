@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local ItemTipData = {}
 
 local AFFIX_NAMES = {
@@ -47,7 +48,9 @@ function ItemTipData.BuildRows(item, compactForCompare, ports)
     local C = ports.colors
     local formatInt = ports.formatInt
     local rows = {}
-    AddRow(rows, "等级", formatInt(item.level or 1), C.textSecondary)
+    AddRow(rows, "等级", formatInt(item.level or 5), C.textSecondary)
+    AddRow(rows, "穿戴等级", Progression.RequiredEquipmentLevel(item) .. "级", C.textSecondary)
+    if item.legacyLevel then AddRow(rows, "历史等级", item.legacyLevel .. "级（属性保留）", C.gold) end
     AddRow(rows, "强化", "+" .. tostring(item.enhance or 0), C.gold)
     AddRow(rows, "星级", tostring(item.star or 0) .. " 星", C.gold)
     local setText = item.setEnabled == false

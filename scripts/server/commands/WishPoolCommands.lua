@@ -92,6 +92,15 @@ function WishPoolCommands.Register(router, services)
     })
 
     router:Register({
+        name = "WishPool.RecycleJar",
+        schema = OPEN_JAR_SCHEMA,
+        rate = ServerConfig.RATES.Progression,
+        handler = AsyncMutation(services, "recycle wish jar", function(state, payload, now)
+            return WishPoolEngine.RecycleJar(state, payload.jarId, payload.count, now)
+        end),
+    })
+
+    router:Register({
         name = "WishPool.OpenJar",
         schema = OPEN_JAR_SCHEMA,
         rate = ServerConfig.RATES.Progression,

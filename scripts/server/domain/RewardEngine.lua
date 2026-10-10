@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
 local BigNumber = require("shared.BigNumber")
@@ -18,14 +19,7 @@ local RewardEngine = {}
 local function addExp(state, amount, events)
     local gained = math.max(0, TableUtils.ToInteger(amount, 0))
     local previousLevel = math.max(1, TableUtils.ToInteger(state.level, 1))
-    state.exp = state.exp + gained
-    local levelUps = 0
-    while state.exp >= Catalog.NextExp(state.level) do
-        state.exp = state.exp - Catalog.NextExp(state.level)
-        state.level = state.level + 1
-        levelUps = levelUps + 1
-    end
-    state.nextExp = Catalog.NextExp(state.level)
+    local levelUps = Progression.AddExperience(state, gained, PlayerTransition.Now(state.updatedAt))
     if levelUps > 0 then
         local currentHp = DomainMath.Magnitude(state.hpBig, state.hp, 0)
         state.stats = Catalog.CalculateStats(state)
@@ -102,6 +96,7 @@ end
 local function generatedEquipment(state, rarityId, isBoss, rng, now, source, options)
     options = options or {}
     local floor = math.max(1, TableUtils.ToInteger(options.floor, state.floor))
+    floor = Progression.EquipmentLevel(options.equipmentLevel or math.min(floor, Progression.Level(state.level)))
     local unlocked = RarityCatalog.HighestUnlocked(floor)
     if type(rarityId) == "table" then rarityId = rarityId.id end
     local targetRarity = rarityId ~= nil and RarityCatalog.NormalizeId(rarityId)
@@ -110,7 +105,8 @@ local function generatedEquipment(state, rarityId, isBoss, rng, now, source, opt
     local candidates = {}
     local fallback = {}
     for _, definition in ipairs(Catalog.EQUIPMENT_DEFINITIONS) do
-        if not options.slot or definition.slot == options.slot then
+        if (not options.slot or definition.slot == options.slot)
+            and (not options.setId or definition.setId == options.setId) then
             fallback[#fallback + 1] = definition
             if RarityCatalog.NormalizeId(definition.rarity) == targetRarity then
                 candidates[#candidates + 1] = definition

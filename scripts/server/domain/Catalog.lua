@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local Catalog = {}
 local BigNumber = require("shared.BigNumber")
 local EquipmentCatalog = require("shared.EquipmentCatalog")
@@ -317,7 +318,7 @@ local function GetEquipmentEconomyBase(item)
         category = slot and slot.category or "special"
     end
     return EconomyValue(
-        item and item.level or 1,
+        item and (item.legacyLevel or item.level) or 1,
         Catalog.SELL_VALUE_BASE
             * (Catalog.SELL_RARITY_MULTIPLIERS[rarityId] or 1)
             * (Catalog.SELL_SLOT_MULTIPLIERS[category] or 1)
@@ -371,12 +372,7 @@ function Catalog.GetStarCost(item, star)
 end
 
 function Catalog.NextExp(level)
-    local exponent = math.max(1, tonumber(level) or 1) - 1
-    local required = 100 * (1.15 ^ exponent)
-    if required ~= required or required == math.huge or required == -math.huge then
-        return 1000000000
-    end
-    return math.min(1000000000, math.floor(required))
+    return Progression.NextExp(level)
 end
 
 function Catalog.GetCellType(position, floor)
@@ -523,7 +519,7 @@ function Catalog.GetEquipmentBaseRecoveryValue(item)
     end
     local rarityId = RarityCatalog.NormalizeId(item.rarity)
     local rarity = Catalog.RARITIES[rarityId] or Catalog.RARITIES.common
-    local level = math.max(1, math.floor(tonumber(item.level) or 1))
+    local level = math.max(1, math.floor(tonumber(item.legacyLevel or item.level) or 1))
     local baseGold = EconomyValue(
         level,
         Catalog.SELL_VALUE_BASE
@@ -549,7 +545,7 @@ end
 
 local function EquipmentSellBaseBig(item)
     local level = Catalog.Clamp(
-        math.floor(tonumber(item and item.level) or 1),
+        math.floor(tonumber(item and (item.legacyLevel or item.level)) or 1),
         1,
         1000000
     )
@@ -721,6 +717,7 @@ function Catalog.GetSetProgress(state)
     local byId = {}
     for _, item in ipairs(state.inventory or {}) do byId[item.id] = item end
 
+    ---@type table<string, table>
     local progress = {}
     for _, setId in ipairs(Catalog.SET_ORDER) do
         progress[setId] = {
@@ -820,6 +817,7 @@ local function EquipmentRevision(state)
     local parts = {
         tostring(state.vipLevel or 0),
         tostring(state.maxFloor or 1),
+        tostring(Progression.CoreLevel(state)),
         tostring(state.permanentBonus or 0),
         tostring(#(state.inventory or {})),
     }
@@ -841,9 +839,8 @@ function Catalog.CalculateStats(state, options)
         return state._statsCache.value
     end
     local permanentBonus = math.max(0, state.permanentBonus or 0)
-    -- The character core is 15% of the same-floor rare baseline and follows
-    -- highest reached progression, never the currently selected challenge.
-    local coreGrowth = TowerRules.Growth(math.max(1, state.maxFloor or 1))
+    -- Character growth ends at level 100. Only migrated historical power is frozen above it.
+    local coreGrowth = TowerRules.Growth(Progression.CoreLevel(state))
     local stats = {
         atkBig = BigNumber.MultiplyScalar(coreGrowth,
             90 * RARE_STANDARD_RATIO * 0.15 * (1 + permanentBonus)),

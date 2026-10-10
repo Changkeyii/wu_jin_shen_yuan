@@ -280,7 +280,7 @@ function WishPoolDefinitions.RandomSlot(randomInt)
     return WishPoolDefinitions.SLOTS[randomInt(1, #WishPoolDefinitions.SLOTS)]
 end
 
-function WishPoolDefinitions.MakeJarId(kind, rarity, slot, setId)
+local function makeBaseId(kind, rarity, slot, setId)
     if kind == "random" then return "jar.random" end
     if kind == "set" and safeId(setId) then return "jar.set." .. setId end
     if kind == "slot" and safeId(slot) then return "jar.slot." .. slot end
@@ -291,7 +291,7 @@ function WishPoolDefinitions.MakeJarId(kind, rarity, slot, setId)
     return nil
 end
 
-function WishPoolDefinitions.ResolveJar(jarId)
+local function resolveBaseJar(jarId)
     if jarId == "jar.random" then
         return { id = jarId, kind = "random", name = "全随机罐", icon = ICONS.jarRandom }
     end
@@ -355,6 +355,65 @@ function WishPoolDefinitions.CellCandidates(kind, rarity)
         end
     end
     return candidates
+end
+
+-- Only grades at or above the current character level participate; quality/pity is unchanged.
+WishPoolDefinitions.JAR_LEVELS = {}
+for level = 5, 100, 5 do WishPoolDefinitions.JAR_LEVELS[#WishPoolDefinitions.JAR_LEVELS + 1] = level end
+
+function WishPoolDefinitions.MinimumJarLevel(playerLevel)
+    playerLevel = require("shared.GameProgression").Level(playerLevel)
+    return math.max(5, math.min(100, math.ceil(playerLevel / 5) * 5))
+end
+
+function WishPoolDefinitions.RandomLevel(rng, playerLevel)
+    local first = math.floor(WishPoolDefinitions.MinimumJarLevel(playerLevel) / 5)
+    local index = rng and rng(first, #WishPoolDefinitions.JAR_LEVELS) or math.random(first, #WishPoolDefinitions.JAR_LEVELS)
+    index = math.max(first, math.min(#WishPoolDefinitions.JAR_LEVELS, math.floor(tonumber(index) or first)))
+    return WishPoolDefinitions.JAR_LEVELS[index]
+end
+
+function WishPoolDefinitions.MakeJarId(kind, rarity, slot, setId, level)
+    local id = makeBaseId(kind, rarity, slot, setId)
+    if not id then return nil end
+    if level == nil then return id end
+    if type(level) ~= "number" or level < 5 or level > 100 or level % 5 ~= 0 then return nil end
+    return id .. ".lv" .. level
+end
+
+---@return table|nil
+function WishPoolDefinitions.ResolveJar(jarId)
+    if type(jarId) ~= "string" then return nil end
+    local baseId, digits = jarId:match("^(.-)%.lv(%d+)$")
+    local level = digits and tonumber(digits) or nil
+    if digits and (level < 5 or level > 100 or level % 5 ~= 0 or tostring(level) ~= digits) then return nil end
+    ---@type table|nil
+    local jar = resolveBaseJar(baseId or jarId)
+    if not jar then return nil end
+    jar.baseName = jar.name
+    jar.baseId, jar.id = baseId or jarId, jarId
+    jar.level = level or 100
+    jar.legacy = level == nil
+    jar.name = (jar.legacy and "旧版100级·" or (level .. "级·")) .. jar.name
+    return jar
+end
+
+function WishPoolDefinitions.GrantJars(state, jarId, count, rng)
+    ---@type table|nil
+    local jar = WishPoolDefinitions.ResolveJar(jarId)
+    count = math.max(0, math.floor(tonumber(count) or 0))
+    if not jar or count == 0 then return nil end
+    -- A specified grade is exact; generic GM/reward grants pick one grade for this stack.
+    local id = jar.legacy and (jar.baseId .. ".lv" .. WishPoolDefinitions.RandomLevel(rng, state.level)) or jar.id
+    state.wishPool.jars[id] = (state.wishPool.jars[id] or 0) + count
+    return id
+end
+
+function WishPoolDefinitions.RecycleFragments(jar)
+    jar = type(jar) == "table" and jar or WishPoolDefinitions.ResolveJar(jar)
+    if not jar then return 0 end
+    local factor = ({ artifact = 1, legendary = 2, epic = 4, myth = 8 })[jar.rarity] or 2
+    return math.floor(jar.level / 5) * factor
 end
 
 function WishPoolDefinitions.JarIcon(jar)

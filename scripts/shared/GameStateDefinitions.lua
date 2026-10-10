@@ -143,7 +143,8 @@ local ITEM_SCHEMA = {
     fields = {
         id = { type = "string", minLength = 36, maxLength = 36, validate = validateInstanceUuid },
         equipmentId = { type = "string", minLength = 36, maxLength = 36 },
-        level = { type = "integer", min = 1, max = 1000000 },
+        level = { type = "integer", min = 5, max = 100, validate = function(value) return value % 5 == 0 end },
+        legacyLevel = { type = "integer", min = 1, max = 1000000 },
         statVersion = { type = "integer", enum = { 5 } },
         budget = NONNEGATIVE_NUMBER_SCHEMA,
         budgetBig = BIG_NUMBER_SCHEMA,

@@ -42,10 +42,12 @@ function GameStateSchema.ValidateState(state)
     if persisted.maxFloor < persisted.floor then
         return false, stateError("maxFloor cannot be lower than floor", "$state.maxFloor")
     end
-    if persisted.exp >= nextExp(persisted.level) then
+    if (persisted.level < Progression.MAX_LEVEL and persisted.exp >= nextExp(persisted.level))
+        or (persisted.level >= Progression.MAX_LEVEL and persisted.exp ~= 0) then
         return false, stateError("Experience must be normalized for the current level", "$state.exp")
     end
 
+    ---@type table<string, table>
     local inventoryById = {}
     local allItemIds = {}
     for index, item in ipairs(persisted.inventory) do
@@ -91,6 +93,9 @@ function GameStateSchema.ValidateState(state)
         local definition = EquipmentCatalog.Get(item.equipmentId)
         if not definition or definition.slot ~= slot then
             return false, stateError("Equipped item does not match its slot", "$state.equipped." .. slot)
+        end
+        if not Progression.CanEquip(persisted, item) then
+            return false, stateError("Character level is below equipment requirement", "$state.equipped." .. slot)
         end
         if equippedIds[idKey] then
             return false, stateError("One item cannot occupy multiple slots", "$state.equipped." .. slot)

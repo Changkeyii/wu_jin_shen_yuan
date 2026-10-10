@@ -2,6 +2,7 @@
 -- 任务系统服务端引擎：进度累计、每日重置、完成判定、奖励发放、领取（单领/一键全领）。
 -- 服务端权威，客户端只展示；进度随 quests 存档字段走快照/增量同步。
 
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local PlayerTransition = require("server.domain.PlayerTransition")
 local QuestDefinitions = require("shared.QuestDefinitions")
@@ -134,14 +135,7 @@ end
 function QuestEngine.AddExperience(state, amount, events)
     local gained = math.max(0, math.floor(tonumber(amount) or 0))
     local previousLevel = math.max(1, math.floor(tonumber(state.level) or 1))
-    state.exp = (state.exp or 0) + gained
-    local levelUps = 0
-    while state.exp >= Catalog.NextExp(state.level) do
-        state.exp = state.exp - Catalog.NextExp(state.level)
-        state.level = state.level + 1
-        levelUps = levelUps + 1
-    end
-    state.nextExp = Catalog.NextExp(state.level)
+    local levelUps = Progression.AddExperience(state, gained, PlayerTransition.Now(state.updatedAt))
     if levelUps > 0 and type(events) == "table" then
         events[#events + 1] = PlayerTransition.Event("level_up", {
             previousLevel = previousLevel,

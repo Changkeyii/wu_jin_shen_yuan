@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local AbyssDefinitions = {}
 
 AbyssDefinitions.VERSION = 1
@@ -102,11 +103,8 @@ function AbyssDefinitions.DropPoolFloor(state)
 end
 
 function AbyssDefinitions.EquipmentLevelPool(level)
-    level = math.max(1, math.floor(tonumber(level) or 1))
-    local band = math.floor((level - 1) / AbyssDefinitions.LEVEL_BAND_SIZE)
-    local minLevel = band * AbyssDefinitions.LEVEL_BAND_SIZE + 1
-    local maxLevel = (band + 1) * AbyssDefinitions.LEVEL_BAND_SIZE
-    return minLevel, maxLevel, band + 1
+    local maximum = Progression.EquipmentLevel(level)
+    return math.max(5, maximum - 5), maximum, math.max(1, math.floor(maximum / 5))
 end
 
 function AbyssDefinitions.RecommendedPower(level, gradeId)

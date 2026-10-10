@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local RarityCatalog = require("shared.RarityCatalog")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
@@ -114,6 +115,7 @@ function Persistence.NewInitialState(now)
         updatedAt = now,
         lastActiveAt = now,
         pendingOfflineSeconds = 0,
+        growth = Progression.NewGrowth(),
         level = 1,
         vipLevel = 0,
         adFree = false,
@@ -209,6 +211,7 @@ function Persistence.ToPersistedState(state)
                     id = item.id,
                     equipmentId = item.equipmentId,
                     level = item.level,
+                    legacyLevel = item.legacyLevel,
                     enhance = item.enhance,
                     star = item.star,
                     locked = item.locked == true,

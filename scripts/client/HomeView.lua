@@ -15,6 +15,8 @@ local C = GameTheme.Colors
 local CONFIG = GameTheme.CONFIG
 local ASSETS = ViewAssets.ASSETS
 
+local Progression = require("shared.GameProgression")
+local WishDefinitions = require("shared.WishPoolDefinitions")
 local HomeView = {}
 local homeRoot_ = nil
 local homeRefs_ = {}
@@ -70,6 +72,11 @@ local function ShowRules(game)
             "死亡后回到本层第1场，双方满血，已获得奖励保留。",
             "离线金币、经验、碎片及最终掉落概率均为在线效率的1/5。",
             "离线满15分钟可领取，最多累计 12 小时；背包已满时，未结算时间会保留。",
+            "人物满级100；装备5、10…100级，共20档。",
+            "罐子随机等级不低于人物等级，向上取5级档，最高100级。",
+            "罐子可直接开启，装备达到穿戴等级后使用；5级装备从1级可穿。",
+            "满级经验每100万转1碎片，每日最多100碎片。",
+            "毕业目标：100级套装12件、套装神话及第150层章节Boss。",
             "当前累计离线：" .. Kit.FormatDuration(game.pendingOfflineSeconds),
         },
         confirmText = "知道了",
@@ -257,6 +264,31 @@ function HomeView.Build(context)
 
     -- 背景板容器：玩家信息、标题、VIP 徽标、三个按钮全部作为其子项，
     -- 保证这些内容绘制在背景板图片之上，不会被遮挡。
+    local goal = Progression.BuildGoal(game)
+    -- Reuse hero content at x596..866/y254..306, inside the inspected inner frame.
+    homeRefs_.goal = Kit.MultiTxt(goal.label .. "\n" .. goal.progress, 20, C.focus, {
+        position = "absolute", left = 596, top = 254, width = 270, height = 52,
+        maxLines = 2, textAlign = "center", textStroke = { width = 2, color = "#000000" },
+    })
+    local function showGoal()
+        local current = homeRefs_.game or game
+        local nextGoal = Progression.BuildGoal(current)
+        local missing = {}
+        for _, slot in ipairs(nextGoal.missingSlots) do missing[#missing + 1] = WishDefinitions.SLOT_NAMES[slot] or slot end
+        local lines = {
+            "成长路线：100级 → 毕业套装 → 套装神话 → 通关第150层。",
+            "目标套装：" .. (WishDefinitions.SET_NAMES[nextGoal.setId] or nextGoal.setId),
+            "100级史诗及以上部位：" .. nextGoal.setCount .. "/12",
+            "缺少部位：" .. (#missing > 0 and table.concat(missing, "、") or "已集齐"),
+            "装备来源：登塔、深渊、副本及100级罐子。",
+            "毕业之后可继续冲层、完善词条和强化升星。",
+        }
+        if (current.growth or {}).legacyLevel and current.growth.legacyLevel > 100 then
+            lines[#lines + 1] = "历史等级：" .. current.growth.legacyLevel .. "，历史装备和战力已保留。"
+        end
+        CommonPromptDialog.Show { kind = "rules", queueKey = "growth:goal", title = "成长目标",
+            message = nextGoal.label .. " · " .. nextGoal.progress, lines = lines, confirmText = "知道了" }
+    end
     local heroPanel = UI.Panel {
         width = 1048, height = 620, flexShrink = 0, position = "relative",
         backgroundImage = ASSETS.ui.heroPanel, backgroundFit = "contain",
@@ -295,11 +327,9 @@ function HomeView.Build(context)
                 backgroundImage = "image/ui/dialog/help_button.png", backgroundFit = "contain",
                 onClick = function() ShowRules(game) end,
             },
-            Kit.MultiTxt("解放双手", 22, C.textSecondary, {
-                position = "absolute", left = 596, top = 254,
-                width = 270, height = 52, maxLines = 2, textAlign = "center",
-                textStroke = { width = 2, color = "#000000" },
-            }),
+            homeRefs_.goal,
+            UI.Panel { position = "absolute", left = 596, top = 254, width = 270, height = 52,
+                clickable = true, onClick = showGoal },
             HomeActionButton("任务", 596, 316, function()
                 QuestController.Open()
             end, QuestController.CountClaimable(game, "newbie")
@@ -451,6 +481,12 @@ end
 
 function HomeView.Update(game)
     game = game or {}
+    homeRefs_.game = game
+    if homeRefs_.goal then
+        local goal = Progression.BuildGoal(game)
+        local text = goal.label .. "\n" .. goal.progress
+        if text ~= homeRefs_.goalText then homeRefs_.goal:SetText(text); homeRefs_.goalText = text end
+    end
     local unread = math.max(0, math.floor(tonumber((game.mailSummary or {}).unread) or 0))
     if homeRefs_.mailBadge and homeRefs_.mailUnread ~= unread then
         homeRefs_.mailUnread = unread

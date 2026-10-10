@@ -670,6 +670,11 @@ function ServerClient.OpenWishJar(jarId, count, callback)
     end
     return ServerClient.Send("WishPool.OpenJar", payload, callback)
 end
+function ServerClient.RecycleWishJar(jarId, count, callback)
+    return ServerClient.Send("WishPool.RecycleJar", {
+        jarId = tostring(jarId), count = math.max(1, math.min(6, math.floor(tonumber(count) or 1))),
+    }, callback)
+end
 function ServerClient.ClaimDailyVip(callback) return ServerClient.Send("Game.ClaimDailyVip", {}, callback) end
 function ServerClient.ClaimDailyAdVip(callback) return ServerClient.Send("Game.ClaimDailyAdVip", {}, callback) end
 function ServerClient.GetLeaderboard(callback, board)

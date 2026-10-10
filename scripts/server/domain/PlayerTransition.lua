@@ -9,7 +9,7 @@ local LargeNumber = require("shared.LargeNumber")
 local PlayerTransition = {}
 
 local SCALAR_DELTA_FIELDS = {
-    "pendingOfflineSeconds", "level", "vipLevel", "dailyVip", "exp", "nextExp",
+    "pendingOfflineSeconds", "growth", "level", "vipLevel", "dailyVip", "exp", "nextExp",
     "adFree",
     "floor", "maxFloor", "position", "transitionRemaining", "gold", "fragments",
     "autoRun", "pauseReason", "hp", "hpBig", "floorDefeats", "aidPending",
@@ -40,7 +40,9 @@ function PlayerTransition.Now(now)
 end
 
 function PlayerTransition.Copy(state, now)
-    return StateNormalizer.Normalize(TableUtils.DeepCopy(state), PlayerTransition.Now(now))
+    local clone = StateNormalizer.Normalize(TableUtils.DeepCopy(state), PlayerTransition.Now(now))
+    clone.updatedAt = PlayerTransition.Now(now)
+    return clone
 end
 
 function PlayerTransition.ShallowClone(state, now)
@@ -56,6 +58,7 @@ function PlayerTransition.ShallowClone(state, now)
     clone.equipped = state.equipped
     clone.overflowLoot = state.overflowLoot
     clone.quests = state.quests
+    clone.growth = TableUtils.DeepCopy(state.growth or {})
     -- 战斗结算会更新广告礼包/助力；必须隔离旧状态，才能生成正确 delta 和失败回滚。
     clone.rewardClaims = TableUtils.DeepCopy(state.rewardClaims)
     return clone

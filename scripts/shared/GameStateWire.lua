@@ -100,6 +100,7 @@ local function networkItem(item)
         id = item.id,
         equipmentId = item.equipmentId,
         level = item.level,
+        legacyLevel = item.legacyLevel,
         enhance = item.enhance or 0,
         star = item.star or 0,
         locked = item.locked == true,
@@ -150,8 +151,7 @@ local function networkInventory(items)
 end
 
 
----@param state table
----@param options table|nil
+---@param claims table
 ---@return table
 -- Historical campaign entitlements remain on the server. The current reward
 -- popup receives its exact IDs in events; sending all 120 old offers on every
@@ -169,6 +169,9 @@ local function NetworkRewardClaims(claims)
     return result
 end
 
+---@param state table
+---@param options table|nil
+---@return table
 function GameStateSchema.BuildSnapshot(state, options)
     options = options or {}
     local snapshot = {

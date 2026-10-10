@@ -2,6 +2,7 @@
 -- 邮件系统领域逻辑（服务端权威）。纯逻辑，输入 state，产出 PlayerTransition proposal。
 -- 邮件不替代即时反馈，仅用于奖励延期领取 / 结果留痕。
 
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local RarityCatalog = require("shared.RarityCatalog")
 local LargeNumber = require("shared.LargeNumber")
@@ -434,7 +435,7 @@ local function createEquipmentItem(state, spec, now)
         end
     end
     if not definition then return nil end
-    local level = Catalog.Clamp(TableUtils.ToInteger(spec.level, state.floor or 1), 1, 1000000)
+    local level = Progression.EquipmentLevel(spec.level or state.level)
     local enhance = Catalog.Clamp(TableUtils.ToInteger(spec.enhance, 0), 0, 1000)
     local star = Catalog.Clamp(TableUtils.ToInteger(spec.star, 0), 0, Catalog.MAX_STAR)
     local rarity = RarityCatalog.NormalizeId(spec.rarity or definition.rarity)
@@ -513,7 +514,7 @@ function MailEngine.GrantAttachment(working, attachment, events, now)
             local jar = WishPoolDefinitions.ResolveJar(itemId)
             if jar then
                 if type(working.wishPool.jars) ~= "table" then working.wishPool.jars = {} end
-                working.wishPool.jars[itemId] = (working.wishPool.jars[itemId] or 0) + (attachment.count or 1)
+                WishPoolDefinitions.GrantJars(working, itemId, attachment.count or 1)
                 attachment.claimedCount = attachment.count or 1
                 attachment.failReason = nil
                 return true

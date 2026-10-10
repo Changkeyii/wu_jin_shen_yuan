@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
 local PlayerTransition = require("server.domain.PlayerTransition")
@@ -151,6 +152,7 @@ end
 local function loadoutState(state, equipped)
     return {
         level = state.level,
+        growth = state.growth,
         floor = state.floor,
         maxFloor = state.maxFloor,
         floorKillBonus = state.floorKillBonus,
@@ -233,7 +235,7 @@ local function upgradePayload(item, before, after)
 end
 
 local function considerEquipmentUpgrade(state, item, now, events)
-    if not item or item.aidLocked or not PlayerTransition.FindItem(state, item.id) then return false, false end
+    if not item or item.aidLocked or not Progression.CanEquip(state, item) or not PlayerTransition.FindItem(state, item.id) then return false, false end
     local current = PlayerTransition.FindItem(state, state.equipped[item.slot])
     if current and (current.locked or current.aidLocked) then return false, false end
     local before = evaluateLoadout(state, state.equipped, true)
@@ -303,6 +305,7 @@ local function optimizeWholeLoadout(state, now, events, force)
                     and candidate.slot == slotId
                     and candidate.equipmentId
                     and not candidate.aidLocked
+                    and Progression.CanEquip(state, candidate)
                 then
                     if not best then
                         best = candidate
@@ -402,6 +405,10 @@ function EquipmentEngine.Equip(inputState, itemId, now)
     end
     if not Catalog.SLOT_BY_ID[item.slot] then
         return PlayerTransition.Failure(inputState, now, "INVALID_ITEM", "item has no valid equipment slot")
+    end
+    if not Progression.CanEquip(working, item) then
+        return PlayerTransition.Failure(inputState, now, "EQUIPMENT_LEVEL_REQUIRED",
+            string.format("人物达到%d级后可穿戴，装备已保留", Progression.RequiredEquipmentLevel(item)))
     end
     if working.equipped[item.slot] == item.id then
         -- 已穿戴时仍推进序章，并回传 equipment_equipped，避免客户端卡在“穿戴成功请稍候”。
@@ -710,6 +717,9 @@ function EquipmentEngine.DecideEquip(inputState, decision, now)
         if not item then
             return PlayerTransition.Failure(inputState, now, "ITEM_NOT_FOUND", "pending equipment item was not found")
         end
+        if not Progression.CanEquip(working, item) then
+            return PlayerTransition.Failure(inputState, now, "EQUIPMENT_LEVEL_REQUIRED", "人物等级不足，装备已保留")
+        end
         local current = PlayerTransition.FindItem(working, working.equipped[item.slot])
         if current and (current.locked or current.aidLocked) then
             return PlayerTransition.Failure(inputState, now, "EQUIPMENT_LOCKED", "the equipped item cannot be replaced")
@@ -772,7 +782,7 @@ function EquipmentEngine.UndoEquip(inputState, now)
     local restored = {}
     for slotId, itemId in pairs(backup.equipped) do
         local item = PlayerTransition.FindItem(working, itemId)
-        if item and item.slot == slotId then restored[slotId] = itemId end
+        if item and item.slot == slotId and Progression.CanEquip(working, item) then restored[slotId] = itemId end
     end
     working.equipped = restored
     backup.available = false
@@ -796,7 +806,7 @@ local function StrengthenCost(state, item, enhance)
         and item.source == "tutorial_drop"
         and item.slot == "weapon"
         and item.rarity == "common"
-        and item.level == 1
+        and item.level == 5
         and enhance == 0
     then
         return { gold = LargeNumber.Zero(), fragments = 0, tutorialFree = true }

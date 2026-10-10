@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local StateNormalizer = require("server.domain.StateNormalizer")
 local TableUtils = require("server.domain.TableUtils")
@@ -294,8 +295,9 @@ local function settleMonsterVictory(state, monster, rng, now, events, context)
             )
         end
         if (Catalog.GetSetCounts(state).prophecy or 0) >= 12 then
-            state.permanentBonus = state.permanentBonus + 0.005
-            events[#events + 1] = PlayerTransition.Event("permanent_growth", { amount = 0.005 })
+            local gained = math.min(0.005, math.max(0, 1 - state.permanentBonus))
+            state.permanentBonus = state.permanentBonus + gained
+            if gained > 0 then events[#events + 1] = PlayerTransition.Event("permanent_growth", { amount = gained }) end
         end
         for _, item in ipairs(state.inventory) do
             if item.aidLocked and (item.aidFloor or completedFloor) <= completedFloor then
@@ -1044,7 +1046,7 @@ function GameEngine.AdjustProgress(inputState, adjustment, now)
     local working = PlayerTransition.Copy(inputState, now)
     local changed = false
     local limits = {
-        level = { 1, 1000000 },
+        level = { 1, Progression.MAX_LEVEL },
         exp = { 0, 1000000000 },
         floor = { 1, 1000000 },
         maxFloor = { 1, 1000000 },
@@ -1064,10 +1066,7 @@ function GameEngine.AdjustProgress(inputState, adjustment, now)
         return PlayerTransition.Failure(inputState, now, "INVALID_ARGUMENT", "no supported progress field was supplied")
     end
     working.maxFloor = math.max(working.maxFloor, working.floor)
-    while working.exp >= Catalog.NextExp(working.level) do
-        working.exp = working.exp - Catalog.NextExp(working.level)
-        working.level = working.level + 1
-    end
+    Progression.AddExperience(working, 0, now)
     PlayerTransition.RefreshDerived(working)
     DomainMath.SetPlayerHp(working, DomainMath.StatMagnitude(working.stats, "hp"))
     return PlayerTransition.Finalize(inputState, working, now, "progress_adjusted", {

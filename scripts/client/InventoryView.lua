@@ -451,6 +451,12 @@ local function CreateItemUseDetail(item)
 
     -- 许愿罐：批量开启数量选择（最多同时开 6 个，不能超过持有数量）
     if isJar then
+        -- Existing detail content rectangle: x42..899, y34..392; action x748..898.
+        rightChildren[#rightChildren + 1] = UI.Panel {
+            position = "absolute", left = 748, top = 294, width = 150, height = 46,
+            children = { ImageButton("回收碎片", 150, 46, ASSETS.ui.inventoryActionGold,
+                function() WishPoolController.RecycleJar(item.jarId, jarOpenCount_) end, false) },
+        }
         local maxCount = math.min(6, math.max(1, item.quantity or 1))
         if jarOpenCount_ > maxCount then jarOpenCount_ = maxCount end
         local chipRow = {}

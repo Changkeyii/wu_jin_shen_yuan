@@ -16,7 +16,7 @@ function TopBarView.Build(game, refs)
         whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center",
         textStroke = { width = 2, color = "#000000" },
     })
-    refs.level = Kit.Txt("Lv." .. tostring(game.level or 1), 22, C.focus, {
+    refs.level = Kit.Txt("Lv." .. tostring(game.level or 1) .. (game.level == 100 and " 满级" or "/100"), 22, C.focus, {
         whiteSpace = "nowrap", width = 210, height = 42, textAlign = "center",
         textStroke = { width = 2, color = "#000000" },
     })
@@ -80,7 +80,7 @@ function TopBarView.Update(game, refs)
     refs = refs or {}
     refs.resourceGame = game
     if refs.floor then refs.floor:SetText("层  第" .. tostring(game.floor or 1) .. "层") end
-    if refs.level then refs.level:SetText("Lv." .. tostring(game.level or 1)) end
+    if refs.level then refs.level:SetText("Lv." .. tostring(game.level or 1) .. (game.level == 100 and " 满级" or "/100")) end
     if refs.gold then refs.gold:SetText("金币  " .. Kit.FormatInt(game.gold)) end
     if refs.fragments then refs.fragments:SetText("碎片  " .. Kit.FormatInt(game.fragments)) end
 end

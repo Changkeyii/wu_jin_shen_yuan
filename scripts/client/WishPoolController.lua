@@ -76,6 +76,7 @@ function WishPoolController.WishWithAd()
 end
 
 function WishPoolController.OpenJar(jarId, count, onDone)
+    if GameStateAdapter.GetViewState().readOnly then toast("正在连接服务器，请稍后再试") return false end
     if requestPending_ then toast("装备罐正在开启，请稍候") return false end
     if animating_ then toast("开罐动画播放中，请稍候") return false end
     requestPending_ = true
@@ -91,6 +92,35 @@ function WishPoolController.OpenJar(jarId, count, onDone)
         if onDone then onDone(response) end
     end)
     if not requestId and sequence == sequence_ then requestPending_ = false return false end
+    return true
+end
+
+function WishPoolController.RecycleJar(jarId, count)
+    if WishPoolController.IsBusy() then toast("装备罐正在结算，请稍候") return false end
+    if GameStateAdapter.GetViewState().readOnly then toast("正在连接服务器，请稍后再试") return false end
+    local jar = WishPoolDefinitions.ResolveJar(jarId)
+    if not jar then return false end
+    count = math.max(1, math.min(6, math.floor(tonumber(count) or 1)))
+    local dialogSequence = sequence_
+    require("client.CommonPromptDialog").Show {
+        title = "回收装备罐", kind = "warning", queueKey = "wish:recycle",
+        message = string.format("回收%d个%s，获得%d碎片。回收后罐子会消耗。", count, jar.name,
+            WishPoolDefinitions.RecycleFragments(jar) * count),
+        confirmText = "确认回收", cancelText = "保留",
+        onConfirm = function()
+            if dialogSequence ~= sequence_ or WishPoolController.IsBusy() or GameStateAdapter.GetViewState().readOnly then return end
+            requestPending_, sequence_ = true, sequence_ + 1
+            local current = sequence_
+            local request = ServerClient.RecycleWishJar(jarId, count, function(response)
+                if current ~= sequence_ then return end
+                requestPending_ = false
+                if not response or not response.ok then toast(response and response.reason or "回收失败", "warning")
+                else toast("罐子已回收，碎片已到账", "success") end
+                notifyChanged()
+            end)
+            if not request and current == sequence_ then requestPending_ = false end
+        end,
+    }
     return true
 end
 

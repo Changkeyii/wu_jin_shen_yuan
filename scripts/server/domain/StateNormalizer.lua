@@ -1,3 +1,4 @@
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local TrashTalk = require("shared.TrashTalk")
 local TableUtils = require("server.domain.TableUtils")
@@ -249,7 +250,9 @@ local function sanitizeEquipment(rawItem, itemId, sourceVersion)
         uniqueEffect = type(rawItem.uniqueEffect) == "string" and rawItem.uniqueEffect:match("^[%w%._:%-]+$") and rawItem.uniqueEffect or nil,
         aidLocked = rawItem.aidLocked == true,
         aidFloor = rawItem.aidFloor and clampInteger(rawItem.aidFloor, 1, 1000000000, 1) or nil,
-        level = level,
+        level = Progression.EquipmentLevel(level),
+        legacyLevel = rawItem.legacyLevel and clampInteger(rawItem.legacyLevel, 1, 1000000, 1)
+            or ((sourceVersion or 3) < 11 and level or nil),
         enhance = enhance,
         star = star,
         locked = rawItem.locked == true,
@@ -844,6 +847,7 @@ function StateNormalizer.Normalize(rawState, now)
         lastActiveAt = math.max(0, TableUtils.ToInteger(rawState.lastActiveAt, now)),
         pendingOfflineSeconds = clampInteger(rawState.pendingOfflineSeconds or rawState.offlineSeconds, 0, Catalog.OFFLINE_MAX_SECONDS, 0),
         level = clampInteger(rawState.level, 1, 1000000, 1),
+        growth = Progression.NormalizeGrowth(rawState.growth),
         vipLevel = clampInteger(rawState.vipLevel, 0, Catalog.MAX_VIP_LEVEL, 0),
         adFree = rawState.adFree == true,
         dailyVip = sanitizeDailyVip(rawState.dailyVip),
@@ -1016,33 +1020,7 @@ function StateNormalizer.Normalize(rawState, now)
         end
     end
 
-    local levelUps = 0
-    local maxLevelUpsPerNormalize = 10000
-    while levelUps < maxLevelUpsPerNormalize do
-        local requiredExp = Catalog.NextExp(state.level)
-        if not TableUtils.IsFiniteNumber(requiredExp) or requiredExp <= 0 then
-            print("[ProfileDiag] invalid nextExp during normalization level=" .. tostring(state.level)
-                .. " exp=" .. tostring(state.exp))
-            state.exp = 0
-            break
-        end
-        if state.exp < requiredExp then break end
-        state.exp = state.exp - requiredExp
-        state.level = math.min(1000000, state.level + 1)
-        levelUps = levelUps + 1
-        if state.level >= 1000000 then
-            state.exp = 0
-            break
-        end
-    end
-    if levelUps >= maxLevelUpsPerNormalize then
-        local requiredExp = Catalog.NextExp(state.level)
-        state.exp = TableUtils.IsFiniteNumber(requiredExp) and requiredExp > 0
-            and math.min(state.exp, math.max(0, requiredExp - 1)) or 0
-        print("[ProfileDiag] capped excessive level normalization level=" .. tostring(state.level)
-            .. " exp=" .. tostring(state.exp))
-    end
-    state.nextExp = Catalog.NextExp(state.level)
+    Progression.NormalizeState(state, now, sourceVersion < 11)
     state.maxFloor = math.max(state.maxFloor, state.floor)
     local oldGifts = rawState.rewardClaims and rawState.rewardClaims.gifts
     if oldGifts and (tonumber(oldGifts.version) or 1) < 2 then
@@ -1118,6 +1096,7 @@ function StateNormalizer.Normalize(rawState, now)
     local rawEquipped = type(rawState.equipped) == "table" and rawState.equipped
         or (type(rawState.equipment) == "table" and rawState.equipment or {})
     local equippedIds = {}
+    local loadoutAdjusted = false
     for _, slot in ipairs(Catalog.SLOTS) do
         local rawValue = rawEquipped[slot.id]
         local itemId = nil
@@ -1130,14 +1109,16 @@ function StateNormalizer.Normalize(rawState, now)
         end
 
         local item = itemId and byId[itemId] or nil
-        if item and item.slot == slot.id and not equippedIds[item.id] then
+        if item and item.slot == slot.id and not equippedIds[item.id] and Progression.CanEquip(state, item) then
             state.equipped[slot.id] = item.id
             equippedIds[item.id] = true
+        elseif item then
+            loadoutAdjusted = true
         end
     end
 
     local rawPendingEquip = type(rawState.pendingEquipDecision) == "table" and rawState.pendingEquipDecision or nil
-    if rawPendingEquip and byId[rawPendingEquip.itemId] then
+    if rawPendingEquip and byId[rawPendingEquip.itemId] and Progression.CanEquip(state, byId[rawPendingEquip.itemId]) then
         local powerDeltaBig = normalizeMagnitude(
             rawPendingEquip.displayedPowerDeltaBig,
             rawPendingEquip.displayedPowerDelta,
@@ -1163,7 +1144,7 @@ function StateNormalizer.Normalize(rawState, now)
         for _, slot in ipairs(Catalog.SLOTS) do
             local itemId = rawBackupEquipped[slot.id]
             local item = itemId and byId[itemId] or nil
-            if item and item.slot == slot.id and not backupIds[itemId] then
+            if item and item.slot == slot.id and not backupIds[itemId] and Progression.CanEquip(state, item) then
                 backupEquipped[slot.id] = itemId
                 backupIds[itemId] = true
             end
@@ -1234,7 +1215,7 @@ function StateNormalizer.Normalize(rawState, now)
     end
     local rawStats = type(rawState.stats) == "table" and rawState.stats or nil
     local rawStatsValid = false
-    if sourceVersion >= 5 and rawStats then
+    if sourceVersion >= 11 and rawStats and not loadoutAdjusted then
         rawStatsValid = GameStateSchema.ValidateStats(rawStats, "$state.stats")
     end
     if rawStatsValid and not BigNumber.IsZero(rawStats.hpBig) then

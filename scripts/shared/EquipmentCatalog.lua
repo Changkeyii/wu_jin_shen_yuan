@@ -74,7 +74,7 @@ local function buildDefinition(setId, index)
         icon = ICONS[setId][index],
         atlas = EquipmentCatalog.ATLAS_PATH,
         atlasIndex = (#definitions),
-        level = 1,
+        level = 5,
         atk = math.floor(slotBonus + tier * 3 + index * 2),
         def = math.floor((CATEGORY_BY_SLOT[slot] == "armor" and 20 or 6) + tier * 2 + index),
         hp = math.floor(80 + tier * 16 + index * 12),
@@ -140,6 +140,7 @@ function EquipmentCatalog.BuildViewItem(instance)
     item.id = instance.id
     item.equipmentId = definition.id
     item.level = instance.level or definition.level
+    item.legacyLevel = instance.legacyLevel
     item.rarity = RarityCatalog.NormalizeId(instance.rarity or definition.rarity)
     item.setEnabled = instance.setEnabled ~= false and RarityCatalog.Rank(item.rarity) >= RarityCatalog.Rank("epic")
     item.setId = item.setEnabled and (instance.setId or definition.setId) or nil

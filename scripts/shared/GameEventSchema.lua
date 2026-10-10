@@ -118,6 +118,7 @@ local KNOWN = {
     wish_character_unlocked = true,
     wish_character_duplicate = true,
     wish_jar_opened = true,
+    wish_jar_recycled = true,
     campaign_stage_started = true,
     campaign_stage_completed = true,
     campaign_chapter_completed = true,

@@ -70,7 +70,8 @@ local function MarkDirtyForKey(key)
         fragments = { "player", "market" },
         exp = { "player", "progression" },
         nextExp = { "player", "progression" },
-        level = { "player", "progression" },
+        level = { "player", "progression", "inventory", "wish" },
+        growth = { "player", "progression" },
         vipLevel = { "player" },
         adFree = { "player", "home", "activity", "bag" },
         dailyVip = { "player" },
@@ -160,6 +161,7 @@ local function MarkDirtyForEvent(event)
         activity_claimed = { "activity", "player" },
         wish_drawn = { "wish", "inventory" },
         wish_jar_opened = { "wish", "inventory" },
+        wish_jar_recycled = { "wish", "inventory", "player" },
         abyss_echo = { "abyss", "player" },
         offline_collected = { "player", "inventory" },
         story_gate = { "tutorial", "combat" },
@@ -600,7 +602,7 @@ local function RebuildView(reuseProjectedInventory)
     nextView.page = page_
     nextView.connectionState = connectionState_
     nextView.readOnly = connectionState_ ~= "ready"
-    nextView.nextExp = nextView.nextExp or math.floor(100 * (1.15 ^ (math.max(1, nextView.level or 1) - 1)))
+    nextView.nextExp = nextView.nextExp or require("shared.GameProgression").NextExp(nextView.level)
     nextView.pendingOfflineSeconds = nextView.pendingOfflineSeconds or 0
     nextView.offlineSeconds = nextView.pendingOfflineSeconds
     nextView.stepTimer = nextView.stepTimer or 0
@@ -710,13 +712,14 @@ local function RebuildView(reuseProjectedInventory)
                 nextView.inventory[#nextView.inventory + 1] = {
                     id = "wishjar:" .. jarId,
                     jarId = jarId,
+                    level = jar.level,
                     name = jar.name,
                     category = "wishjar",
                     rarity = jar.rarity
                         or (jar.setId and "epic" or "legendary"),
                     quantity = count,
                     icon = jar.icon,
-                    desc = "许愿获得的装备罐，可在背包中点击开启。",
+                    desc = string.format("固定产出%d级装备；%d级可穿戴。", jar.level, jar.level == 5 and 1 or jar.level),
                 }
             end
         end

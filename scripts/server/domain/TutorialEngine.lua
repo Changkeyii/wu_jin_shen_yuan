@@ -319,8 +319,7 @@ local function GrantCompleteRewards(state, events)
     if type(state.wishPool.jars) ~= "table" then state.wishPool.jars = {} end
     local WishPoolDefinitions = require("shared.WishPoolDefinitions")
     if WishPoolDefinitions.ResolveJar("jar.random") then
-        state.wishPool.jars["jar.random"] =
-            (state.wishPool.jars["jar.random"] or 0) + TUTORIAL_COMPLETE_JARS
+        WishPoolDefinitions.GrantJars(state, state.level <= 5 and "jar.random.lv5" or "jar.random", TUTORIAL_COMPLETE_JARS)
     end
     events[#events + 1] = PlayerTransition.Event("tutorial_completed", {
         gold = TUTORIAL_COMPLETE_GOLD,

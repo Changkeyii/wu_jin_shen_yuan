@@ -1,5 +1,6 @@
 local StateNormalizer = require("server.domain.StateNormalizer")
 local GameStateSchema = require("shared.GameStateSchema")
+local Progression = require("shared.GameProgression")
 local Catalog = require("server.domain.Catalog")
 local LargeNumber = require("shared.LargeNumber")
 local QuestEngine = require("server.domain.QuestEngine")
@@ -10,6 +11,7 @@ local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 local StateFactory = {}
 
 local function starterLoadout(now)
+    ---@type table<string, table>
     local definitionBySlot = {}
     for _, definition in ipairs(Catalog.EQUIPMENT_DEFINITIONS) do
         if not definitionBySlot[definition.slot] then definitionBySlot[definition.slot] = definition end
@@ -19,12 +21,12 @@ local function starterLoadout(now)
     local equipped = {}
     for index, slot in ipairs(Catalog.SLOTS) do
         local definition = assert(definitionBySlot[slot.id], "missing starter equipment definition: " .. slot.id)
-        local stats = Catalog.CreateItemStats(definition, 1, "rare", 1.0, 0, 0)
+        local stats = Catalog.CreateItemStats(definition, 5, "rare", 1.0, 0, 0)
         local itemId = string.format("00000000-0000-4000-8000-%012x", index)
         inventory[#inventory + 1] = {
             id = itemId,
             equipmentId = definition.id,
-            level = 1,
+            level = 5,
             rarity = "rare",
             setEnabled = false,
             setId = nil,
@@ -67,6 +69,7 @@ function StateFactory.Create(now)
         updatedAt = now,
         lastActiveAt = now,
         pendingOfflineSeconds = 0,
+        growth = Progression.NewGrowth(),
         level = 1,
         vipLevel = 0,
         dailyVip = { signInDay = 0, adDay = 0 },

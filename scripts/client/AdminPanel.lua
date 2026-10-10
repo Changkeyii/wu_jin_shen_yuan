@@ -64,11 +64,15 @@ local function GmItemOptions()
     GM_ITEM_OPTIONS = {}
     GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = "wish_ticket", name = "许愿券" }
     GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = "abyss_ticket", name = "深渊票" }
+    for _, level in ipairs(WishPoolDefinitions.JAR_LEVELS) do
+        local itemId = WishPoolDefinitions.MakeJarId("random", nil, nil, nil, level)
+        GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = itemId, name = level .. "级·全随机罐" }
+    end
     for _, cell in ipairs(WishPoolDefinitions.DISPLAY_CELLS) do
         if cell.kind ~= "character" then
             local itemId = WishPoolDefinitions.MakeJarId(cell.kind, cell.rarity, cell.slot, cell.setId)
             if itemId then
-                GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = itemId, name = cell.label or itemId }
+                GM_ITEM_OPTIONS[#GM_ITEM_OPTIONS + 1] = { itemId = itemId, name = (cell.label or itemId) .. "（随机等级）" }
             end
         end
     end
@@ -88,6 +92,8 @@ local function ItemMatchesFilter(option)
     if filter == "wish_ticket" or filter == "abyss_ticket" then
         return option.itemId == filter
     end
+    local jar = WishPoolDefinitions.ResolveJar(option.itemId)
+    if jar and not jar.legacy then return filter == jar.kind end
     for _, cell in ipairs(WishPoolDefinitions.DISPLAY_CELLS) do
         if WishPoolDefinitions.MakeJarId(cell.kind, cell.rarity, cell.slot, cell.setId) == option.itemId then
             if filter == "random" then return cell.kind == "random" end

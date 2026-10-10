@@ -1,3 +1,5 @@
+local LargeNumber = require("shared.LargeNumber")
+local Catalog = require("server.domain.Catalog")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local PlayerTransition = require("server.domain.PlayerTransition")
 local RewardEngine = require("server.domain.RewardEngine")
@@ -49,7 +51,7 @@ local function pickCharacter(wishPool, rng)
     return pool[randomInt(rng, 1, #pool)]
 end
 
-local function makeDrawReward(wishPool, rng)
+local function makeDrawReward(wishPool, rng, playerLevel)
     local forcedCharacter = wishPool.characterPity + 1 >= WishPoolDefinitions.CHARACTER_HARD_PITY
     local forcedMyth = wishPool.mythPity + 1 >= WishPoolDefinitions.MYTH_HARD_PITY
     local entry
@@ -79,7 +81,8 @@ local function makeDrawReward(wishPool, rng)
             return randomInt(rng, minimum, maximum)
         end)
     end
-    local jarId = WishPoolDefinitions.MakeJarId(entry.kind, rarity, slot)
+    local level = WishPoolDefinitions.RandomLevel(function(a, b) return randomInt(rng, a, b) end, playerLevel)
+    local jarId = WishPoolDefinitions.MakeJarId(entry.kind, rarity, slot, nil, level)
     return {
         kind = "jar",
         jarKind = entry.kind,
@@ -169,7 +172,7 @@ function WishPoolEngine.Wish(inputState, payment, now, rng, count)
     local draws = {}
     local showcase = nil
     for drawIndex = 1, drawCount do
-        local reward = makeDrawReward(wishPool, rng)
+        local reward = makeDrawReward(wishPool, rng, working.level)
         updatePity(wishPool, reward)
         grantReward(wishPool, reward, events)
 
@@ -252,6 +255,9 @@ end
 
 local function rollOpenRarity(jar, rng)
     if jar.rarity then return jar.rarity end
+    if jar.setId then
+        return randomInt(rng, 1, 1000) <= 2 and "myth" or "epic"
+    end
     local result = weightedPick(WishPoolDefinitions.OPEN_RARITY_WEIGHTS, rng)
     return result and result.rarity or "legendary"
 end
@@ -272,13 +278,16 @@ function WishPoolEngine.OpenJar(inputState, jarId, now, rng, openCount)
         return PlayerTransition.Failure(inputState, now, "WISH_JAR_REQUIRED", "该装备罐数量不足")
     end
 
+    if #working.inventory + openCount > Catalog.GetInventoryCapacity(working) then
+        return PlayerTransition.Failure(inputState, now, "INVENTORY_FULL",
+            string.format("开启%d个罐子需要%d个空位，请先清理背包；罐子未消耗", openCount, openCount))
+    end
     working.wishPool.jars[jarId] = count - openCount
     if working.wishPool.jars[jarId] <= 0 then working.wishPool.jars[jarId] = nil end
 
     -- 批量开罐：每只罐子一行，最多同时开 6 只；任意一只失败则整批原子回滚。
     local lanes = {}
     local events = {}
-    local floor = math.max(1, TableUtils.ToInteger(working.maxFloor, working.floor))
     for lane = 1, openCount do
         local rarity = rollOpenRarity(jar, rng)
         local slot = jar.slot or WishPoolDefinitions.RandomSlot(function(minimum, maximum)
@@ -294,7 +303,9 @@ function WishPoolEngine.OpenJar(inputState, jarId, now, rng, openCount)
             events,
             {
                 slot = slot,
-                floor = floor,
+                floor = jar.level,
+                equipmentLevel = jar.level,
+                setId = jar.setId,
                 trackInLootStash = false,
                 requireInventory = true,
                 rollTradeable = false,
@@ -327,6 +338,21 @@ function WishPoolEngine.OpenJar(inputState, jarId, now, rng, openCount)
     ))
     touchWishAction(working.wishPool, now)
     return PlayerTransition.Finalize(inputState, working, now, "wish_jar_opened", events, true, false)
+end
+
+function WishPoolEngine.RecycleJar(inputState, jarId, count, now)
+    local jar = WishPoolDefinitions.ResolveJar(jarId)
+    if not jar then return PlayerTransition.Failure(inputState, now, "INVALID_WISH_JAR", "未知装备罐") end
+    count = math.max(1, math.min(6, math.floor(tonumber(count) or 1)))
+    local working = PlayerTransition.Copy(inputState, now)
+    local owned = working.wishPool.jars[jarId] or 0
+    if owned < count then return PlayerTransition.Failure(inputState, now, "WISH_JAR_REQUIRED", "装备罐数量不足") end
+    local fragments = WishPoolDefinitions.RecycleFragments(jar) * count
+    working.wishPool.jars[jarId] = owned > count and owned - count or nil
+    PlayerTransition.AddCurrency(working, "fragments", LargeNumber.FromNumber(fragments))
+    return PlayerTransition.Finalize(inputState, working, now, "wish_jar_recycled", {
+        PlayerTransition.Event("wish_jar_recycled", { jarId = jarId, quantity = count, fragments = fragments }),
+    }, false, false)
 end
 
 return WishPoolEngine

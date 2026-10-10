@@ -149,7 +149,7 @@ local function AttachmentName(attachment)
         if itemId == "wish_ticket" then return "许愿券" end
         if itemId == "abyss_ticket" then return "深渊票" end
         local jar = WishPoolDefinitions.ResolveJar(itemId)
-        if jar and jar.name then return jar.name end
+        if jar and jar.name then return jar.legacy and ("随机等级·" .. jar.baseName) or jar.name end
         return "道具"
     end
     return "附件"

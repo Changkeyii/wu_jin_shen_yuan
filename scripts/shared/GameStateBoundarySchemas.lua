@@ -169,7 +169,16 @@ PERSISTED_SCHEMA = {
         updatedAt = SAFE_INTEGER_SCHEMA,
         lastActiveAt = SAFE_INTEGER_SCHEMA,
         pendingOfflineSeconds = { type = "integer", min = 0, max = GameStateSchema.OFFLINE_MAX_SECONDS },
-        level = { type = "integer", min = 1, max = 1000000 },
+        level = { type = "integer", min = 1, max = 100 },
+        growth = { type = "object", allowUnknown = false, fields = {
+            version = { type = "integer", enum = { 1 } },
+            legacyLevel = { type = "integer", min = 0, max = 1000000 },
+            legacyCoreFloor = { type = "integer", min = 0, max = 1000000 },
+            legacyExp = { type = "integer", min = 0, max = 1000000000 },
+            masteryExp = { type = "integer", min = 0, max = 999999 },
+            masteryDayKey = { type = "integer", min = 0, max = 1000000000 },
+            masteryFragments = { type = "integer", min = 0, max = 100 },
+        } },
         vipLevel = { type = "integer", min = 0, max = 10 },
         adFree = { type = "boolean" },
         dailyVip = DAILY_VIP_SCHEMA,
@@ -283,6 +292,7 @@ local PERSISTED_VALUE_SCHEMAS = PERSISTED_SCHEMA.fields
 
 local SNAPSHOT_VALUE_SCHEMAS = {
     level = PERSISTED_VALUE_SCHEMAS.level,
+    growth = PERSISTED_VALUE_SCHEMAS.growth,
     vipLevel = PERSISTED_VALUE_SCHEMAS.vipLevel,
     adFree = PERSISTED_VALUE_SCHEMAS.adFree,
     dailyVip = PERSISTED_VALUE_SCHEMAS.dailyVip,

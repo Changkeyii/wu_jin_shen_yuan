@@ -77,7 +77,7 @@ local changes = {
     function(s, i) s.tutorial.step = 5 end,
     function(s, i) i.source = "starter" end,
     function(s, i) i.rarity = "rare" end,
-    function(s, i) i.level = 2 end,
+    function(s, i) i.level = 10; s.level = 10 end,
     function(s, i) i.enhance = 1; s.maxFloor = 20 end,
     function(s, i)
         for _, starter in ipairs(Factory.Create(now).inventory) do
