@@ -2,6 +2,7 @@ local CommandRouter = require("server.core.CommandRouter")
 local GameStateSchema = require("shared.GameStateSchema")
 local ServerConfig = require("server.ServerConfig")
 local MailRules = require("shared.MailRules")
+local AdminMailDefinitions = require("shared.AdminMailDefinitions")
 
 local AdminCommands = {}
 
@@ -139,61 +140,32 @@ function AdminCommands.Register(router, adminService, services)
         allowUnknown = false,
     }, ServerConfig.RATES.AdminQuery, AsyncAdmin(adminService, "audit")))
 
-    -- ============================================================
-    -- GM 邮件操作（auth = "admin" 服务端校验，操作仅限在线目标）
-    -- ============================================================
+    router:Register(Definition("Admin.SetAdFree", {
+        type = "object", required = { "targetUid", "enabled", "reason" }, allowUnknown = false,
+        fields = { targetUid = UID, enabled = { type = "boolean" }, reason = REASON },
+    }, ServerConfig.RATES.AdminMutation, AsyncAdmin(adminService, "set_ad_free")))
 
-    local ATTACH_SCHEMA = {
-        type = "array",
-        maxLength = MailRules.MAX_ATTACHMENTS,
-        items = {
-            type = "object",
-            allowUnknown = false,
-            fields = {
-                kind = { type = "string", enum = { "currency", "equipment", "item" } },
-                currency = { type = "string", enum = { "gold", "fragments" } },
-                equipmentId = { type = "string", maxLength = 64 },
-                itemId = { type = "string", minLength = 1, maxLength = 64 },
-                slot = { type = "string", minLength = 1, maxLength = 32 },
-                name = { type = "string", minLength = 1, maxLength = 64 },
-                count = { type = "integer", min = 1, max = 1000000000 },
-                level = { type = "integer", min = 1, max = 1000000 },
-                rarity = { type = "string", enum = GameStateSchema.RARITIES },
-            },
-        },
-    }
-
-    router:Register(Definition("Admin.SendMail", {
-        type = "object",
-        required = { "targetUid", "title", "body", "mailType" },
-        allowUnknown = false,
-        fields = {
-            targetUid = UID,
-            title = { type = "string", minLength = 1, maxLength = MailRules.MAX_TITLE },
-            body = { type = "string", minLength = 1, maxLength = MailRules.MAX_BODY },
-            mailType = { type = "string", enum = { "notice", "reward", "task", "ops", "special" } },
-            sender = { type = "string", minLength = 1, maxLength = 32 },
-            favorite = { type = "boolean" },
-            expireDays = { type = "integer", min = 1, max = 3650 },
-            batchId = { type = "string", minLength = 1, maxLength = 128 },
-            attachments = ATTACH_SCHEMA,
-        },
-    }, ServerConfig.RATES.AdminMutation, AdminMailMutation(services, function(context, targetUserId, payload, service, sink, done)
-        local spec = {
-            type = payload.mailType,
-            title = payload.title,
-            body = payload.body,
-            sender = payload.sender,
-            favorite = payload.favorite == true,
-            batchId = payload.batchId or "gm_test",
-            reason = "GM测试",
-            attachments = payload.attachments,
-        }
-        if payload.expireDays then
-            spec.expireAt = os.time() + payload.expireDays * 24 * 3600
+    router:Register(Definition("Admin.MailDeliveryStatus", {
+        type = "object", required = { "targetUid" }, allowUnknown = false, fields = { targetUid = UID },
+    }, ServerConfig.RATES.AdminQuery, function(context, payload, done)
+        if not services.mailService then
+            done(false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" })
+        else
+            adminService:InspectMailDelivery(context.uid, payload.targetUid, services.mailService, function(result)
+                done(result.ok, result)
+            end)
         end
-        service:SendMail(targetUserId, spec, done, sink)
-    end)))
+        return CommandRouter.PENDING
+    end))
+
+    -- ============================================================
+    -- 个人发件支持离线；邮箱查询/清理仍操作当前实例中的存档。
+    -- ============================================================
+
+    local ATTACH_SCHEMA = AdminMailDefinitions.ATTACH_SCHEMA
+
+    router:Register(Definition("Admin.SendMail", AdminMailDefinitions.SEND_SCHEMA,
+        ServerConfig.RATES.AdminMutation, AsyncAdmin(adminService, "send_mail")))
 
     router:Register(Definition("Admin.SendBroadcastMail", {
         type = "object",

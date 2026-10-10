@@ -111,6 +111,24 @@ local function SetStatus(response, onChanged)
     if response and response.ok then
         statusKind_ = "success"
         status_ = response.status or (response.data and response.data.status) or "操作已提交"
+        local data = response.data or {}
+        if data.action == "send_mail" then
+            local mailStatus = {
+                queued = "邮件已保存，等待玩家上线或同步后投递",
+                applied = "个人邮件已投递",
+                alreadyApplied = "个人邮件已投递，无需重复发送",
+                rejected = "个人邮件投递失败",
+            }
+            status_ = mailStatus[status_] or status_
+        elseif data.action == "set_ad_free" then
+            local entitlementStatus = {
+                queued = "免广告身份修改已保存，玩家上线或同步后生效",
+                applied = "免广告身份已更新",
+                alreadyApplied = "免广告身份已更新，无需重复操作",
+                rejected = "免广告身份修改失败",
+            }
+            status_ = entitlementStatus[status_] or status_
+        end
         if response.data and response.data.audit then audit_ = response.data.audit end
         if response.data and response.data.player then queriedPlayer_ = response.data.player end
     else
@@ -364,6 +382,8 @@ local function PlayerDetailCard(UI, player)
                     Label(UI, "UID " .. tostring(player.targetUid or "-"), 11, {255, 220, 120, 255}),
                     Label(UI, tostring(player.nickname or ""), 11, {255, 255, 255, 255}),
                     Label(UI, statusText, 10, statusColor),
+                    Label(UI, player.adFree and "拥有免广告卡" or "未拥有免广告卡", 10,
+                        player.adFree and {110, 231, 150, 255} or {200, 200, 210, 255}),
                 },
             },
             UI.Panel {
@@ -472,6 +492,16 @@ function AdminPanel.Build(UI, options)
                     ServerClient.AdminQuery(form_.targetUid, function(response) SetStatus(response, onChanged) end)
                 end,
             },
+            UI.Button {
+                text = "查询投递状态", variant = "secondary", width = 240, disabled = readOnly,
+                onClick = function()
+                    if readOnly then return end
+                    if form_.targetUid == "" then
+                        SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged); return
+                    end
+                    ServerClient.AdminMailDeliveryStatus(form_.targetUid, function(response) SetStatus(response, onChanged) end)
+                end,
+            },
         }),
         Field(UI, "按昵称查询（在线玩家）", "queryName", "输入昵称"),
         ButtonRow(UI, {
@@ -495,6 +525,27 @@ function AdminPanel.Build(UI, options)
             },
         }),
         Label(UI, QueryByNameSummary(), 10, {213, 226, 255, 255}),
+    })
+
+    local adFreeSection = Section(UI, "免广告卡身份", {
+        Label(UI, "管理员按目标 UID 发放或收回永久免广告卡。玩家仅使用权益；每日次数和领取条件仍生效。", 24, {213, 226, 255, 255}),
+        Field(UI, "身份修改原因", "reason", "必填，最多 120 字"),
+        ButtonRow(UI, {
+            UI.Button {
+                text = "发放免广告卡", variant = "success", width = 240, height = 64, disabled = readOnly,
+                onClick = function()
+                    if readOnly then return end
+                    Submit(function(done) ServerClient.AdminSetAdFree(form_.targetUid, true, form_.reason, done) end, onChanged)
+                end,
+            },
+            UI.Button {
+                text = "收回免广告卡", variant = "secondary", width = 240, height = 64, disabled = readOnly,
+                onClick = function()
+                    if readOnly then return end
+                    Submit(function(done) ServerClient.AdminSetAdFree(form_.targetUid, false, form_.reason, done) end, onChanged)
+                end,
+            },
+        }),
     })
 
     -- 发放邮件信息：所有发放（金币/碎片/装备/道具）统一走邮箱，玩家自行领取。
@@ -870,10 +921,21 @@ function AdminPanel.Build(UI, options)
             width = "100%",
             flexDirection = "row",
             alignItems = "center",
-            gap = 8,
+            gap = 12,
+            padding = 8,
+            minHeight = 96,
             children = {
                 UI.Checkbox {
-                    size = 18,
+                    size = 36,
+                    height = 80,
+                    width = 0,
+                    minWidth = 240,
+                    flexGrow = 1,
+                    flexBasis = 0,
+                    label = option.name,
+                    fontSize = 20,
+                    fontColor = {255, 255, 255, 255},
+                    disabled = readOnly or mailSending_,
                     checked = entry.checked,
                     onChange = function(self, checked)
                         if checked == true then
@@ -890,15 +952,12 @@ function AdminPanel.Build(UI, options)
                         entry.checked = checked == true
                     end,
                 },
-                UI.Panel {
-                    width = 200,
-                    flexShrink = 0,
-                    children = { Label(UI, option.name, 10, {255, 255, 255, 255}) },
-                },
                 UI.TextField {
-                    flexGrow = 1,
-                    flexBasis = 0,
-                    height = 44,
+                    width = 140,
+                    flexShrink = 0,
+                    height = 64,
+                    fontSize = 20,
+                    disabled = readOnly or mailSending_,
                     value = entry.count,
                     maxLength = 9,
                     onChange = function(self, value) entry.count = value end,
@@ -1051,6 +1110,7 @@ function AdminPanel.Build(UI, options)
         contentChildren = {
             querySection,
             PlayerDetailCard(UI, queriedPlayer_),
+            adFreeSection,
             mailInfoSection,
             currencySection,
             equipmentSection,

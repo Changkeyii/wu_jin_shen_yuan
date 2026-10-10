@@ -1,7 +1,29 @@
 local GameEngine = require("server.domain.GameEngine")
 local Catalog = require("server.domain.Catalog")
 local TableUtils = require("server.domain.TableUtils")
+local MailEngine = require("server.domain.MailEngine")
+local PlayerTransition = require("server.domain.PlayerTransition")
+local AdminMailDefinitions = require("shared.AdminMailDefinitions")
 
+---@class AdminService
+---@field gateway table<string, any>
+---@field repository table<string, any>
+---@field profileService table<string, any>
+---@field operationQueue table<string, any>
+---@field adminPolicy table<string, any>
+---@field clock fun(): integer
+---@field instanceNonce string
+---@field commandIdFactory function?
+---@field auditOwnerUserId integer
+---@field onDelta function
+---@field onBanned function
+---@field onAdminResult function
+---@field commandSequence integer
+---@field pollElapsed number
+---@field polling table<integer, boolean>
+---@field resultPolling table<integer, boolean>
+---@field legacyMailSessions table<integer, table>
+---@field decodeJson function?
 local AdminService = {}
 AdminService.__index = AdminService
 
@@ -26,6 +48,10 @@ local function SafeReason(value)
     return value
 end
 
+local function DurableAction(action)
+    return action == "send_mail" or action == "set_ad_free"
+end
+
 local function NormalizeInstanceNonce(value, clock)
     if value ~= nil then
         local supplied = tostring(value):gsub("[^%w]", "")
@@ -40,6 +66,7 @@ local function NormalizeInstanceNonce(value, clock)
     return nonce:sub(-24)
 end
 
+---@return AdminService
 function AdminService.New(options)
     options = options or {}
     assert(options.gateway and options.repository and options.profileService, "AdminService requires cloud and profile services")
@@ -62,6 +89,8 @@ function AdminService.New(options)
         pollElapsed = 0,
         polling = {},
         resultPolling = {},
+        legacyMailSessions = {},
+        decodeJson = options.decodeJson or (_G.cjson and _G.cjson.decode),
     }, AdminService)
 end
 
@@ -178,6 +207,7 @@ function AdminService:Query(actorUserId, targetUserId, onComplete)
             summary.revision = state.revision
             summary.level = state.level
             summary.vipLevel = state.vipLevel or 0
+            summary.adFree = state.adFree == true
             summary.floor = state.floor
             summary.maxFloor = state.maxFloor
             summary.position = state.position
@@ -292,9 +322,33 @@ end
 
 function AdminService:_applyMutation(command, onComplete)
     local targetUserId = command.targetUid
+    ---@type string?
     local operationName = nil
+    ---@type function?
     local mutator = nil
-    if command.action == "grant_currency" then
+    if command.action == "set_ad_free" then
+        operationName = "GM set ad-free"
+        mutator = function(state, now)
+            if type(command.payload.enabled) ~= "boolean" then
+                return PlayerTransition.Failure(state, now, "INVALID_ENTITLEMENT", "免广告状态必须为开启或关闭")
+            end
+            local working = PlayerTransition.Copy(state, now)
+            working.adFree = command.payload.enabled
+            return PlayerTransition.Finalize(state, working, now, "ad_free_changed", {}, false, false)
+        end
+    elseif command.action == "send_mail" then
+        operationName = "GM send mail"
+        mutator = function(state, now)
+            local working = PlayerTransition.Copy(state, now)
+            local spec = TableUtils.DeepCopy(command.payload.spec)
+            spec.bizOrderId = "gm-mail:" .. command.commandId
+            local mail = MailEngine.Create(working, spec, now)
+            if not mail then
+                return PlayerTransition.Failure(state, now, "MAIL_CAPACITY_FULL", "邮箱已满，邮件将自动重试投递")
+            end
+            return PlayerTransition.Finalize(state, working, now, "mail_sent", {}, false, false)
+        end
+    elseif command.action == "grant_currency" then
         operationName = "GM grant currency"
         mutator = function(state, now)
             return GameEngine.GrantCurrency(state, command.payload.currency, command.payload.amount, now)
@@ -336,31 +390,54 @@ function AdminService:_applyOnline(command, onComplete)
     end
     self.operationQueue:Enqueue(command.targetUid, function(done)
         self:_applyMutation(command, function(result)
-            if result.ok and result.data.delta then self.onDelta(command.targetUid, result.data.delta) end
+            if result.ok and result.data.delta then
+                local sent, reason = pcall(self.onDelta, command.targetUid, result.data.delta)
+                if not sent then print("[AdminService] committed delta notification failed: " .. tostring(reason)) end
+            end
             local auditStatus = result.ok
                 and (result.data.alreadyApplied and "alreadyApplied" or "applied")
-                or "rejected"
+                or (DurableAction(command.action) and "pending" or "rejected")
             self:_audit(command, auditStatus, result.reason, function() end)
-            onComplete(result)
+            local callbackOk, callbackError = pcall(onComplete, result)
+            if not callbackOk then print("[AdminService] delivery callback failed: " .. tostring(callbackError)) end
             done()
         end)
     end)
 end
 
 function AdminService:_queueRemote(command, onComplete)
+    -- Older persistent instances consume GM_COMMAND and acknowledge unsupported
+    -- actions. Keep personal deliveries invisible to those consumers.
+    local key = self.repository.Keys.GM_COMMAND
+    if command.action == "send_mail" then key = self.repository.Keys.PERSONAL_MAIL
+    elseif command.action == "set_ad_free" then key = self.repository.Keys.PLAYER_ENTITLEMENT end
     self.gateway:MessageSend(
         command.actorUid,
-        self.repository.Keys.GM_COMMAND,
+        key,
         command.targetUid,
         command,
         function(result)
             if not result.ok then onComplete(result); return end
+            if command.action == "send_mail" then
+                print("[PersonalMail] stage=queued uid=" .. tostring(command.targetUid)
+                    .. " command=" .. command.commandId .. " key=" .. tostring(key))
+            elseif command.action == "set_ad_free" then
+                print("[PlayerEntitlement] stage=queued uid=" .. tostring(command.targetUid)
+                    .. " command=" .. command.commandId .. " enabled=" .. tostring(command.payload.enabled))
+            end
             self:_audit(command, "queued", "waiting for target authority", function(auditResult)
                 if not auditResult.ok then
+                    if DurableAction(command.action) then
+                        -- The mail is already durable. Reporting failure invites a
+                        -- second send although the first one will still arrive.
+                        onComplete(Result(true, { status = "queued", commandId = command.commandId,
+                            action = command.action, auditWarning = true }))
+                        return
+                    end
                     onComplete(Result(false, { queued = true }, auditResult.code, auditResult.reason))
                     return
                 end
-                onComplete(Result(true, { status = "queued", commandId = command.commandId }))
+                onComplete(Result(true, { status = "queued", commandId = command.commandId, action = command.action }))
             end)
         end
     )
@@ -414,14 +491,27 @@ function AdminService:Execute(actorUserId, action, payload, onComplete)
 if action == "audit" then self:GetAudit(actorUserId, onComplete); return end
 
     local targetUserId = UserId(payload.targetUid)
-    local reason = SafeReason(payload.reason)
+    local reason = action == "send_mail" and "GM邮件发送" or SafeReason(payload.reason)
     if not targetUserId then onComplete(Result(false, {}, "INVALID_UID", "target UID is invalid")); return end
     if not reason then onComplete(Result(false, {}, "INVALID_REASON", "a non-empty reason up to 120 bytes is required")); return end
     local allowed, targetReason = self.adminPolicy:CanTarget(actorUserId, targetUserId, action)
     if not allowed then onComplete(Result(false, {}, "FORBIDDEN", targetReason)); return end
 
     local sanitized = {}
-    if action == "grant_currency" then
+    if action == "set_ad_free" then
+        if type(payload.enabled) ~= "boolean" then
+            onComplete(Result(false, {}, "INVALID_ENTITLEMENT", "免广告状态必须为开启或关闭"))
+            return
+        end
+        sanitized = { enabled = payload.enabled }
+    elseif action == "send_mail" then
+        local spec, err = AdminMailDefinitions.BuildSpec(payload, self.clock())
+        if not spec then
+            onComplete(Result(false, {}, err.code, err.reason))
+            return
+        end
+        sanitized = { spec = spec }
+    elseif action == "grant_currency" then
         local amount = tonumber(payload.amount)
         if (payload.currency ~= "gold" and payload.currency ~= "fragments")
             or not amount or amount ~= math.floor(amount) or amount < 1 or amount > 1000000 then
@@ -464,6 +554,17 @@ if action == "audit" then self:GetAudit(actorUserId, onComplete); return end
     }
     if action == "ban" then self:_directBan(command, true, onComplete); return end
     if action == "unban" then self:_directBan(command, false, onComplete); return end
+    if DurableAction(action) then
+        -- Always persist first, including local online targets. A disconnect or
+        -- instance restart between acceptance and delivery cannot lose the mail.
+        self:_queueRemote(command, function(result)
+            onComplete(result)
+            if result.ok and self.profileService:IsOnline(targetUserId) then
+                self:ProcessInbox(targetUserId, function() end)
+            end
+        end)
+        return
+    end
     if self.profileService:IsOnline(targetUserId) then
         self:_applyOnline(command, function(result)
             if result.ok then
@@ -500,15 +601,183 @@ function AdminService:_sendResult(command, result, onComplete)
     )
 end
 
+function AdminService:_messageValue(message)
+    local value = type(message) == "table" and message.value or nil
+    if type(value) == "string" and type(self.decodeJson) == "function" then
+        local ok, decoded = pcall(self.decodeJson, value)
+        if ok then value = decoded end
+    end
+    if type(value) ~= "table" then return nil end
+    value = TableUtils.DeepCopy(value)
+    value.targetUid = UserId(value.targetUid)
+    if value.actorUid ~= nil then value.actorUid = UserId(value.actorUid) end
+    return value
+end
+
+-- A production administrator can inspect delivery from the running game even
+-- when development tools have no access to production logs or cloud data.
+function AdminService:InspectMailDelivery(actorUserId, targetUserId, mailService, onComplete)
+    if not self.adminPolicy:IsAdmin(actorUserId) then
+        onComplete(Result(false, {}, "FORBIDDEN", "administrator permission required")); return
+    end
+    targetUserId = UserId(targetUserId)
+    if not targetUserId then onComplete(Result(false, {}, "INVALID_UID", "target UID is invalid")); return end
+    self.profileService:Inspect(targetUserId, function(profile)
+        if not profile.ok then onComplete(profile); return end
+        self:_loadInbox(targetUserId, function(inbox)
+            local waiting, invalid = 0, 0
+            for _, message in ipairs(inbox.data.messages or {}) do
+                local command = self:_messageValue(message)
+                if message.personalMail or (command and command.action == "send_mail") then
+                    if command and command.targetUid == targetUserId and command.action == "send_mail" then
+                        if not message.legacyComplete then waiting = waiting + 1 end
+                    else invalid = invalid + 1 end
+                end
+            end
+            mailService:_loadBroadcasts(function(broadcast)
+                local state = profile.data.state or {}
+                local mailed = #(state.mails or {}) + #(state.mailCache or {})
+                local broadcastWaiting = 0
+                for _, entry in ipairs(broadcast.data.entries or {}) do
+                    if not (state.receivedBroadcasts or {})[entry.batchId] then broadcastWaiting = broadcastWaiting + 1 end
+                end
+                local failed = inbox.data.cloudPending == true or not broadcast.ok
+                local status = string.format("UID %s｜%s｜邮箱 %d 封｜个人待投递 %d｜全服待投递 %d｜异常记录 %d%s｜投递版本 cloud-v1",
+                    tostring(targetUserId), profile.data.online and "本实例在线" or "本实例未在线", mailed,
+                    waiting, broadcastWaiting, invalid, failed and "｜云读取失败，请重试" or "")
+                onComplete(Result(true, { status = status, delivery = { version = "cloud-v1", targetUid = targetUserId,
+                    mailboxCount = mailed, personalPending = waiting, broadcastPending = broadcastWaiting,
+                    invalid = invalid, cloudPending = failed } }))
+            end)
+        end)
+    end)
+end
+
+function AdminService:_loadInbox(targetUserId, onComplete)
+    local messages, cloudPending = {}, false
+    local session = self.profileService:GetSession(targetUserId)
+    local function failed(stage, result)
+        cloudPending = true
+        print("[PersonalMail] stage=" .. stage .. " uid=" .. tostring(targetUserId)
+            .. " code=" .. tostring(result.code))
+    end
+    local function finish()
+        onComplete(Result(true, {messages = messages, cloudPending = cloudPending}))
+    end
+    local function recoverLegacy()
+        if not session or self.legacyMailSessions[targetUserId] == session then finish(); return end
+        self.gateway:MessageGet(targetUserId, self.repository.Keys.GM_COMMAND, true, function(history)
+            if not history.ok then failed("legacy_fetch", history); finish(); return end
+            local candidates, actors, actorSeen, rejected, succeeded, receiptReadable = {}, {}, {}, {}, {}, {}
+            for _, message in ipairs(history.data.messages or {}) do
+                local command = self:_messageValue(message)
+                if command and command.action == "send_mail" and command.targetUid == targetUserId
+                    and type(command.commandId) == "string" and self.adminPolicy:IsAdmin(command.actorUid) then
+                    candidates[#candidates + 1] = message
+                    if not actorSeen[command.actorUid] then
+                        actorSeen[command.actorUid] = true
+                        actors[#actors + 1] = command.actorUid
+                    end
+                end
+            end
+            local actorIndex, read = 1, false
+            local function nextReceipts()
+                local actor = actors[actorIndex]
+                if not actor then
+                    -- Only recover a proven unsupported-action rejection. An
+                    -- arbitrary read task may have been claimed/deleted already.
+                    for _, message in ipairs(candidates) do
+                        local command = self:_messageValue(message)
+                        if receiptReadable[command.actorUid] ~= false
+                            and (rejected[command.commandId] or succeeded[command.commandId]) then
+                            message.legacyMail = true
+                            message.legacyComplete = succeeded[command.commandId] == true
+                            messages[#messages + 1] = message
+                            if not message.legacyComplete then
+                                print("[PersonalMail] stage=legacy_recovery uid=" .. tostring(targetUserId)
+                                    .. " command=" .. command.commandId)
+                            end
+                        end
+                    end
+                    if not cloudPending then self.legacyMailSessions[targetUserId] = session end
+                    finish()
+                    return
+                end
+                self.gateway:MessageGet(actor, self.repository.Keys.GM_RESULT, read, function(receipts)
+                    if not receipts.ok then
+                        receiptReadable[actor] = false
+                        failed("legacy_receipts", receipts)
+                    else
+                        for _, message in ipairs(receipts.data.messages or {}) do
+                            local receipt = self:_messageValue(message)
+                            if receipt and receipt.targetUid == targetUserId and receipt.action == "send_mail"
+                                and type(receipt.commandId) == "string" then
+                                if receipt.ok == true and (receipt.status == "applied" or receipt.status == "alreadyApplied") then
+                                    succeeded[receipt.commandId] = true
+                                elseif receipt.ok == false and receipt.code == "UNKNOWN_ADMIN_ACTION" then
+                                    rejected[receipt.commandId] = true
+                                end
+                            end
+                        end
+                    end
+                    if read then actorIndex = actorIndex + 1; read = false else read = true end
+                    nextReceipts()
+                end)
+            end
+            nextReceipts()
+        end)
+    end
+    self.gateway:MessageGet(targetUserId, self.repository.Keys.GM_COMMAND, false, function(legacy)
+        if not legacy.ok then failed("gm_fetch", legacy)
+        else
+            for _, message in ipairs(legacy.data.messages or {}) do
+                local command = self:_messageValue(message)
+                message.legacyMail = command and command.action == "send_mail" or false
+                messages[#messages + 1] = message
+            end
+        end
+        self.gateway:MessageGet(targetUserId, self.repository.Keys.PERSONAL_MAIL, false, function(personal)
+            if not personal.ok then failed("mail_fetch", personal)
+            else
+                for _, message in ipairs(personal.data.messages or {}) do
+                    message.personalMail = true
+                    messages[#messages + 1] = message
+                end
+            end
+            self.gateway:MessageGet(targetUserId, self.repository.Keys.PLAYER_ENTITLEMENT, false, function(entitlements)
+                if not entitlements.ok then failed("entitlement_fetch", entitlements)
+                else
+                    local rows = entitlements.data.messages or {}
+                    table.sort(rows, function(left, right)
+                        local leftCommand, rightCommand = self:_messageValue(left), self:_messageValue(right)
+                        local leftTime = tonumber(leftCommand and leftCommand.createdAt) or 0
+                        local rightTime = tonumber(rightCommand and rightCommand.createdAt) or 0
+                        if leftTime ~= rightTime then return leftTime < rightTime end
+                        return (UserId(left.message_id or left.messageId) or 0)
+                            < (UserId(right.message_id or right.messageId) or 0)
+                    end)
+                    for _, message in ipairs(rows) do
+                        message.playerEntitlement = true
+                        messages[#messages + 1] = message
+                    end
+                end
+                recoverLegacy()
+            end)
+        end)
+    end)
+end
+
 function AdminService:ProcessInbox(targetUserId, onComplete)
     if self.polling[targetUserId] then onComplete(Result(true, { status = "busy" })); return end
     self.polling[targetUserId] = true
-    self.gateway:MessageGet(targetUserId, self.repository.Keys.GM_COMMAND, false, function(result)
+    self:_loadInbox(targetUserId, function(result)
         if not result.ok then self.polling[targetUserId] = nil; onComplete(result); return end
         local messages = result.data.messages or {}
         local index = 0
         local applied = 0
         local alreadyApplied = 0
+        local pending = result.data.cloudPending and 1 or 0
+        local entitlementBlocked = false
         local finished = false
 
         local function finish(resultValue)
@@ -526,18 +795,41 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                     status = applied > 0 and "applied" or (alreadyApplied > 0 and "alreadyApplied" or "applied"),
                     applied = applied,
                     alreadyApplied = alreadyApplied,
+                    pending = pending,
                 }))
                 return
             end
-            local command = message.value
-            local messageId = message.message_id or message.messageId
+            local command = self:_messageValue(message)
+            local messageId = UserId(message.message_id or message.messageId)
+            if message.playerEntitlement and entitlementBlocked then
+                pending = pending + 1
+                nextMessage()
+                return
+            end
             local valid = type(command) == "table"
                 and type(command.commandId) == "string"
                 and command.targetUid == targetUserId
                 and self.adminPolicy:IsAdmin(command.actorUid)
+                and (not message.personalMail or command.action == "send_mail")
+                and (not message.playerEntitlement or command.action == "set_ad_free")
             if not valid then
-                self.gateway:MessageMarkRead(messageId, function(markResult)
-                    if not markResult.ok then finish(markResult); return end
+                -- Parsing/format mismatches must not permanently acknowledge a
+                -- reward. Retain the source for diagnosis or a later compatible build.
+                pending = pending + 1
+                print("[PersonalMail] stage=invalid_envelope uid=" .. tostring(targetUserId)
+                    .. " message=" .. tostring(messageId))
+                nextMessage()
+                return
+            end
+            if message.legacyComplete then
+                -- A durable success receipt remains proof after the player
+                -- claims/deletes a mail and the bounded ApplyOnce history rolls.
+                alreadyApplied = alreadyApplied + 1
+                self.gateway:MessageDelete(messageId, function(deleteResult)
+                    if not deleteResult.ok then
+                        pending = pending + 1
+                        self.legacyMailSessions[targetUserId] = nil
+                    end
                     nextMessage()
                 end)
                 return
@@ -551,6 +843,17 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                 return
             end
             self:_applyOnline(command, function(applyResult)
+                if DurableAction(command.action) and not applyResult.ok then
+                    -- Keep the durable message unread on capacity/storage/session
+                    -- failure. Continue login and retry on the next inbox poll.
+                    pending = pending + 1
+                    if message.playerEntitlement then entitlementBlocked = true end
+                    self.legacyMailSessions[targetUserId] = nil
+                    print("[PersonalMail] stage=apply_pending uid=" .. tostring(targetUserId)
+                        .. " command=" .. command.commandId .. " code=" .. tostring(applyResult.code))
+                    nextMessage()
+                    return
+                end
                 if applyResult.ok then
                     if applyResult.data.alreadyApplied then
                         alreadyApplied = alreadyApplied + 1
@@ -560,6 +863,13 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                 end
                 self:_sendResult(command, applyResult, function(sendResult)
                     if not sendResult.ok then
+                        if DurableAction(command.action) then
+                            pending = pending + 1
+                            if message.playerEntitlement then entitlementBlocked = true end
+                            self.legacyMailSessions[targetUserId] = nil
+                            nextMessage()
+                            return
+                        end
                         finish(Result(false, {
                             applied = applied,
                             alreadyApplied = alreadyApplied,
@@ -568,8 +878,29 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                         return
                     end
                     self.gateway:MessageMarkRead(messageId, function(markResult)
-                        if not markResult.ok then finish(markResult); return end
-                        nextMessage()
+                        if not markResult.ok then
+                            if DurableAction(command.action) then
+                                pending = pending + 1
+                                if message.playerEntitlement then entitlementBlocked = true end
+                                self.legacyMailSessions[targetUserId] = nil
+                                nextMessage()
+                                return
+                            end
+                            finish(markResult); return
+                        end
+                        if message.legacyMail then
+                            -- Remove migrated source tasks only after profile
+                            -- commit and receipt; retries still use the same ID.
+                            self.gateway:MessageDelete(messageId, function(deleteResult)
+                                if not deleteResult.ok then
+                                    pending = pending + 1
+                                    self.legacyMailSessions[targetUserId] = nil
+                                end
+                                nextMessage()
+                            end)
+                        else
+                            nextMessage()
+                        end
                     end)
                 end)
             end)
@@ -610,8 +941,8 @@ function AdminService:ProcessResults(actorUserId, onComplete)
                 finish(Result(true, { status = "applied", delivered = delivered }))
                 return
             end
-            local value = message.value
-            local messageId = message.message_id or message.messageId
+            local value = self:_messageValue(message)
+            local messageId = UserId(message.message_id or message.messageId)
             local valid = type(value) == "table"
                 and type(value.commandId) == "string"
                 and UserId(value.targetUid) ~= nil
@@ -653,6 +984,11 @@ function AdminService:Update(timeStep)
     self.pollElapsed = self.pollElapsed + (timeStep or 0)
     if self.pollElapsed < 5 then return end
     self.pollElapsed = 0
+    for userId, session in pairs(self.legacyMailSessions) do
+        if self.profileService:GetSession(userId) ~= session then
+            self.legacyMailSessions[userId] = nil
+        end
+    end
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         self:ProcessInbox(userId, function(result)
             if not result.ok then print("[AdminService] inbox poll failed: " .. tostring(result.reason)) end

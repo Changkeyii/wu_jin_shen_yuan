@@ -6,17 +6,35 @@ local PlayerTransition = require("server.domain.PlayerTransition")
 local MailEngine = require("server.domain.MailEngine")
 local MailRules = require("shared.MailRules")
 local TableUtils = require("server.domain.TableUtils")
+local ServerConfig = require("server.ServerConfig")
 
+---@class MailService
+---@field profileService table<string, any>
+---@field gateway table<string, any>?
+---@field operationQueue table<string, any>?
+---@field authorityUid integer
+---@field decodeJson function?
+---@field clock fun(): integer
+---@field log function
+---@field onDelta function
+---@field instanceNonce string
+---@field broadcasts table[]
+---@field broadcastSeq integer
+---@field broadcastWaiters function[]
+---@field broadcastPolling table<integer, boolean>
+---@field broadcastLoadedAt integer?
+---@field expiryElapsed number
 local MailService = {}
 MailService.__index = MailService
 
 -- 广播队列最大保留条数（超出后丢弃最旧批次）
-local BROADCAST_QUEUE_LIMIT = 200
+local BROADCAST_KEY = "abyss_broadcast_mail_v1"
 
 local function Result(ok, data, code, reason)
     return { ok = ok == true, data = data or {}, code = code or (ok and 0 or -1), reason = tostring(reason or "") }
 end
 
+---@return MailService
 function MailService.New(options)
     options = options or {}
     assert(options.profileService, "MailService requires profileService")
@@ -27,6 +45,15 @@ function MailService.New(options)
         expiryElapsed = 0,
         broadcasts = {},
         broadcastSeq = 0,
+        gateway = options.gateway,
+        operationQueue = options.operationQueue,
+        authorityUid = options.authorityUid or ServerConfig.LEADERBOARD_AUTHORITY_UID,
+        decodeJson = options.decodeJson or (_G.cjson and _G.cjson.decode),
+        onDelta = options.onDelta or function() end,
+        instanceNonce = options.instanceNonce or (tostring({}):gsub("[^%w]", "") .. tostring(math.random(1, 999999999))),
+        broadcastWaiters = {},
+        broadcastPolling = {},
+        broadcastLoadedAt = nil,
     }, MailService)
 end
 
@@ -109,6 +136,7 @@ end
 --- 一键领取
 function MailService:ClaimAll(userId, onComplete, resultSink)
     self.profileService:Apply(userId, "mail claim all", function(state, now)
+        ---@type table
         local proposal = MailEngine.ClaimAll(state, now)
         if proposal.ok and proposal.state and type(resultSink) == "table" then
             MailEngine.Ensure(proposal.state)
@@ -251,18 +279,61 @@ end
 
 --- 给单个玩家补发所有尚未送达的全服邮件（幂等：receivedBroadcasts 标记 + bizOrderId 双保险）。
 --- 在线投递与离线登录补发共用此函数；已送达的批次自动跳过。
-function MailService:DeliverBroadcasts(userId, onComplete)
-    if #self.broadcasts == 0 then
-        if onComplete then onComplete(Result(true, { delivered = 0 })) end
-        return
+function MailService:_loadBroadcasts(onComplete)
+    if not self.gateway then onComplete(Result(false, {}, "MAIL_CLOUD_UNAVAILABLE", "邮件云存储不可用")); return end
+    if self.broadcastLoadedAt and self.clock() - self.broadcastLoadedAt < 5 then
+        onComplete(Result(true, { entries = self.broadcasts })); return
     end
-    local queue = {}
-    for i = 1, #self.broadcasts do queue[i] = self.broadcasts[i] end
+    self.broadcastWaiters[#self.broadcastWaiters + 1] = onComplete
+    if #self.broadcastWaiters > 1 then return end
+    self.gateway:ListGet(self.authorityUid, BROADCAST_KEY, function(result)
+        local entries, expired, now = {}, {}, self.clock()
+        if result.ok then
+            for _, row in ipairs(result.data.items or {}) do
+                local entry = row.value
+                if type(entry) == "string" and self.decodeJson then
+                    local ok, decoded = pcall(self.decodeJson, entry)
+                    if ok then entry = decoded end
+                end
+                if type(entry) ~= "table" or type(entry.batchId) ~= "string"
+                    or #entry.batchId < 1 or #entry.batchId > 128 or type(entry.spec) ~= "table" then
+                    result = Result(false, {}, "INVALID_BROADCAST", "全服邮件记录无法解析，稍后重试")
+                    break
+                end
+                if (tonumber(entry.spec.expireAt) or 0) == 0 or (tonumber(entry.spec.expireAt) or 0) > now then
+                    entries[#entries + 1] = TableUtils.DeepCopy(entry)
+                elseif #expired < 8 and math.tointeger(tonumber(row.list_id or row.listId)) then
+                    expired[#expired + 1] = math.tointeger(tonumber(row.list_id or row.listId))
+                end
+            end
+            if result.ok then
+                table.sort(entries, function(a, b)
+                    if a.createdAt == b.createdAt then return a.batchId < b.batchId end
+                    return (tonumber(a.createdAt) or 0) < (tonumber(b.createdAt) or 0)
+                end)
+                self.broadcasts, self.broadcastLoadedAt = entries, now
+                result = Result(true, { entries = entries })
+            end
+        end
+        local waiters = self.broadcastWaiters
+        self.broadcastWaiters = {}
+        for _, callback in ipairs(waiters) do callback(result) end
+        if result.ok then
+            for _, id in ipairs(expired) do
+                self.gateway:ListDelete(id, function(deleted)
+                    if not deleted.ok then self.log("[Mail] expired broadcast cleanup failed id=" .. tostring(id)) end
+                end)
+            end
+        end
+    end)
+end
+
+function MailService:_deliverBroadcastEntries(userId, queue, onComplete)
     local index = 1
-    local delivered = 0
+    local delivered, pending = 0, 0
     local function next()
         if index > #queue then
-            if onComplete then onComplete(Result(true, { delivered = delivered })) end
+            onComplete(Result(true, { delivered = delivered, pending = pending }))
             return
         end
         local entry = queue[index]
@@ -274,18 +345,72 @@ function MailService:DeliverBroadcasts(userId, onComplete)
             if working.receivedBroadcasts[entry.batchId] then
                 return PlayerTransition.NoCommit(state, now, "mail_broadcast_delivered")
             end
+            if (entry.spec.expireAt or 0) > 0 and entry.spec.expireAt <= now then
+                return PlayerTransition.NoCommit(state, now, "mail_broadcast_expired")
+            end
             local mail = MailEngine.Create(working, TableUtils.DeepCopy(entry.spec), now)
             if not mail then
                 return PlayerTransition.Failure(state, now, "MAIL_CAPACITY_FULL", "邮箱已满，全服邮件将在之后自动重试")
             end
-            working.receivedBroadcasts[entry.batchId] = true
+            -- Keep receipts for all active batches, including claimed/deleted
+            -- mails. Expired batches can no longer be delivered and need no flag.
+            local receipts = {}
+            for _, active in ipairs(queue) do
+                if working.receivedBroadcasts[active.batchId] then receipts[active.batchId] = true end
+            end
+            receipts[entry.batchId] = true
+            working.receivedBroadcasts = receipts
             return PlayerTransition.Finalize(state, working, now, "mail_broadcast", {}, false, false)
         end, function(result)
-            if result.ok then delivered = delivered + 1 end
+            if result.ok and result.data.committed then
+                delivered = delivered + 1
+                if result.data.delta then
+                    local ok, err = pcall(self.onDelta, userId, result.data.delta)
+                    if not ok then self.log("[Mail] notification failed: " .. tostring(err)) end
+                end
+            elseif not result.ok then
+                pending = pending + 1
+                self.log("[Mail] broadcast pending uid=" .. tostring(userId) .. " batch=" .. entry.batchId
+                    .. " code=" .. tostring(result.code))
+            end
             next()
         end)
     end
     next()
+end
+
+function MailService:DeliverBroadcasts(userId, onComplete)
+    onComplete = onComplete or function() end
+    if self.broadcastPolling[userId] then onComplete(Result(true, { status = "busy", pending = 1 })); return end
+    local session = self.profileService:GetSession(userId)
+    if not session then onComplete(Result(false, {}, "PROFILE_NOT_LOADED", "玩家档案未加载")); return end
+    self.broadcastPolling[userId] = true
+    self:_loadBroadcasts(function(result)
+        local finished = false
+        local function finish(response)
+            if finished then return end
+            finished = true
+            self.broadcastPolling[userId] = nil
+            local ok, err = pcall(onComplete, response)
+            if not ok then self.log("[Mail] delivery callback failed: " .. tostring(err)) end
+        end
+        if not result.ok then finish(result); return end
+        local function run(done)
+            if self.profileService:GetSession(userId) ~= session then
+                finish(Result(false, {}, "STALE_SESSION", "玩家连接已变化")); done(); return
+            end
+            self:_deliverBroadcastEntries(userId, result.data.entries, function(response)
+                finish(response); done()
+            end)
+        end
+        if self.operationQueue then self.operationQueue:Enqueue(userId, {
+            run = run,
+            onComplete = function(ok, errorResult)
+                if not ok then finish(Result(false, {}, "MAIL_DELIVERY_FAILED", errorResult and errorResult.reason)) end
+            end,
+        })
+        else run(function() end) end
+    end)
 end
 
 --- 创建一封全服邮件批次并立即投递给当前在线玩家；离线玩家登录时自动补发。
@@ -293,7 +418,7 @@ end
 function MailService:SendBroadcast(spec, onComplete, resultSink)
     spec = type(spec) == "table" and spec or {}
     self.broadcastSeq = (self.broadcastSeq or 0) + 1
-    local batchId = string.format("broadcast-%d-%d", self.clock(), self.broadcastSeq)
+    local batchId = string.format("broadcast-%d-%s-%d", self.clock(), self.instanceNonce, self.broadcastSeq)
     local bizOrderId = "broadcast:" .. batchId
     local entry = {
         batchId = batchId,
@@ -304,49 +429,66 @@ function MailService:SendBroadcast(spec, onComplete, resultSink)
     entry.spec.batchId = batchId
     entry.spec.bizOrderId = bizOrderId
     entry.spec.reason = entry.spec.reason or "全服邮件"
-    self.broadcasts[#self.broadcasts + 1] = entry
-
-    local online = self.profileService:OnlineUserIds()
-    if type(resultSink) == "table" then
-        resultSink.batchId = batchId
-        resultSink.totalOnline = #online
-        resultSink.delivered = 0
-    end
-    if #online == 0 then
-        if onComplete then onComplete(Result(true, { batchId = batchId, delivered = 0 })) end
+    entry.spec.expireAt = entry.spec.expireAt or MailRules.DefaultExpireSeconds(entry.spec.type, entry.createdAt)
+    if not self.gateway then
+        if onComplete then onComplete(Result(false, {}, "MAIL_CLOUD_UNAVAILABLE", "邮件云存储不可用")) end
         return
     end
-
-    -- 在线玩家逐个补发（DeliverBroadcasts 幂等，已收到的批次自动跳过）
-    local index = 1
-    local delivered = 0
-    local deliveredUsers = {}
-    local function next()
-        if index > #online then
-            if type(resultSink) == "table" then
-                resultSink.delivered = delivered
-                resultSink.deliveredUsers = deliveredUsers
-            end
-            if onComplete then
-                onComplete(Result(true, {
-                    batchId = batchId,
-                    delivered = delivered,
-                    deliveredUsers = deliveredUsers,
-                }))
-            end
+    -- Acceptance requires a durable project-wide batch, never an in-memory append.
+    self:_loadBroadcasts(function(loaded)
+        if not loaded.ok then if onComplete then onComplete(loaded) end; return end
+        if #loaded.data.entries >= 512 then
+            if onComplete then onComplete(Result(false, {}, "BROADCAST_LIMIT", "有效全服邮件批次已达上限，请等待旧批次到期")) end
             return
         end
-        local userId = online[index]
-        index = index + 1
-        self:DeliverBroadcasts(userId, function(result)
-            if result and result.ok and result.data and (result.data.delivered or 0) > 0 then
-                delivered = delivered + (result.data.delivered or 0)
-                deliveredUsers[#deliveredUsers + 1] = userId
+        self.gateway:ListAdd(self.authorityUid, BROADCAST_KEY, entry, function(saved)
+            if not saved.ok then if onComplete then onComplete(saved) end; return end
+            self.broadcastLoadedAt = nil
+            self.log("[Mail] broadcast saved batch=" .. batchId)
+
+            local online = self.profileService:OnlineUserIds()
+            if type(resultSink) == "table" then
+                resultSink.batchId = batchId
+                resultSink.totalOnline = #online
+                resultSink.delivered = 0
+            end
+            if #online == 0 then
+                if onComplete then onComplete(Result(true, { batchId = batchId, delivered = 0 })) end
+                return
+            end
+
+            -- 在线玩家逐个补发（DeliverBroadcasts 幂等，已收到的批次自动跳过）
+            local index = 1
+            local delivered = 0
+            local deliveredUsers = {}
+            local function next()
+                if index > #online then
+                    if type(resultSink) == "table" then
+                        resultSink.delivered = delivered
+                        resultSink.deliveredUsers = deliveredUsers
+                    end
+                    if onComplete then
+                        onComplete(Result(true, {
+                            batchId = batchId,
+                            delivered = delivered,
+                            deliveredUsers = deliveredUsers,
+                        }))
+                    end
+                    return
+                end
+                local userId = online[index]
+                index = index + 1
+                self:DeliverBroadcasts(userId, function(result)
+                    if result and result.ok and result.data and (result.data.delivered or 0) > 0 then
+                        delivered = delivered + (result.data.delivered or 0)
+                        deliveredUsers[#deliveredUsers + 1] = userId
+                    end
+                    next()
+                end)
             end
             next()
         end)
-    end
-    next()
+    end)
 end
 
 -- ============================================================================
@@ -401,28 +543,30 @@ function MailService:Update(timeStep)
     self.expiryElapsed = self.expiryElapsed + (timeStep or 0)
     if self.expiryElapsed < 30 then return end
     self.expiryElapsed = 0
-    -- 广播队列只保留最近 BROADCAST_QUEUE_LIMIT 条
-    if #self.broadcasts > BROADCAST_QUEUE_LIMIT then
-        local keep = {}
-        for i = #self.broadcasts - BROADCAST_QUEUE_LIMIT + 1, #self.broadcasts do
-            keep[#keep + 1] = self.broadcasts[i]
-        end
-        self.broadcasts = keep
-    end
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
-        self.profileService:Apply(userId, "mail expiry", function(state, now)
-            local working = PlayerTransition.Copy(state, now)
-            MailEngine.Ensure(working)
-            local _, changed = MailEngine.ProcessExpiry(working, now)
-            if not changed then
-                return PlayerTransition.NoCommit(state, now, "mail_expiry_noop")
-            end
-            return PlayerTransition.Finalize(state, working, now, "mail_expiry", {}, false, false)
-        end, function(result)
-            if not result.ok then
-                self.log("[Mail] expiry failed uid=" .. tostring(userId) .. " code=" .. tostring(result.code))
-            end
+        self:DeliverBroadcasts(userId, function(result)
+            if not result.ok then self.log("[Mail] broadcast sync failed uid=" .. tostring(userId) .. " code=" .. tostring(result.code)) end
         end)
+        local function expire(done)
+            self.profileService:Apply(userId, "mail expiry", function(state, now)
+                local working = PlayerTransition.Copy(state, now)
+                MailEngine.Ensure(working)
+                local _, changed = MailEngine.ProcessExpiry(working, now)
+                if not changed then
+                    return PlayerTransition.NoCommit(state, now, "mail_expiry_noop")
+                end
+                return PlayerTransition.Finalize(state, working, now, "mail_expiry", {}, false, false)
+            end, function(result)
+                if not result.ok then
+                    self.log("[Mail] expiry failed uid=" .. tostring(userId) .. " code=" .. tostring(result.code))
+                elseif result.data.committed and result.data.delta then
+                    pcall(self.onDelta, userId, result.data.delta)
+                end
+                done()
+            end)
+        end
+        if self.operationQueue then self.operationQueue:Enqueue(userId, expire)
+        else expire(function() end) end
     end
 end
 

@@ -5,6 +5,7 @@
 local AbyssDefinitions = require("shared.AbyssDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 
+---@class ChallengeDefinitions
 local ChallengeDefinitions = {}
 
 ChallengeDefinitions.VERSION = 1
@@ -86,6 +87,8 @@ function ChallengeDefinitions.BuildView(state, now)
         bossKills = math.max(0, math.floor(tonumber(challenges.bossKills) or 0)),
         sessionActive = session ~= nil,
         sessionGradeId = session and session.gradeId or nil,
+        sessionStartedAt = session and session.startedAt or nil,
+        sessionRunId = session and session.runId or nil,
         sessionGradeName = grade and grade.name or "裂隙深渊",
         sessionDamage = session and clampScore(session.damage) or 0,
         sessionHp = session and clampScore(session.hp) or 0,

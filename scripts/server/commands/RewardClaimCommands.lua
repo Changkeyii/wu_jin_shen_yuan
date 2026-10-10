@@ -84,6 +84,18 @@ local function registerMutation(router, services, name, schema, operation, mutat
 end
 
 function RewardClaimCommands.Register(router, services)
+    router:Register {
+        name = "Reward.VerifyAdFree",
+        schema = { type = "object", allowUnknown = false, fields = {} },
+        rate = ServerConfig.RATES.Progression,
+        handler = function(context)
+            local state = services.profileService:GetState(context.uid)
+            if not state or state.adFree ~= true then
+                return false, { ok = false, code = "AD_FREE_REQUIRED", reason = "免广告身份未开启或已取消，请刷新后重试" }
+            end
+            return true, { ok = true, data = { adFree = true } }
+        end,
+    }
     require("server.commands.AdGiftCommands").Register(router, services)
     registerMutation(router, services, "Reward.ClaimAdExtras", BATCH_SCHEMA, "claim reward ad batch",
         function(state, payload, now) return RewardClaimEngine.ClaimAdExtras(state, payload.rewardIds, now) end)

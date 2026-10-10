@@ -7,6 +7,7 @@ local GameTheme = require("client.Theme")
 local ViewAssets = require("client.ViewAssets")
 local LargeNumber = require("shared.LargeNumber")
 local BigNumber = require("shared.BigNumber")
+local ChangedOnly = require("client.UI.ChangedOnly")
 
 local C = GameTheme.Colors
 local ASSETS = ViewAssets.ASSETS
@@ -250,7 +251,7 @@ end
 local function SetImageProgress(fillClip, width, value, maxValue)
     if not fillClip then return end
     local ratio = MagnitudeRatio(value, maxValue)
-    fillClip:SetStyle({ width = math.floor(width * ratio) })
+    ChangedOnly.Style(fillClip, { width = math.floor(width * ratio) })
 end
 
 local BUTTON_VARIANTS = {

@@ -52,11 +52,36 @@ function MailCommands.Register(router, services)
         },
         rate = ServerConfig.RATES.Leaderboard,
         serialized = false,
-        handler = function(context, payload)
+        async = true,
+        handler = function(context, payload, done)
             local service = MailService(services)
-            if not service then return false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" } end
-            local result = service:List(context.uid, payload and payload.scope == "favorite" and "favorite" or "all")
-            return result.ok and { ok = true, data = result.data } or result
+            if not service then
+                done(false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" })
+                return CommandRouter.PENDING
+            end
+            local session = services.profileService:GetSession(context.uid)
+            local broadcastPending = false
+            local function list(inbox)
+                if services.profileService:GetSession(context.uid) ~= session then
+                    done(false, { code = "STALE_SESSION", reason = "连接已变化，请重新打开邮箱" })
+                    return
+                end
+                local result = service:List(context.uid, payload and payload.scope == "favorite" and "favorite" or "all")
+                if result.ok then
+                    result.data.deliveryPending = broadcastPending or (inbox and (not inbox.ok or inbox.data.status == "busy"
+                        or (inbox.data.pending or 0) > 0) or false)
+                end
+                done(result.ok, result)
+            end
+            -- Login may have continued after a transient cloud/storage failure.
+            -- Read the durable inbox before returning the list, rather than an
+            -- empty cached list that can stay on screen after background delivery.
+            service:DeliverBroadcasts(context.uid, function(broadcast)
+                broadcastPending = not broadcast.ok or (broadcast.data.pending or 0) > 0
+                if services.adminService then services.adminService:ProcessInbox(context.uid, list)
+                else list(nil) end
+            end)
+            return CommandRouter.PENDING
         end,
     })
 

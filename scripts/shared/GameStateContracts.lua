@@ -21,6 +21,7 @@ GameStateContracts.PERSISTED_FIELDS = {
     "pendingOfflineSeconds",
     "level",
     "vipLevel",
+    "adFree",
     "dailyVip",
     "trashTalkIndex",
     "exp",
@@ -83,6 +84,7 @@ GameStateContracts.PERSISTED_FIELDS = {
 GameStateContracts.SNAPSHOT_FIELDS = {
     "level",
     "vipLevel",
+    "adFree",
     "dailyVip",
     "exp",
     "floor",

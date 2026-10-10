@@ -5,6 +5,11 @@ local TableUtils = require("server.domain.TableUtils")
 local BigNumber = require("shared.BigNumber")
 local LargeNumber = require("shared.LargeNumber")
 
+---@class PlayerProfileRepository
+---@field gateway table<string, any>
+---@field clock fun(): integer
+---@field listIds table<integer, table>
+---@field itemIds table<integer, table>
 local PlayerProfileRepository = {}
 PlayerProfileRepository.__index = PlayerProfileRepository
 
@@ -30,6 +35,8 @@ PlayerProfileRepository.Keys = {
     HEALTH_POTION = "abyss_health_potion",
     ADMIN_AUDIT = "abyss_admin_audit",
     GM_COMMAND = "abyss_gm_command",
+    PERSONAL_MAIL = "abyss_personal_mail_v2",
+    PLAYER_ENTITLEMENT = "abyss_player_entitlement_v1",
     GM_RESULT = "abyss_gm_result",
 }
 
@@ -157,6 +164,7 @@ local function IndexInventory(items)
     return indexed
 end
 
+---@return PlayerProfileRepository
 function PlayerProfileRepository.New(options)
     options = options or {}
     return setmetatable({

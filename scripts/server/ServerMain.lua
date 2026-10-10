@@ -218,6 +218,7 @@ local function SendSnapshot(userId, snapshotEvents)
         end,
         playerNickname = entry.nickname,
     })
+    ---@type table
     local stats = state.stats or {}
     snapshot.recommendedPower = snapshot.recommendedPower or stats.recommendedPower or 0
     snapshot.nextChapterRecommendedPower = snapshot.nextChapterRecommendedPower
@@ -634,6 +635,7 @@ local function InitializeServices()
         onDelta = SendDelta,
         onBanned = DisconnectBanned,
         onAdminResult = SendAdminResult,
+        decodeJson = cjson.decode,
     })
     router_ = CommandRouter.New({
         registry = registry_,
@@ -681,6 +683,10 @@ local function InitializeServices()
 
     mailService_ = MailService.New({
         profileService = profileService_,
+        gateway = gateway_,
+        operationQueue = operationQueue_,
+        decodeJson = cjson.decode,
+        onDelta = SendDelta,
         clock = os.time,
         log = function(message) print(message) end,
     })
@@ -727,6 +733,7 @@ local function InitializeServices()
     end
 
     local commandServices = {
+        adminService = adminService_,
         profileService = profileService_,
         idleService = idleService_,
         marketService = marketService_,

@@ -12,14 +12,11 @@ local EquipmentEngine = require("server.domain.EquipmentEngine")
 local DomainMath = require("server.domain.DomainMath")
 local BigNumber = require("shared.BigNumber")
 local TowerRules = require("shared.TowerRules")
+local CombatSequence = require("shared.CombatSequence")
 
 local ChallengeEngine = {}
 
 local BOSS = ChallengeDefinitions.BOSS
-
-local function nowFloat()
-    return os.clock()
-end
 
 local function ensureState(state)
     state.challenges = type(state.challenges) == "table"
@@ -45,8 +42,19 @@ end
 
 function ChallengeEngine.ComputeBossHp(state, gradeId)
     local mul = ChallengeDefinitions.BossHpMul(gradeId)
-    local hitsPerSecond = 1 / BOSS.INTERVAL
-    local expectedHits = BOSS.DURATION * hitsPerSecond
+    -- The existing scene plays full A/B/C animations. INTERVAL is a request
+    -- throttle, not its attack speed; using it made the normal Boss unreachable.
+    local expectedHits, elapsed, index = 0, 0, 1
+    while elapsed < BOSS.DURATION do
+        local sequence = CombatSequence.Get(index)
+        ---@type number[]
+        local hitFrames = sequence.hitFrames
+        local windup = (hitFrames[1] - 1) / sequence.fps
+        if elapsed + windup >= BOSS.DURATION then break end
+        expectedHits = expectedHits + 1
+        elapsed = elapsed + sequence.endFrame / sequence.fps + 0.15
+        index = index % 3 + 1
+    end
     local hp = math.floor(playerAtk(state) * 2.0 * expectedHits * mul)
     return ChallengeDefinitions.ClampScore(math.max(1000, hp))
 end
@@ -85,6 +93,13 @@ end
 
 function ChallengeEngine.BeginBoss(inputState, gradeId, now)
     now = PlayerTransition.Now(now)
+    local current = inputState.challenges and activeSession(inputState.challenges)
+    if current then
+        if current.gradeId == gradeId then
+            return PlayerTransition.NoCommit(inputState, now, "abyss_boss_resumed", {})
+        end
+        return PlayerTransition.Failure(inputState, now, "BOSS_ALREADY_STARTED", "请先结束当前深渊挑战")
+    end
     local grade = AbyssDefinitions.Get(gradeId)
     if not grade then
         return PlayerTransition.Failure(inputState, now, "INVALID_ABYSS_GRADE", "未知深渊档位")
@@ -122,15 +137,6 @@ function ChallengeEngine.BeginBoss(inputState, gradeId, now)
 
     local working = PlayerTransition.Copy(inputState, now)
     local challenges = ensureState(working)
-    if activeSession(challenges) then
-        local settled = ChallengeEngine.FinishBoss(working, now)
-        if not settled.ok then return settled end
-        if settled.state then
-            working = settled.state
-            challenges = ensureState(working)
-        end
-    end
-
     local abyss = working.abyss
     if type(abyss) ~= "table" then
         working.abyss = AbyssDefinitions.NewState()
@@ -146,7 +152,6 @@ function ChallengeEngine.BeginBoss(inputState, gradeId, now)
     end
     abyss.tickets = abyss.tickets - ticketCost
 
-    local t = nowFloat()
     local maxHp = ChallengeEngine.ComputeBossHp(working, gradeId)
     local runId = AbyssEngine.MakeRunId(working, "boss", now)
     challenges.bossSession = {
@@ -154,7 +159,7 @@ function ChallengeEngine.BeginBoss(inputState, gradeId, now)
         gradeId = gradeId,
         ticketCost = ticketCost,
         startedAt = now,
-        lastHitAt = t - BOSS.INTERVAL,
+        lastHitAt = 0,
         damage = 0,
         hp = maxHp,
         maxHp = maxHp,
@@ -189,15 +194,14 @@ function ChallengeEngine.StrikeBoss(inputState, now)
     if not session then
         return PlayerTransition.Failure(inputState, now, "BOSS_NOT_STARTED", "深渊 Boss 尚未开始")
     end
-    local t = nowFloat()
     local elapsed = now - (session.startedAt or now)
-    if elapsed > BOSS.DURATION then
+    if elapsed >= BOSS.DURATION then
         return ChallengeEngine.FinishBoss(inputState, now)
     end
-    if (t - (session.lastHitAt or t)) < BOSS.INTERVAL then
+    if (now - (session.lastHitAt or 0)) < BOSS.INTERVAL then
         return PlayerTransition.NoCommit(inputState, now, "boss_too_fast", {})
     end
-    session.lastHitAt = t
+    session.lastHitAt = now
     local hitDamage, critical, lucky = strikeDamage(working)
     session.damage = ChallengeDefinitions.ClampScore((session.damage or 0) + hitDamage)
     session.hp = math.max(0, (session.hp or 0) - hitDamage)
@@ -214,13 +218,14 @@ function ChallengeEngine.StrikeBoss(inputState, now)
         }),
     }
     if session.hp <= 0 then
-        return ChallengeEngine.FinishBoss(working, now)
+        return ChallengeEngine.FinishBoss(working, now, inputState, events)
     end
     return PlayerTransition.Finalize(inputState, working, now, "abyss_boss_hit", events, false, false)
 end
 
-function ChallengeEngine.FinishBoss(inputState, now)
+function ChallengeEngine.FinishBoss(inputState, now, previousState, pendingEvents)
     now = PlayerTransition.Now(now)
+    local previous = previousState or inputState
     local working = PlayerTransition.Copy(inputState, now)
     local challenges = ensureState(working)
     local session = activeSession(challenges)
@@ -230,7 +235,7 @@ function ChallengeEngine.FinishBoss(inputState, now)
 
     local damage = ChallengeDefinitions.ClampScore(session.damage)
     local killed = (session.hp or 0) <= 0 or damage >= (session.maxHp or 0)
-    local events = {}
+    local events = pendingEvents or {}
     local inventoryChanged = false
 
     if killed then
@@ -245,7 +250,7 @@ function ChallengeEngine.FinishBoss(inputState, now)
             events
         )
         if not settled then
-            return PlayerTransition.Failure(inputState, now, code, reason)
+            return PlayerTransition.Failure(previous, now, code, reason)
         end
         inventoryChanged = changed == true
         challenges = ensureState(working)
@@ -292,7 +297,7 @@ function ChallengeEngine.FinishBoss(inputState, now)
         challenges.bestBossDamage or 0
     ))
     return PlayerTransition.Finalize(
-        inputState,
+        previous,
         working,
         now,
         killed and "abyss_completed" or "abyss_boss_finished",

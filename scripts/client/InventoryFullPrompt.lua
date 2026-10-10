@@ -50,8 +50,7 @@ local function ExpandByAd(onDone)
         return
     end
 
-    local sdk = _G["sdk"]
-    if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
+    if not require("client.RewardVideo").IsAvailable() then
         Toast("广告暂不可用，请稍后重试", "warning")
         if onDone then onDone(false) end
         return
@@ -121,11 +120,12 @@ function InventoryFullPrompt.Show(options)
             string.format("当前占用：%d / %d", used, capacity),
             "请先分解或出售多余装备腾出空位。",
             canExpand
-                and string.format("也可看广告解锁 +%d 格（今日剩余 %d/%d）", perAd, remain, InventoryCapacity.AdPerDay())
+                and string.format(require("client.RewardVideo").ActionText("也可看广告解锁 +%d 格（今日剩余 %d/%d）",
+                    "免广告解锁 +%d 格（今日剩余 %d/%d）"), perAd, remain, InventoryCapacity.AdPerDay())
                 or "背包扩容已达上限。",
         },
         cancelText = "去分解",
-        confirmText = (canExpand and remain > 0) and ("看广告 +" .. tostring(perAd)) or "知道了",
+        confirmText = (canExpand and remain > 0) and (require("client.RewardVideo").ActionText("看广告 +", "免广告 +") .. tostring(perAd)) or "知道了",
         closeOnOverlay = true,
         showClose = true,
         zIndex = options.zIndex or 3920,

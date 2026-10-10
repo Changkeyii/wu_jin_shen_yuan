@@ -89,7 +89,7 @@ Present = function(context, final)
         options.onCancel = options.onConfirm
     else
         local lines = {}; for _, line in ipairs(options.lines or {}) do lines[#lines + 1] = line end
-        lines[#lines + 1] = "可选择广告五倍加成；基础奖励已经到账。"
+        lines[#lines + 1] = RewardVideo.ActionText("可选择广告五倍加成；基础奖励已经到账。", "免广告领取五倍加成；基础奖励已经到账。")
         -- Some settlements also contain non-eligible rewards. State exactly what gets boosted.
         local eligible = {}; for _, offer in ipairs(context.offers) do Add(eligible, offer.baseReward) end
         local amounts = {}
@@ -101,7 +101,7 @@ Present = function(context, final)
         for _, amount in ipairs(amounts) do lines[#lines + 1] = "可加成：" .. amount .. " ×5" end
         options.lines = lines
         options.cancelText = context.options.confirmText or "直接领取"
-        options.confirmText = context.adWatched and "重试领取五倍" or "看广告 · 五倍"
+        options.confirmText = context.adWatched and "重试领取五倍" or RewardVideo.ActionText("看广告 · 五倍", "免广告 · 五倍")
         options.onCancel = function() FinishContext(context) end
         options.onConfirm = function() Watch(context) end
     end
@@ -208,8 +208,7 @@ function RewardClaimController.ClaimExclusiveGift(giftId)
         })
         return false
     end
-    local sdk = _G["sdk"]
-    if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
+    if not RewardVideo.IsAvailable() then
         UI.Toast.Show("广告暂不可用，请稍后重试", {
             duration = 2.0,
             variant = "warning",

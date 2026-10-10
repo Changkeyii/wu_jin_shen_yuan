@@ -23,6 +23,8 @@ local RewardClaimController = require("client.RewardClaimController")
 local BigNumber = require("shared.BigNumber")
 local RarityCatalog = require("shared.RarityCatalog")
 local UILayout = require("client.UI.UILayout")
+local ChangedOnly = require("client.UI.ChangedOnly")
+local LoadingController = require("client.LoadingController")
 
 local ActivityView = {}
 
@@ -65,6 +67,16 @@ local bossActive_ = false
 local bossRemaining_ = 0
 local bossLastHp_ = 0
 local sceneMode_ = "strike"
+local sceneGeneration_ = 0
+local strikeEndsAt_ = 0
+local bossEndsAt_ = 0
+local bossRunId_ = ""
+local attackRequestPending_ = false
+local finishingScene_ = false
+local finishRequestPending_ = false
+local finishRetryTimer_ = 0
+---@type function
+local FinishScene
 
 -- 打桩额外次数激励广告状态。广告位由 @runtime.ad 自动配置，Lua 不持有广告位 ID。
 local strikeAdInFlight_ = false
@@ -133,6 +145,15 @@ end
 local function CurrentView()
     local game = GameStateAdapter.GetViewState()
     return game.activitiesView or ActivityDefinitions.BuildView(game, ServerClock.Now())
+end
+
+local function PrepareScene(callback)
+    local generation = sceneGeneration_
+    LoadingController.EnsurePlayAssetsReady(function()
+        if generation ~= sceneGeneration_ or GameStateAdapter.GetViewState().page ~= "activity"
+            or strikeId_ or bossActive_ then return end
+        callback()
+    end)
 end
 
 local function RewardText(reward)
@@ -334,26 +355,39 @@ local function StrikeCard(item)
     end
 
     local function StartStrikeAction()
-        ActivityController.BeginStrike(item.id, function(response)
-            if response and response.ok then
-                sceneMode_ = "strike"
-                bossActive_ = false
-                strikeId_ = item.id
-                strikeRemaining_ = item.duration or 15
-                strikeTimer_ = 0
-                strikeAttackTime_ = 0
-                strikeLastDamage_ = 0
-                currentStrikeAttackFrames_ = nil
-                strikeWindup_ = 0
-                strikeRecovery_ = 0
-                strikeHitFrame_ = 1
-                strikeEndFrame_ = 1
-                strikeSequenceIndex_ = 0
-                damageLabels_ = {}
-                strikeRefs_ = {}
-            else
-                Toast((response and response.reason) or "今日次数已用完", "warning")
-            end
+        PrepareScene(function()
+            local generation = sceneGeneration_
+            ActivityController.BeginStrike(item.id, function(response)
+                if generation ~= sceneGeneration_ then return end
+                if response and response.ok then
+                    sceneGeneration_ = sceneGeneration_ + 1
+                    sceneMode_ = "strike"
+                    bossActive_ = false
+                    strikeId_ = item.id
+                    ---@type table?
+                    local live
+                    for _, candidate in ipairs(CurrentView().strike or {}) do
+                        if candidate.id == item.id then live = candidate; break end
+                    end
+                    strikeEndsAt_ = ((live and live.sessionStartedAt) or ServerClock.Now()) + (item.duration or 15)
+                    strikeRemaining_ = math.max(0, strikeEndsAt_ - ServerClock.Now())
+                    finishingScene_, finishRequestPending_, attackRequestPending_ = false, false, false
+                    finishRetryTimer_ = 0
+                    strikeTimer_ = 0
+                    strikeAttackTime_ = 0
+                    strikeLastDamage_ = 0
+                    currentStrikeAttackFrames_ = nil
+                    strikeWindup_ = 0
+                    strikeRecovery_ = 0
+                    strikeHitFrame_ = 1
+                    strikeEndFrame_ = 1
+                    strikeSequenceIndex_ = 0
+                    damageLabels_ = {}
+                    strikeRefs_ = {}
+                else
+                    Toast((response and response.reason) or "今日次数已用完", "warning")
+                end
+            end)
         end)
     end
 
@@ -366,8 +400,7 @@ local function StrikeCard(item)
             Toast("广告正在播放，请勿重复点击", "info")
             return
         end
-        local sdk = _G["sdk"] --[[@as { ShowRewardVideoAd: fun(self: any, callback: function): boolean }?]]
-        if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
+        if not require("client.RewardVideo").IsAvailable() then
             Toast("广告暂不可用，请稍后重试", "warning")
             return
         end
@@ -459,7 +492,7 @@ local function StrikeCard(item)
                             -- 互斥操作：有剩余次数 → 进入；无次数且可看广告 → 看广告+1；否则 → 已用完
                             (remaining or 0) > 0
                                 and Kit.ImageButton("进入", 150, 60, ASSETS.ui.inventoryActionGold, StartStrikeAction, false)
-                                or (adCan and Kit.ImageButton("看广告 +1次", 150, 60, ASSETS.ui.buttonBlueWide, WatchAdAction, false))
+                                or (adCan and Kit.ImageButton(require("client.RewardVideo").ActionText("看广告 +1次", "免广告 +1次"), 150, 60, ASSETS.ui.buttonBlueWide, WatchAdAction, false))
                                 or Kit.CompactTxt("今日次数已用完", 16, C.textDim, {
                                     width = 160, height = 40, textAlign = "center",
                                     textStroke = { width = 1, color = "#000000" }, pointerEvents = "none",
@@ -631,25 +664,35 @@ local function AbyssActivityCard()
             Toast("深渊票不足，需要 " .. tostring(selectedView.ticketCost) .. " 张", "warning")
             return
         end
-        ActivityController.BeginAbyssBoss(selectedView.id, function(response)
-            if response and response.ok then
-                sceneMode_ = "boss"
-                bossActive_ = true
-                bossRemaining_ = ChallengeDefinitions.BOSS.DURATION
-                strikeAttackTime_ = 0
-                strikeLastDamage_ = 0
-                currentStrikeAttackFrames_ = nil
-                strikeWindup_ = 0
-                strikeRecovery_ = 0
-                strikeHitFrame_ = 1
-                strikeEndFrame_ = 1
-                strikeSequenceIndex_ = 0
-                damageLabels_ = {}
-                strikeRefs_ = {}
-                ActivityController.Refresh()
-            else
-                Toast((response and response.reason) or "深渊 Boss 开启失败", "warning")
-            end
+        PrepareScene(function()
+            local generation = sceneGeneration_
+            ActivityController.BeginAbyssBoss(selectedView.id, function(response)
+                if generation ~= sceneGeneration_ then return end
+                if response and response.ok then
+                    sceneGeneration_ = sceneGeneration_ + 1
+                    sceneMode_ = "boss"
+                    bossActive_ = true
+                    local challenge = GameStateAdapter.GetViewState().challengesView or {}
+                    bossEndsAt_ = (challenge.sessionStartedAt or ServerClock.Now()) + ChallengeDefinitions.BOSS.DURATION
+                    bossRunId_ = challenge.sessionRunId or ""
+                    bossRemaining_ = math.max(0, bossEndsAt_ - ServerClock.Now())
+                    finishingScene_, finishRequestPending_, attackRequestPending_ = false, false, false
+                    finishRetryTimer_ = 0
+                    strikeAttackTime_ = 0
+                    strikeLastDamage_ = 0
+                    currentStrikeAttackFrames_ = nil
+                    strikeWindup_ = 0
+                    strikeRecovery_ = 0
+                    strikeHitFrame_ = 1
+                    strikeEndFrame_ = 1
+                    strikeSequenceIndex_ = 0
+                    damageLabels_ = {}
+                    strikeRefs_ = {}
+                    ActivityController.Refresh()
+                else
+                    Toast((response and response.reason) or "深渊 Boss 开启失败", "warning")
+                end
+            end)
         end)
     end
 
@@ -745,7 +788,7 @@ local function AbyssActivityCard()
                     Kit.ImageButton(
                         dailyFull
                             and ("补给已满 " .. tostring(dailyUsed) .. "/" .. tostring(dailyLimit))
-                            or ("看广告补给 +" .. tostring(dailyTickets)
+                            or (require("client.RewardVideo").ActionText("看广告补给 +", "免广告补给 +") .. tostring(dailyTickets)
                                 .. "  " .. tostring(dailyUsed) .. "/" .. tostring(dailyLimit)),
                         360,
                         64,
@@ -877,12 +920,12 @@ local function HotActivityCards()
 end
 
 -- ===== 伤害飘字对象池 =====
-local function SpawnDamageText(amount)
+local function SpawnDamageText(amount, critical)
     for _, label in ipairs(damageLabels_) do
         if not label.active then
             label.active = true
             label.age = 0
-            label.node:SetText(tostring(amount))
+            ChangedOnly.Text(label.node, (critical and "暴击 " or "") .. Kit.FormatInt(amount))
             label.node:SetStyle({ visible = true, left = label.baseX, top = label.baseY })
             return
         end
@@ -949,7 +992,7 @@ local function BuildStrikeScene(item, mode)
     sceneChildren[#sceneChildren + 1] = slash
 
     local remaining = isBoss and bossRemaining_ or strikeRemaining_
-    local countdown = Kit.CompactTxt(string.format("剩余 %d 秒", math.max(1, math.ceil(remaining))), 32, C.focus, {
+    local countdown = Kit.CompactTxt(string.format("剩余 %d 秒", math.max(0, math.ceil(remaining))), 32, C.focus, {
         position = "absolute", left = 0, top = 48, width = width, height = 48, textAlign = "center",
         textStroke = { width = 3, color = "#000000" },
     })
@@ -1015,7 +1058,7 @@ end
 
 local function TriggerAttack()
     if not strikeRefs_.player then return end
-    local count = CombatSequence.Count()
+    local count = math.min(CombatSequence.Count(), #(ASSETS.player.attackFrameSets or {}))
     if count <= 0 then
         currentStrikeAttackFrames_ = STRIKE_ATTACK_FRAMES
         strikeWindup_ = 0.12
@@ -1023,6 +1066,7 @@ local function TriggerAttack()
         strikeHitFrame_ = 1
         strikeEndFrame_ = #STRIKE_ATTACK_FRAMES
         strikeAttackTime_ = 0.01
+        strikeHitTriggered_ = false
         return
     end
     -- 三个攻击动画按顺序轮流完整播放：A → B → C → A …（不随机、不闪切）
@@ -1042,7 +1086,7 @@ local function TriggerAttack()
 end
 
 local function UpdateAttack(dt)
-    if not strikeRefs_.player then return end
+    if not strikeRefs_.player or finishingScene_ then return end
     if strikeAttackTime_ > 0 then
         strikeAttackTime_ = strikeAttackTime_ + dt
         local t = strikeAttackTime_
@@ -1060,28 +1104,40 @@ local function UpdateAttack(dt)
             frame = hitFrame + math.floor(math.max(0, math.min(1, (t - windup) / recovery)) * (endFrame - hitFrame))
         end
         frame = math.max(1, math.min(total, frame))
-        strikeRefs_.player:SetStyle({
+        ChangedOnly.Style(strikeRefs_.player, {
             backgroundImage = frames[frame],
             scale = 1.0 + math.max(0, 1 - t / (windup + recovery)) * 0.04,
         })
-        strikeRefs_.stump:SetStyle({ scale = 1.0 + math.sin(t * 40) * 0.05 })
+        ChangedOnly.Style(strikeRefs_.stump, { scale = 1.0 + math.sin(t * 40) * 0.05 })
         if strikeRefs_.slash then
             local progress = math.max(0, math.min(1, t / windup))
             local playerX = strikeRefs_.playerX or 150
-            strikeRefs_.slash:SetStyle({
-                visible = progress < 1,
+            if progress < 1 then ChangedOnly.Style(strikeRefs_.slash, {
+                visible = true,
                 left = playerX + 300 + progress * 220,
                 opacity = (1 - progress) * 0.9,
                 scale = 0.7 + progress * 0.8,
-            })
+            }) else ChangedOnly.Style(strikeRefs_.slash, { visible = false }) end
         end
         -- 命中帧：触发一次伤害（服务端按玩家属性计算，飘字随权威结算显示）
         if not strikeHitTriggered_ and t >= windup then
             strikeHitTriggered_ = true
-            if sceneMode_ == "boss" then
-                ActivityController.StrikeAbyssBoss()
-            elseif strikeId_ then
-                ActivityController.Strike(strikeId_)
+            if not attackRequestPending_ then
+                attackRequestPending_ = true
+                local generation = sceneGeneration_
+                local function OnHit(response)
+                    if generation ~= sceneGeneration_ then return end
+                    attackRequestPending_ = false
+                    if not response or not response.ok then
+                        Toast((response and response.reason) or "攻击同步失败，正在重新同步", "warning")
+                        ServerClient.RequestSnapshot()
+                    end
+                end
+                if sceneMode_ == "boss" then
+                    ActivityController.StrikeAbyssBoss(OnHit)
+                elseif strikeId_ then
+                    ActivityController.Strike(strikeId_, OnHit)
+                end
             end
         end
         if t >= windup + recovery then
@@ -1101,6 +1157,13 @@ local function UpdateAttack(dt)
 end
 
 local function ResetScene()
+    sceneGeneration_ = sceneGeneration_ + 1
+    finishingScene_, finishRequestPending_, attackRequestPending_ = false, false, false
+    finishRetryTimer_, strikeEndsAt_, bossEndsAt_ = 0, 0, 0
+    bossRunId_ = ""
+    strikeSequenceIndex_, strikeHitTriggered_ = 0, false
+    strikeLastDamage_, strikeWindup_, strikeRecovery_ = 0, 0, 0
+    strikeHitFrame_, strikeEndFrame_ = 1, 1
     strikeId_ = nil
     strikeRemaining_ = 0
     strikeTimer_ = 0
@@ -1114,12 +1177,27 @@ local function ResetScene()
     sceneMode_ = "strike"
 end
 
-local function FinishBossScene()
-    if not bossActive_ then return end
-    ResetScene()
-    ActivityController.FinishAbyssBoss(function()
-        require("client.ServerClient").RequestSnapshot()
-    end)
+FinishScene = function()
+    if not strikeId_ and not bossActive_ then return end
+    finishingScene_ = true
+    if finishRequestPending_ or attackRequestPending_ or finishRetryTimer_ > 0 then return end
+    finishRequestPending_ = true
+    ChangedOnly.Text(strikeRefs_.countdown, "正在结算…")
+    local generation = sceneGeneration_
+    local function OnFinished(response)
+        if generation ~= sceneGeneration_ then return end
+        finishRequestPending_ = false
+        if not response or not response.ok then
+            finishRetryTimer_ = 2
+            ChangedOnly.Text(strikeRefs_.countdown, "结算暂未完成，正在重试…")
+            return
+        end
+        ResetScene()
+        ServerClient.RequestSnapshot()
+        ActivityController.Refresh()
+    end
+    if bossActive_ then ActivityController.FinishAbyssBoss(OnFinished)
+    else ActivityController.FinishStrike(strikeId_, OnFinished) end
 end
 
 function ActivityView.UpdateAd(dt)
@@ -1132,13 +1210,22 @@ end
 
 -- ===== 每帧更新：自动攻击 + 伤害检测 + 倒计时 + 动画 =====
 function ActivityView.Update(dt)
+    dt = math.max(0, tonumber(dt) or 0)
+    finishRetryTimer_ = math.max(0, finishRetryTimer_ - dt)
     if bossActive_ then
         local game = GameStateAdapter.GetViewState()
         local challenge = game.challengesView or ChallengeDefinitions.BuildView(game)
         if not challenge.sessionActive then
             ResetScene()
+            ActivityController.Refresh()
             return
         end
+        if challenge.sessionStartedAt then
+            bossEndsAt_ = challenge.sessionStartedAt + ChallengeDefinitions.BOSS.DURATION
+        end
+        bossRunId_ = challenge.sessionRunId or bossRunId_
+        bossRemaining_ = math.max(0, bossEndsAt_ - ServerClock.Now())
+        if finishingScene_ or bossRemaining_ <= 0 then FinishScene(); return end
         UpdateAttack(dt)
         local hp = challenge.sessionHp or 0
         local maxHp = math.max(1, challenge.sessionMaxHp or 1)
@@ -1155,13 +1242,8 @@ function ActivityView.Update(dt)
             end
         end
         UpdateDamageTexts(dt)
-        bossRemaining_ = math.max(0, bossRemaining_ - (dt or 0))
-        if strikeRefs_.countdown then
-            strikeRefs_.countdown:SetText(string.format("剩余 %d 秒", math.max(1, math.ceil(bossRemaining_))))
-        end
-        if hp <= 0 or bossRemaining_ <= 0 then
-            FinishBossScene()
-        end
+        ChangedOnly.Text(strikeRefs_.countdown, string.format("剩余 %d 秒", math.ceil(bossRemaining_)))
+        if hp <= 0 then FinishScene() end
         return
     end
 
@@ -1172,7 +1254,16 @@ function ActivityView.Update(dt)
     for _, it in ipairs(view and view.strike or {}) do
         if it.id == strikeId_ then item = it end
     end
-    if not item then strikeId_ = nil return end
+    if not item or not item.sessionActive then
+        ResetScene()
+        ActivityController.Refresh()
+        return
+    end
+    if item.sessionStartedAt then
+        strikeEndsAt_ = item.sessionStartedAt + (item.duration or 15)
+    end
+    strikeRemaining_ = math.max(0, strikeEndsAt_ - ServerClock.Now())
+    if finishingScene_ or strikeRemaining_ <= 0 then FinishScene(); return end
 
     -- 攻击动画按放置挂机节奏推进（命中帧内触发一次伤害+飘字）
     UpdateAttack(dt)
@@ -1189,18 +1280,7 @@ function ActivityView.Update(dt)
     end
     UpdateDamageTexts(dt)
 
-    strikeRemaining_ = math.max(0, strikeRemaining_ - (dt or 0))
-    if strikeRefs_.countdown then
-        strikeRefs_.countdown:SetText(string.format("剩余 %d 秒", math.max(1, math.ceil(strikeRemaining_))))
-    end
-    if strikeRemaining_ <= 0 then
-        local id = strikeId_
-        ResetScene()
-        ActivityController.FinishStrike(id, function()
-            -- 打桩结束后强制同步活动状态（次数/会话），确保按钮态正确
-            require("client.ServerClient").RequestSnapshot()
-        end)
-    end
+    ChangedOnly.Text(strikeRefs_.countdown, string.format("剩余 %d 秒", math.ceil(strikeRemaining_)))
 end
 
 function ActivityView.ListChildren(signinCards, strikeCards)
@@ -1233,23 +1313,20 @@ end
 local function WrapPage(root)
     local pageTab = activityTab_
     local pageScene = sceneMode_
+    local pageStrikeId, pageBossActive, generation = strikeId_, bossActive_, sceneGeneration_
     return {
         GetRoot = function() return root end,
         Update = function()
-            if ActivityView.IsStriking() or bossActive_ then return true end
-            if activityTab_ ~= pageTab then return false end
-            if sceneMode_ ~= pageScene then return false end
+            if activityTab_ ~= pageTab or sceneMode_ ~= pageScene
+                or strikeId_ ~= pageStrikeId or bossActive_ ~= pageBossActive
+                or sceneGeneration_ ~= generation then return false end
+            if ActivityView.IsStriking() then return true end
             return false
         end,
         Destroy = function()
             if root and root.Destroy then root:Destroy() end
         end,
     }
-end
-
-function ActivityView.Update()
-    if ActivityView.IsStriking() then return true end
-    return false
 end
 
 function ActivityView.BuildPage()
@@ -1260,7 +1337,19 @@ function ActivityView.BuildPage()
         if leftover.sessionActive then
             sceneMode_ = "boss"
             bossActive_ = true
-            bossRemaining_ = leftover.remaining or leftover.duration or ChallengeDefinitions.BOSS.DURATION
+            bossEndsAt_ = (leftover.sessionStartedAt or ServerClock.Now()) + ChallengeDefinitions.BOSS.DURATION
+            bossRunId_ = leftover.sessionRunId or ""
+            bossRemaining_ = math.max(0, bossEndsAt_ - ServerClock.Now())
+        end
+    end
+    if not bossActive_ and not strikeId_ then
+        for _, item in ipairs(view.strike or {}) do
+            if item.sessionActive then
+                sceneMode_, strikeId_ = "strike", item.id
+                strikeEndsAt_ = (item.sessionStartedAt or ServerClock.Now()) + (item.duration or 15)
+                strikeRemaining_ = math.max(0, strikeEndsAt_ - ServerClock.Now())
+                break
+            end
         end
     end
 
@@ -1290,8 +1379,7 @@ function ActivityView.BuildPage()
                                 confirmText = "确认退出",
                                 cancelText = "继续挑战",
                                 onConfirm = function()
-                                    FinishBossScene()
-                                    ActivityController.Refresh()
+                                    FinishScene()
                                 end,
                             }
                         end,
@@ -1326,12 +1414,7 @@ function ActivityView.BuildPage()
                                 confirmText = "确认退出",
                                 cancelText = "继续打桩",
                                 onConfirm = function()
-                                    local id = active.id
-                                    ResetScene()
-                                    ActivityController.FinishStrike(id, function()
-                                        require("client.ServerClient").RequestSnapshot()
-                                    end)
-                                    ActivityController.Refresh()
+                                    FinishScene()
                                 end,
                             }
                         end,
@@ -1381,37 +1464,27 @@ function ActivityView.BuildPage()
 end
 
 function ActivityView.Reset()
+    ResetScene()
     strikeAdSequence_ = strikeAdSequence_ + 1
     strikeAdInFlight_ = false
     strikeAdRequestPending_ = false
     strikeAdElapsed_ = 0
     strikeAdFinish_ = nil
-    strikeId_ = nil
-    strikeRemaining_ = 0
-    strikeTimer_ = 0
-    strikeAttackTime_ = 0
-    strikeLastDamage_ = 0
-    currentStrikeAttackFrames_ = nil
-    strikeWindup_ = 0
-    strikeRecovery_ = 0
-    strikeHitFrame_ = 1
-    strikeEndFrame_ = 1
-    strikeSequenceIndex_ = 0
-    damageLabels_ = {}
-    strikeRefs_ = {}
+
 end
 
 function ActivityView.IsStriking()
-    return strikeId_ ~= nil
+    return strikeId_ ~= nil or bossActive_
 end
 
 -- 打桩伤害飘字：监听服务端活动事件（权威实际伤害，含暴击）
 ServerClient.On("delta", function(payload)
-    if not strikeId_ then return end
+    if not ActivityView.IsStriking() then return end
     for _, event in ipairs((payload and payload.events) or {}) do
         local kind = event.kind or event.type
-        if kind == "activity_strike_hit" then
-            SpawnDamageText(event.damage or 0)
+        if (kind == "activity_strike_hit" and strikeId_ and event.activityId == strikeId_)
+            or (kind == "abyss_boss_hit" and bossActive_ and event.runId == bossRunId_) then
+            SpawnDamageText(event.damage or 0, event.critical or event.lucky)
         end
     end
 end)

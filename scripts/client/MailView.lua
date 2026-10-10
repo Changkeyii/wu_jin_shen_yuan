@@ -41,6 +41,15 @@ local detailRebuild_ = nil
 -- 保证玩家滚动位置不受影响（数据与表现解耦）。
 local listWidget_ = nil
 local actionBarHost_ = nil
+local deliveryPending_ = false
+local refreshElapsed_ = 0
+local refreshInFlight_ = false
+local requestSerial_ = 0
+local summaryToken_ = ""
+local function SummaryToken()
+    local summary = require("client.GameStateAdapter").GetViewState().mailSummary or {}
+    return tostring(summary.total or 0) .. ":" .. tostring(summary.unread or 0) .. ":" .. tostring(summary.unclaimed or 0)
+end
 
 -- ============================================================================
 -- 格式化
@@ -315,7 +324,8 @@ local function BuildListContent()
                 alignItems = "center",
                 justifyContent = "center",
                 children = {
-                    Kit.Txt(scope_ == "favorite" and "暂无收藏邮件" or "邮箱空空如也", 26, C.textSecondary, {
+                    Kit.Txt(deliveryPending_ and "邮件正在同步，将自动重试"
+                        or (scope_ == "favorite" and "暂无收藏邮件" or "邮箱空空如也"), 26, C.textSecondary, {
                         width = "100%",
                         textAlign = "center",
                         textStroke = { width = 2, color = "#000000" },
@@ -495,20 +505,27 @@ end
 
 function MailView.Show()
     if not root_ then return end
+    requestSerial_ = requestSerial_ + 1
+    local serial = requestSerial_
     scope_ = scope_ or "all"
     ServerClient.MailList(scope_, function(response)
+        if serial ~= requestSerial_ then return end
         if not response or not response.ok then
             Toast((response and response.reason) or "邮件加载失败")
             return
         end
         list_ = (response.data and response.data.items) or {}
+        deliveryPending_ = response.data and response.data.deliveryPending == true or false
+        summaryToken_ = SummaryToken()
         MailView.Present()
     end)
 end
 
 function MailView.Present()
     if not root_ then return end
+    local deliveryPending = deliveryPending_
     MailView.Hide()
+    deliveryPending_ = deliveryPending
     local function Close()
         MailView.Hide()
     end
@@ -591,11 +608,19 @@ function MailView.Present()
 end
 
 function MailView.Refresh()
-    if not root_ or not layer_ then return end
+    if not root_ or not layer_ or refreshInFlight_ then return end
+    requestSerial_ = requestSerial_ + 1
+    local serial = requestSerial_
+    refreshInFlight_, refreshElapsed_ = true, 0
     ServerClient.MailList(scope_, function(response)
+        if serial ~= requestSerial_ then return end
+        refreshInFlight_ = false
         if response and response.ok then
+            local wasPending = deliveryPending_
+            deliveryPending_ = response.data and response.data.deliveryPending == true or false
             list_ = (response.data and response.data.items) or {}
-            if listWidget_ and #list_ > 0 then
+            summaryToken_ = SummaryToken()
+            if listWidget_ and #list_ > 0 and wasPending == deliveryPending_ then
                 -- 数据更新：保留当前滚动位置，只刷新当前显示区域的邮件行，不重建列表
                 GridVirtualList.UpdateData(listWidget_, list_, { columns = 1 })
                 RefreshActionBar()
@@ -607,12 +632,22 @@ function MailView.Refresh()
     end)
 end
 
+function MailView.Update(dt)
+    if not root_ or not layer_ or detailLayer_ or refreshInFlight_ then return end
+    refreshElapsed_ = refreshElapsed_ + math.max(0, tonumber(dt) or 0)
+    -- Retry unfinished delivery, or refresh when a server delta reports new mail.
+    -- An unchanged open mailbox does not generate continuous cloud reads.
+    if refreshElapsed_ >= 5 and (deliveryPending_ or SummaryToken() ~= summaryToken_) then MailView.Refresh() end
+end
+
 function MailView.AttachRoot(root)
     MailView.Hide()
     root_ = root
 end
 
 function MailView.Hide()
+    requestSerial_ = requestSerial_ + 1
+    refreshInFlight_, refreshElapsed_, deliveryPending_ = false, 0, false
     if detailLayer_ and root_ then root_:RemoveChild(detailLayer_) end
     detailLayer_ = nil
     detailRebuild_ = nil

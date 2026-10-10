@@ -14,6 +14,7 @@ local MailRules = require("shared.MailRules")
 local WishPoolDefinitions = require("shared.WishPoolDefinitions")
 local AbyssEngine = require("server.domain.AbyssEngine")
 
+---@class MailEngine
 local MailEngine = {}
 
 -- ============================================================================
@@ -310,9 +311,8 @@ function MailEngine.DropOldestCache(state, now)
         end
     end
     if #candidates == 0 then
-        -- 缓存全不可删：删最早到达的（可能含未领附件，迫不得已）
-        table.sort(state.mailCache, function(a, b) return a.sentAt < b.sentAt end)
-        if state.mailCache[1] then table.remove(state.mailCache, 1) end
+        -- Keep unclaimed/favorite rewards. The sender must retain and retry the
+        -- new delivery instead of replacing an existing player's reward.
         return
     end
     table.sort(candidates, function(a, b) return a.mail.sentAt < b.mail.sentAt end)

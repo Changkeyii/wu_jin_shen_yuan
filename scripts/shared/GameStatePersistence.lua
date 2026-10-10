@@ -114,6 +114,7 @@ function Persistence.NewInitialState(now)
         pendingOfflineSeconds = 0,
         level = 1,
         vipLevel = 0,
+        adFree = false,
         dailyVip = { signInDay = 0, adDay = 0 },
         trashTalkIndex = 0,
         exp = 0,
@@ -276,6 +277,7 @@ function Persistence.NormalizeState(rawState, now)
     local sourceVersion = tonumber(rawState.schemaVersion) or 3
     normalized.schemaVersion = GameStateSchema.VERSION
     normalized.vipLevel = math.max(0, math.min(10, math.floor(tonumber(normalized.vipLevel) or 0)))
+    normalized.adFree = normalized.adFree == true
     normalized.dailyVip = type(normalized.dailyVip) == "table" and normalized.dailyVip or {}
     normalized.dailyVip.signInDay = math.max(0,
         math.floor(tonumber(normalized.dailyVip.signInDay) or 0))

@@ -1,10 +1,24 @@
 local GameEngine = require("server.domain.GameEngine")
 local Catalog = require("server.domain.Catalog")
 local BigNumber = require("shared.BigNumber")
+local ActivityDefinitions = require("shared.ActivityDefinitions")
+local ChallengeDefinitions = require("shared.ChallengeDefinitions")
 
+---@class IdleRuntimeService
+---@field operationQueue table<string, any>
+---@field profileService table<string, any>
+---@field onDelta function
+---@field onError function
+---@field rng function?
+---@field elapsed table<string|number, number>
+---@field pending table<string|number, table>
+---@field combatPlayers table<string|number, boolean>
+---@field idlePlayers table<string|number, boolean>
+---@field pendingTimeoutPlayers table<string|number, boolean>
 local IdleRuntimeService = {}
 IdleRuntimeService.__index = IdleRuntimeService
 
+---@return IdleRuntimeService
 function IdleRuntimeService.New(options)
     options = options or {}
     assert(options.operationQueue, "IdleRuntimeService requires operationQueue")
@@ -25,9 +39,18 @@ end
 
 IdleRuntimeService.new = IdleRuntimeService.New
 
-local function HasCampaignTrial(session)
+local function HasIndependentBattle(session)
     local trial = session and session.campaignTrial
-    return trial ~= nil and os.time() <= trial.expiresAt
+    local now = os.time()
+    if trial ~= nil and now <= trial.expiresAt then return true end
+    local state = session and session.state
+    local boss = state and state.challenges and state.challenges.bossSession
+    if boss and not boss.finished and now < (boss.startedAt or 0) + ChallengeDefinitions.BOSS.DURATION then return true end
+    for _, record in pairs(state and state.activities or {}) do
+        local strike = record.session
+        if strike and not strike.finished and now < (strike.startedAt or 0) + ActivityDefinitions.STRIKE.DURATION then return true end
+    end
+    return false
 end
 
 function IdleRuntimeService:Reset(userId)
@@ -80,6 +103,16 @@ function IdleRuntimeService:_enqueueEventTimeout(userId, pendingEvent)
             end
             finish()
         end)
+    end, function(ok, result)
+        -- The queue catches thrown profile/notification callbacks. Release the
+        -- service token too, otherwise Update permanently skips this player.
+        if self.pending[userId] == token then self.pending[userId] = nil end
+        if not ok then
+            -- The queue already reports the exception. Keep the live connection
+            -- usable so its snapshot watchdog can recover a committed settlement.
+            print("[IdleEvent] callback failed uid=" .. tostring(userId)
+                .. " reason=" .. tostring(type(result) == "table" and result.reason or result))
+        end
     end)
 end
 
@@ -99,7 +132,7 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
         local session = self.profileService:GetSession(userId)
         if not self.profileService:IsOnline(userId)
             or not session or session.generation ~= generation
-            or HasCampaignTrial(session)
+            or HasIndependentBattle(session)
             or not session.state.autoRun
             or session.state.pendingStoryGate
             or session.state.pendingEvent
@@ -108,7 +141,7 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
             local current = self.profileService:GetSession(userId)
             if not self.profileService:IsOnline(userId)
                 or not current or current.generation ~= generation
-                or HasCampaignTrial(current)
+                or HasIndependentBattle(current)
             then
                 return {
                     ok = true,
@@ -141,6 +174,12 @@ function IdleRuntimeService:_enqueueTick(userId, elapsedSeconds)
             end
             finish()
         end)
+    end, function(ok, result)
+        if self.pending[userId] == token then self.pending[userId] = nil end
+        if not ok then
+            print("[IdleCombat] callback failed uid=" .. tostring(userId)
+                .. " reason=" .. tostring(type(result) == "table" and result.reason or result))
+        end
     end)
 end
 
@@ -153,7 +192,7 @@ function IdleRuntimeService:Update(timeStep)
     for _, userId in ipairs(self.profileService:OnlineUserIds()) do
         online[userId] = true
         local state = self.profileService:GetState(userId)
-        if HasCampaignTrial(self.profileService:GetSession(userId)) then
+        if HasIndependentBattle(self.profileService:GetSession(userId)) then
             self.idlePlayers[userId] = true
         elseif state and state.pendingEvent then
             self.pendingTimeoutPlayers[userId] = true

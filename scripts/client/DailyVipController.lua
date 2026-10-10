@@ -129,8 +129,7 @@ local function RequestAdReward()
     if status.adClaimed then Toast("今日广告奖励已领取") return end
     if game.readOnly then Toast("正在连接服务器，请稍后再试") return end
     if adInFlight_ then Toast("广告正在播放，请勿重复点击") return end
-    local sdk = _G["sdk"]
-    if not sdk or type(sdk.ShowRewardVideoAd) ~= "function" then
+    if not require("client.RewardVideo").IsAvailable() then
         Toast("广告暂不可用，请稍后重试", "warning")
         return
     end

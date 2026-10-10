@@ -1239,6 +1239,7 @@ function GameView.HandleUpdate(eventType, eventData)
     WishPoolController.Update(dt)
     FaceSlapController.Update(dt)
     MailController.Update(dt)
+    MailView.Update(dt)
     local state = GameStateAdapter.GetViewState()
     game = state
     if game.page == "play" then PlayPresentation.Update(dt) end

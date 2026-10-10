@@ -634,7 +634,7 @@ local function sanitizeChallenges(value)
             gradeId = rawSession.gradeId,
             ticketCost = math.max(0, TableUtils.ToInteger(rawSession.ticketCost, 0)),
             startedAt = math.max(0, TableUtils.ToInteger(rawSession.startedAt, 0)),
-            lastHitAt = 0,
+            lastHitAt = math.max(0, TableUtils.ToInteger(rawSession.lastHitAt, 0)),
             damage = ChallengeDefinitions.ClampScore(rawSession.damage),
             hp = ChallengeDefinitions.ClampScore(rawSession.hp),
             maxHp = math.max(1, ChallengeDefinitions.ClampScore(rawSession.maxHp)),
@@ -843,6 +843,7 @@ function StateNormalizer.Normalize(rawState, now)
         pendingOfflineSeconds = clampInteger(rawState.pendingOfflineSeconds or rawState.offlineSeconds, 0, Catalog.OFFLINE_MAX_SECONDS, 0),
         level = clampInteger(rawState.level, 1, 1000000, 1),
         vipLevel = clampInteger(rawState.vipLevel, 0, Catalog.MAX_VIP_LEVEL, 0),
+        adFree = rawState.adFree == true,
         dailyVip = sanitizeDailyVip(rawState.dailyVip),
         trashTalkIndex = clampInteger(rawState.trashTalkIndex, 0, TrashTalk.MAX - 1, 0),
         exp = clampInteger(rawState.exp, 0, 1000000000, 0),
@@ -900,6 +901,7 @@ function StateNormalizer.Normalize(rawState, now)
         mails = sanitizeMails(rawState.mails),
         mailCache = sanitizeMails(rawState.mailCache),
         mailSeq = clampInteger(rawState.mailSeq, 1, 100000000000, 1),
+        receivedBroadcasts = {},
         quests = sanitizeQuests(rawState.quests),
         activities = sanitizeActivities(rawState.activities),
         wishPool = sanitizeWishPool(rawState.wishPool),
@@ -912,6 +914,15 @@ function StateNormalizer.Normalize(rawState, now)
         seasonTitle = type(rawState.seasonTitle) == "string" and string.sub(rawState.seasonTitle, 1, 32) or "",
         seasonFrame = type(rawState.seasonFrame) == "string" and string.sub(rawState.seasonFrame, 1, 32) or "",
     }
+
+    local receiptIds = {}
+    for batchId, flag in pairs(type(rawState.receivedBroadcasts) == "table" and rawState.receivedBroadcasts or {}) do
+        if type(batchId) == "string" and #batchId > 0 and #batchId <= 128 and flag == true then
+            receiptIds[#receiptIds + 1] = batchId
+        end
+    end
+    table.sort(receiptIds)
+    for index = math.max(1, #receiptIds - 511), #receiptIds do state.receivedBroadcasts[receiptIds[index]] = true end
 
     local rawPolicy = type(rawState.inventoryPolicy) == "table" and rawState.inventoryPolicy or {}
     local legacyMode = rawPolicy.mode == "decompose" and "decompose" or (rawPolicy.mode == "sell" and "sell" or nil)

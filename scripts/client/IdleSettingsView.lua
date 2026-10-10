@@ -65,6 +65,62 @@ local function ShowIdleSettingTip(title, description)
     }
 end
 
+-- uid + 复制按钮，样式与复制逻辑与排行榜详情弹窗保持一致。
+local function CreateUidRow()
+    local function CopyUid()
+        -- 官方编辑器复制逻辑：引擎全局 ui（原生 UI 实例，userdata）useSystemClipboard + SetClipboardText
+        local ok, reason = pcall(function()
+            ui.useSystemClipboard = true
+            ui:SetClipboardText(tostring(game.playerUid or ""))
+        end)
+        if ok then
+            UI.Toast.Show("已复制 uid", { duration = 1.5, variant = "success", position = "bottom" })
+        else
+            UI.Toast.Show("复制失败", { duration = 1.5, variant = "error", position = "bottom" })
+            print("[CopyUid] failed: " .. tostring(reason))
+        end
+    end
+
+    return UI.Panel {
+        width = "100%",
+        height = 72,
+        flexShrink = 0,
+        flexDirection = "row",
+        alignItems = "center",
+        children = {
+            Kit.CompactTxt("uid:" .. tostring(game.playerUid or "?"), 20, C.textDim, {
+                maxWidth = "100%",
+                height = 36,
+                minHeight = 36,
+                textAlign = "left",
+                textStroke = { width = 1, color = "#000000" },
+            }),
+            UI.Panel {
+                width = 101,
+                height = 46,
+                marginLeft = 12,
+                clickable = true,
+                alignItems = "center",
+                justifyContent = "center",
+                backgroundImage = ASSETS.ui.buttonBlue,
+                backgroundFit = "sliced",
+                backgroundSlice = { 8, 8, 8, 8 },
+                onClick = CopyUid,
+                children = {
+                    Kit.CompactTxt("复制", 18, C.text, {
+                        width = "100%",
+                        height = 36,
+                        minHeight = 34,
+                        textAlign = "center",
+                        textStroke = { width = 1, color = "#000000" },
+                        pointerEvents = "none",
+                    }),
+                },
+            },
+        },
+    }
+end
+
 local function CreateIdlePolicySwitchRow(title, value, disabled, onChange, switchRegistry, switchId, tipTitle, tipDescription)
     local switch = UI.Toggle {
         width = 78,
@@ -339,6 +395,7 @@ local function ShowIdleSettings()
                             require("client.AdGiftController").Open()
                         end
                     end),
+                    CreateUidRow(),
                     Kit.Txt("装备处理", 25, C.focus, { width = "100%", height = 42, textStroke = { width = 2, color = "#000000" } }),
                     AddSwitch("loot_auto_equip", "刷宝掉落自动装备", "默认关闭。关闭时装备先进入暂存箱；发现更强同部位装备仍会显示非阻塞对比提示，由玩家决定是否穿戴。", lootAutoEquip, function(value)
                         lootAutoEquip = value

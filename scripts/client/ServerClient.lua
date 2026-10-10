@@ -19,6 +19,12 @@ local requestCounter_ = 0
 local listeners_ = {}
 local pending_ = {}
 local snapshotAssembly_ = nil
+local deferredDeltas_ = {}
+local MAX_DEFERRED_DELTAS = 128
+local SNAPSHOT_ASSEMBLY_TIMEOUT = 30
+local ApplyPreparedDelta
+local snapshotRefreshRequested_ = false
+local snapshotRefreshGeneration_ = 0
 local syncElapsed_ = 0
 local syncTimedOut_ = false
 local SYNC_TIMEOUT_SECONDS = 30
@@ -166,6 +172,13 @@ local function HandleResponse(eventType, eventData)
     Emit("response", payload)
 end
 
+local function DrainDeferredDeltas()
+    local deltas = deferredDeltas_
+    deferredDeltas_ = {}
+    table.sort(deltas, function(a, b) return a.revision < b.revision end)
+    for _, delta in ipairs(deltas) do ApplyPreparedDelta(delta) end
+end
+
 local function ApplyCompleteSnapshot(snapshot, events)
     local valid, validationError = GameStateSchema.ValidateSnapshot(snapshot)
     if not valid then
@@ -178,12 +191,17 @@ local function ApplyCompleteSnapshot(snapshot, events)
     end
     local currentRevision = GameStateAdapter.GetRevision()
     ServerClock.Sync(snapshot.serverTime)
-    if snapshot.revision and snapshot.revision <= currentRevision and GameStateAdapter.GetViewState().connectionState == "ready" then
+    local alreadyReady = GameStateAdapter.GetViewState().connectionState == "ready"
+    if snapshot.revision and alreadyReady and (snapshot.revision < currentRevision
+        or (snapshot.revision == currentRevision and not snapshotRefreshRequested_)) then
         print("[ServerClient] ignored stale snapshot revision=" .. tostring(snapshot.revision)
             .. " current=" .. tostring(currentRevision))
         return false
     end
-    local preparedEvents, eventReason = PrepareEventsForClient(events or {})
+    -- An explicitly requested equal-revision snapshot repairs presentation/request
+    -- state. Its rewards and combat events were already consumed; do not replay them.
+    local snapshotEvents = alreadyReady and snapshot.revision == currentRevision and {} or (events or {})
+    local preparedEvents, eventReason = PrepareEventsForClient(snapshotEvents)
     if not preparedEvents then
         Emit("error", { code = ErrorCodes.INVALID_STATE, reason = eventReason })
         return false
@@ -197,11 +215,15 @@ local function ApplyCompleteSnapshot(snapshot, events)
     ready_ = true
     syncingConnection_ = nil
     snapshotAssembly_ = nil
+    snapshotRefreshRequested_ = false
     GameStateAdapter.SetConnectionState("ready")
     Emit("snapshot", GameStateAdapter.GetViewState())
     if #preparedEvents > 0 then
         Emit("delta", { state = GameStateAdapter.GetViewState(), events = preparedEvents })
     end
+    -- Deltas received during a chunk transfer depend on this full state.
+    -- Apply death/drop events first, then subsequent revisions, exactly once.
+    DrainDeferredDeltas()
     Emit("ready", GameStateAdapter.GetViewState())
     return true
 end
@@ -235,6 +257,10 @@ local function HandleSnapshot(eventType, eventData)
             Emit("error", { code = ErrorCodes.INVALID_PAYLOAD, reason = "invalid snapshot chunk metadata" })
             return
         end
+        local currentRevision = GameStateAdapter.GetRevision()
+        if ready_ and (revision < currentRevision
+            or revision == currentRevision and not snapshotRefreshRequested_) then return end
+        if snapshotAssembly_ and revision < snapshotAssembly_.revision then return end
         if not snapshotAssembly_
             or snapshotAssembly_.transferId ~= transferId
             or snapshotAssembly_.revision ~= revision
@@ -247,6 +273,7 @@ local function HandleSnapshot(eventType, eventData)
                 chunks = {},
                 snapshot = nil,
                 events = {},
+                elapsed = 0,
             }
         end
         local assembly = snapshotAssembly_
@@ -289,6 +316,18 @@ local function HandleSnapshot(eventType, eventData)
     ApplyCompleteSnapshot(payload.snapshot or payload, payload.events or {})
 end
 
+ApplyPreparedDelta = function(delta)
+    if delta.revision <= GameStateAdapter.GetRevision() then return end
+    ServerClock.Sync(delta.serverTime)
+    local ok, applyReason = GameStateAdapter.ApplyDelta(delta)
+    if not ok then
+        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = applyReason })
+        ServerClient.RequestSnapshot()
+        return
+    end
+    Emit("delta", { state = GameStateAdapter.GetViewState(), events = delta.events or {} })
+end
+
 local function HandleDelta(eventType, eventData)
     if not started_ or not connection_ or not ready_ then return end
     local payload, reason = DecodePayload(eventData)
@@ -308,7 +347,6 @@ local function HandleDelta(eventType, eventData)
         return
     end
     if delta.revision <= GameStateAdapter.GetRevision() then return end
-    ServerClock.Sync(delta.serverTime)
     local preparedEvents, eventReason = PrepareEventsForClient(delta.events or {})
     if not preparedEvents then
         Emit("error", { code = ErrorCodes.INVALID_STATE, reason = eventReason })
@@ -316,13 +354,19 @@ local function HandleDelta(eventType, eventData)
         return
     end
     delta.events = preparedEvents
-    local ok, applyReason = GameStateAdapter.ApplyDelta(delta)
-    if not ok then
-        Emit("error", { code = ErrorCodes.INVALID_STATE, reason = applyReason })
-        ServerClient.RequestSnapshot()
+    if snapshotAssembly_ then
+        -- Advancing the revision now would make the still-incomplete death
+        -- snapshot look stale and strand the client on a zero-HP monster.
+        deferredDeltas_[#deferredDeltas_ + 1] = delta
+        if #deferredDeltas_ >= MAX_DEFERRED_DELTAS then
+            snapshotAssembly_ = nil
+            deferredDeltas_ = {}
+            print("[ServerClient] snapshot delta backlog exceeded; requesting fresh state")
+            ServerClient.RequestSnapshot()
+        end
         return
     end
-    Emit("delta", { state = GameStateAdapter.GetViewState(), events = delta.events or {} })
+    ApplyPreparedDelta(delta)
 end
 
 local function HandleStatus(eventType, eventData)
@@ -357,7 +401,9 @@ local function BeginSync(connection)
     syncElapsed_ = 0
     syncTimedOut_ = false
     snapshotAssembly_ = nil
+    deferredDeltas_ = {}
     FailAllPending(ErrorCodes.NOT_READY, "连接已重置，请重新操作")
+    snapshotRefreshRequested_ = false
     pending_ = {}
     connection_ = connection
     syncingConnection_ = connection
@@ -407,7 +453,9 @@ local function HandleDisconnected(eventType, eventData)
     syncElapsed_ = 0
     syncTimedOut_ = false
     snapshotAssembly_ = nil
+    deferredDeltas_ = {}
     syncingConnection_ = nil
+    snapshotRefreshRequested_ = false
     connection_ = nil
     FailAllPending(ErrorCodes.NOT_READY, "与常驻服的连接已断开，请重新操作")
     pending_ = {}
@@ -419,6 +467,15 @@ function ServerClient.Update(dt)
     if not started_ then return end
     dt = math.max(0, dt or 0)
     UpdatePendingRequests(dt)
+    if snapshotAssembly_ then
+        snapshotAssembly_.elapsed = snapshotAssembly_.elapsed + dt
+        if snapshotAssembly_.elapsed >= SNAPSHOT_ASSEMBLY_TIMEOUT then
+            snapshotAssembly_ = nil
+            deferredDeltas_ = {}
+            print("[ServerClient] incomplete snapshot timed out; requesting fresh state")
+            if ready_ then ServerClient.RequestSnapshot() end
+        end
+    end
     if ready_ then return end
     syncElapsed_ = syncElapsed_ + dt
     if syncTimedOut_ or syncElapsed_ < SYNC_TIMEOUT_SECONDS then return end
@@ -445,6 +502,7 @@ function ServerClient.Start()
     syncElapsed_ = 0
     syncTimedOut_ = false
     snapshotAssembly_ = nil
+    deferredDeltas_ = {}
     pending_ = {}
     GameStateAdapter.Reset()
     GameStateAdapter.SetConnectionState("syncing")
@@ -486,7 +544,9 @@ function ServerClient.Stop()
     UnsubscribeFromEvent("ServerDisconnected")
     pending_ = {}
     snapshotAssembly_ = nil
+    deferredDeltas_ = {}
     listeners_ = {}
+    snapshotRefreshRequested_ = false
     syncingConnection_ = nil
     connection_ = nil
     if scene_ then scene_:Dispose(); scene_ = nil end
@@ -572,7 +632,17 @@ function ServerClient.Send(command, payload, callback)
     return requestId
 end
 
-function ServerClient.RequestSnapshot(callback) return ServerClient.Send("Game.RequestSnapshot", {}, callback) end
+function ServerClient.RequestSnapshot(callback)
+    snapshotRefreshGeneration_ = snapshotRefreshGeneration_ + 1
+    local generation = snapshotRefreshGeneration_
+    snapshotRefreshRequested_ = true
+    return ServerClient.Send("Game.RequestSnapshot", {}, function(response)
+        if generation == snapshotRefreshGeneration_ and (not response or not response.ok) then
+            snapshotRefreshRequested_ = false
+        end
+        if callback then callback(response) end
+    end)
+end
 function ServerClient.WishWithTicket(count, callback)
     if type(count) == "function" then
         callback = count
@@ -803,6 +873,13 @@ end
 function ServerClient.AdminBan(uid, reason, callback) return ServerClient.Send("Admin.Ban", { targetUid = tostring(uid), reason = reason }, callback) end
 function ServerClient.AdminUnban(uid, reason, callback) return ServerClient.Send("Admin.Unban", { targetUid = tostring(uid), reason = reason }, callback) end
 function ServerClient.AdminAudit(callback) return ServerClient.Send("Admin.GetAudit", {}, callback) end
+function ServerClient.AdminSetAdFree(uid, enabled, reason, callback)
+    return ServerClient.Send("Admin.SetAdFree", { targetUid = tostring(uid), enabled = enabled, reason = reason }, callback)
+end
+function ServerClient.VerifyAdFree(callback) return ServerClient.Send("Reward.VerifyAdFree", {}, callback) end
+function ServerClient.AdminMailDeliveryStatus(uid, callback)
+    return ServerClient.Send("Admin.MailDeliveryStatus", { targetUid = tostring(uid) }, callback)
+end
 
 -- 市场 -----------------------------------------------------------------------
 function ServerClient.MarketBrowse(query, callback)

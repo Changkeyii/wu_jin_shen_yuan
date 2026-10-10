@@ -5,6 +5,7 @@ local PlayWorldView = {}
 local AbyssPresentation = require("client.AbyssPresentation")
 local AbyssDefinitions = require("shared.AbyssDefinitions")
 
+---@type table<string, any>?
 local ports_ = nil
 local refs_ = {}
 local currentPlayerImage_ = nil
@@ -92,19 +93,6 @@ function PlayWorldView.Build(metrics)
     }
     for index = 1, ports_.eventViewCount do
         refs_.abyssPillars[index] = {}
-        for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
-            local pillar = AbyssPresentation.BuildPillar(
-                gradeId,
-                { width = 112, height = 210, fontSize = 14 }
-            )
-            ChangedOnly.Style(pillar, {
-                position = "absolute",
-                left = 0,
-                top = 0,
-                visible = false,
-            })
-            refs_.abyssPillars[index][gradeId] = pillar
-        end
         refs_.objects[index] = UI.Panel {
             position = "absolute", left = 0, top = 0,
             width = ports_.enemySize, height = ports_.enemySize,
@@ -207,30 +195,42 @@ function PlayWorldView.Update(state)
             local active = index == 1 and (state.isAttacking or state.isPicking)
             local pulse = active and math.sin(state.animationTime * 18) * 5 or 0
             local onScreen = x > -180 and x < 1180
+            local visibleGrade = onScreen and event.kind == "enemy" and event.abyssGradeId
+            if visibleGrade and AbyssDefinitions.IsKnownGrade(visibleGrade)
+                and not pillars[visibleGrade] and node.parent then
+                -- Build only the grade actually encountered. Keep pillars
+                -- behind all enemy sprites, matching the initial drawing order.
+                local pillar = AbyssPresentation.BuildPillar(visibleGrade,
+                    { width = 112, height = 210, fontSize = 14 })
+                ChangedOnly.Style(pillar, { position = "absolute", visible = false })
+                for childIndex, child in ipairs(node.parent.children) do
+                    if child == refs_.objects[1] then node.parent:InsertChild(pillar, childIndex); break end
+                end
+                pillars[visibleGrade] = pillar
+            end
             for _, gradeId in ipairs(AbyssDefinitions.ORDER) do
                 local pillar = pillars[gradeId]
-                if pillar then
-                    local visible = onScreen
-                        and event.kind == "enemy"
-                        and event.abyssGradeId == gradeId
+                if pillar and visibleGrade == gradeId then
                     ChangedOnly.Style(pillar, {
-                        visible = visible,
+                        visible = true,
                         left = x + math.floor((size - 112) * 0.5),
                         top = state.roadY - 206
                             + math.sin(state.animationTime * 3.5) * 3,
                         opacity = active and 0.92 or 1,
                         scale = active and 1.04 or 1,
                     })
+                elseif pillar then
+                    ChangedOnly.Style(pillar, { visible = false })
                 end
             end
-            ChangedOnly.Style(node, {
-                visible = onScreen,
+            if onScreen then ChangedOnly.Style(node, {
+                visible = true,
                 left = x, top = top + pulse,
                 width = size, height = size,
                 backgroundImage = event.image,
                 opacity = index == 1 and state.isAttacking and 0.86 or 1.0,
                 scale = active and 1.05 or 1.0,
-            })
+            }) else ChangedOnly.Style(node, { visible = false }) end
         else
             ChangedOnly.Style(node, {visible = false})
             for _, gradeId in ipairs(AbyssDefinitions.ORDER) do

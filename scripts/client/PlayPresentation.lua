@@ -9,6 +9,7 @@ local PlayWorldView = require("client.PlayWorldView").New()
 local AbyssDefinitions = require("shared.AbyssDefinitions")
 local EncounterRequestController = require("client.EncounterRequestController")
 
+---@type table<string, any>?
 local context_ = nil
 local refs_ = {}
 local roadEvents_ = {}
@@ -31,11 +32,16 @@ local currentMonsterMaxHp_ = 1
 local currentEventLocked_ = false
 local currentAttackFrames_ = nil
 local finisherGhostTimer_ = 0
+---@type table<string, any>?
+local finisherGlow_ = nil
 local rewardOrigin_ = nil
 local lastEventType_ = "monster"
 local requestedAutoRun_ = nil
 local pendingAutoRun_ = nil
 local sessionAutoStartAttempted_ = false
+local combatSyncProgress_ = nil
+local combatSyncElapsed_ = 0
+local COMBAT_SYNC_TIMEOUT = 15
 
 local metrics_ = { width = 1080, height = 1400, enemyAnchorX = 820 }
 local Clamp
@@ -43,6 +49,7 @@ local Clamp
 -- 前向声明：终结技大范围特效，实现在 CreatePage 之后。
 local spawnFinisherEffect = nil
 
+---@return table<string, any>
 local function C()
     return context_.colors
 end
@@ -54,6 +61,7 @@ local function MagnitudeRatio(value, maximum)
     return Clamp((value or 0) / math.max(1, maximum or 1), 0, 1)
 end
 
+---@return table<string, any>
 local function Assets()
     return context_.assets
 end
@@ -206,6 +214,13 @@ local function AdvanceRoadEvent()
     currentAttackFrames_ = nil
 end
 
+local function ClearFinisherGlow()
+    if finisherGlow_ then
+        finisherGlow_.player:SetStyle({ boxShadow = finisherGlow_.shadow })
+        finisherGlow_ = nil
+    end
+end
+
 local function ClearCombatPresentation(advanceLockedEvent)
     if advanceLockedEvent and currentEventLocked_ and roadEvents_[1] and roadEvents_[1].kind == "enemy" then
         AdvanceRoadEvent()
@@ -224,6 +239,7 @@ local function ClearCombatPresentation(advanceLockedEvent)
     currentMonsterHp_ = 0
     currentMonsterMaxHp_ = 1
     PlayEffects.ResetCombatFeedback()
+    ClearFinisherGlow()
 end
 
 local function ActionResult(response, successMessage)
@@ -419,7 +435,67 @@ local function SetCombatSequence(
     end
 end
 
+local function RestoreCombatSequence(monster)
+    local phaseRemaining = math.max(0.001, tonumber(monster.phaseRemaining) or 0.001)
+    SetCombatSequence(
+        monster.sequenceIndex,
+        monster.hitFrame,
+        monster.attackSerial,
+        monster.phase == "recovery" and 0.001 or phaseRemaining,
+        monster.phase == "recovery" and phaseRemaining or monster.recoverySeconds,
+        monster.endFrame
+    )
+    if monster.phase == "recovery" then combatAnimationTime_ = combatWindupSeconds_ end
+end
+
+local function CombatProgress(game)
+    local monster = game.currentMonster or {}
+    local hp = monster.hpBig or monster.hp or 0
+    if type(hp) == "table" then hp = tostring(hp.mantissa) .. ":" .. tostring(hp.exponent) end
+    -- Inventory, currency, quest and other revisions are not battle progress.
+    return table.concat({ tostring(game.floor), tostring(game.position), tostring(monster.id),
+        tostring(monster.attackSerial), tostring(monster.sequenceIndex), tostring(monster.hitIndex),
+        tostring(monster.phase), tostring(hp) }, "|")
+end
+
+local function RecoverCombatState(game, dt)
+    local monster = game.currentMonster
+    if monster then
+        if game.autoRun and requestedAutoRun_ ~= false and not game.readOnly
+            and (not currentEventLocked_ or combatSequenceIndex_ == nil) then
+            currentEventLocked_ = true
+            RestoreCombatSequence(monster)
+        end
+    elseif currentEventLocked_ or combatSequenceIndex_ ~= nil then
+        -- The route already selected the next authoritative room. Do not
+        -- advance it again when recovering from a missed death event.
+        ClearCombatPresentation(false)
+    end
+
+    local waiting = game.autoRun and not game.readOnly
+        and not game.pendingStoryGate and not game.pendingStory
+        and not game.pendingEvent and not game.aidPending
+        and (monster or encounterRequests_.pending or encounterRequests_.stopped)
+    local progress = CombatProgress(game)
+    if not waiting or combatSyncProgress_ ~= progress then
+        combatSyncProgress_ = progress
+        combatSyncElapsed_ = 0
+    end
+    if not waiting then return end
+    combatSyncElapsed_ = combatSyncElapsed_ + math.max(0, tonumber(dt) or 0)
+    if combatSyncElapsed_ >= COMBAT_SYNC_TIMEOUT then
+        combatSyncElapsed_ = 0
+        print("[Play] combat state stalled; requesting authoritative snapshot"
+            .. " floor=" .. tostring(game.floor) .. " room=" .. tostring(game.position)
+            .. " monster=" .. tostring(monster and monster.id)
+            .. " hp=" .. tostring(monster and (monster.hp or monster.hpBig and monster.hpBig.mantissa))
+            .. " requestStopped=" .. tostring(encounterRequests_.stopped))
+        context_.serverClient.RequestSnapshot()
+    end
+end
+
 local function CreatePage()
+    ClearFinisherGlow()
     local assets = Assets()
     local game = Game()
     EnsureRoadEvents()
@@ -441,8 +517,7 @@ local function CreatePage()
 
     local root = context_.UI.Panel {
         width = "100%", height = "100%", position = "relative",
-        overflow = "hidden", backgroundImage = assets.bg,
-        backgroundFit = "cover", children = sceneChildren,
+        overflow = "hidden", children = sceneChildren,
     }
     refs_.root = root
     local lootText, lootIcon, lootRarity = PlayEffects.GetLootDisplay()
@@ -578,7 +653,13 @@ spawnFinisherEffect = function()
     -- 角色金色发光（终结技期间）
     local player = PlayWorldView.GetPlayerNode()
     if player then
-        local originalShadow = player.props and player.props.boxShadow
+        local glow = finisherGlow_
+        if not glow or glow.player ~= player then
+            glow = { player = player, shadow = player.props and player.props.boxShadow or false, generation = 0 }
+            finisherGlow_ = glow
+        end
+        glow.generation = glow.generation + 1
+        local generation = glow.generation
         player:SetStyle({
             boxShadow = {
                 color = { 255, 214, 110, 220 },
@@ -593,9 +674,10 @@ spawnFinisherEffect = function()
             duration = 1.1,
             delay = 0,
             onComplete = function()
-                player:SetStyle({
-                    boxShadow = originalShadow,
-                })
+                if finisherGlow_ == glow and generation == glow.generation then
+                    player:SetStyle({ boxShadow = glow.shadow })
+                    finisherGlow_ = nil
+                end
             end,
         }
     end
@@ -631,22 +713,31 @@ local function spawnFinisherGhost()
     local root = refs_.root
     local metrics = PlayWorldView.GetPlayerMetrics()
     if not root or not metrics then return end
-    local ghost = context_.UI.Panel {
-        position = "absolute",
+    refs_.finisherGhosts = refs_.finisherGhosts or {}
+    local slot
+    for _, candidate in ipairs(refs_.finisherGhosts) do
+        if not candidate.active then slot = candidate; break end
+    end
+    if not slot then
+        if #refs_.finisherGhosts >= 6 then return end
+        slot = { node = context_.UI.Panel {
+            position = "absolute", pointerEvents = "none", borderRadius = 36,
+            backgroundColor = { 255, 222, 130, 80 },
+            boxShadow = { color = { 255, 200, 90, 170 }, offsetX = 0, offsetY = 0, blurRadius = 40 },
+        }, active = false }
+        refs_.finisherGhosts[#refs_.finisherGhosts + 1] = slot
+        root:AddChild(slot.node)
+    end
+    slot.active = true
+    local ghost = slot.node
+    ghost:SetStyle {
+        visible = true, translateX = 0,
         left = metrics.left - 12,
         top = metrics.top - 12,
         width = metrics.width + 24,
         height = metrics.height + 24,
         opacity = 0.4,
-        pointerEvents = "none",
-        backgroundColor = { 255, 222, 130, 80 },
-        borderRadius = 36,
-        boxShadow = {
-            color = { 255, 200, 90, 170 },
-            offsetX = 0, offsetY = 0, blurRadius = 40,
-        },
     }
-    root:AddChild(ghost)
     ghost:Animate {
         keyframes = {
             [0] = { opacity = 0.4, translateX = 0 },
@@ -655,7 +746,8 @@ local function spawnFinisherGhost()
         duration = 0.5,
         easing = "easeOut",
         onComplete = function()
-            if ghost.Destroy then ghost:Destroy() elseif ghost.parent then ghost.parent:RemoveChild(ghost) end
+            slot.active = false
+            ghost:Hide()
         end,
     }
 end
@@ -674,6 +766,7 @@ local function Update(dt)
         currentMonsterMaxHp_ = 1
     end
     EnsureRoadEvents()
+    if not context_.presentationOnly then RecoverCombatState(game, dt) end
     animationTime_ = animationTime_ + dt
     combatAnimationTime_ = currentEventLocked_ and (combatAnimationTime_ + dt) or 0
     -- 终结技残影拖尾：攻击进行期间持续生成金色能量残影
@@ -1132,6 +1225,9 @@ end
 function PlayPresentation.HandleSnapshot()
     local game = Game()
     local monster = game.currentMonster
+    encounterRequests_:Reset()
+    combatSyncProgress_ = CombatProgress(game)
+    combatSyncElapsed_ = 0
 
     if monster then
         AlignCurrentRoadEvent(
@@ -1147,33 +1243,7 @@ function PlayPresentation.HandleSnapshot()
             or monster.hp
             or 1
 
-        local phaseRemaining = math.max(
-            0.001,
-            tonumber(monster.phaseRemaining)
-                or 0.001
-        )
-        local windupSeconds =
-            monster.phase == "recovery"
-            and 0.001
-            or phaseRemaining
-        local recoverySeconds =
-            monster.phase == "recovery"
-            and phaseRemaining
-            or monster.recoverySeconds
-
-        SetCombatSequence(
-            monster.sequenceIndex,
-            monster.hitFrame,
-            monster.attackSerial,
-            windupSeconds,
-            recoverySeconds,
-            monster.endFrame
-        )
-
-        if monster.phase == "recovery" then
-            combatAnimationTime_ =
-                combatWindupSeconds_
-        end
+        RestoreCombatSequence(monster)
     else
         currentEventLocked_ = false
         combatSequenceIndex_ = nil
@@ -1235,6 +1305,8 @@ function PlayPresentation.Reset()
     PlayWorldView.Reset()
     metrics_ = { width = 1080, height = 1400, enemyAnchorX = 820 }
     sessionAutoStartAttempted_ = false
+    combatSyncProgress_ = nil
+    combatSyncElapsed_ = 0
     requestedAutoRun_ = nil
     pendingAutoRun_ = nil
 end

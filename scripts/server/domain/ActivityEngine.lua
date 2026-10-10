@@ -39,13 +39,7 @@ local function SigninUnlockAt(def, record, state, now)
     return lastClaimAt + DAY_SECONDS
 end
 
--- 亚秒时钟：打桩攻击间隔/限时判定用（会话内刻度一致，不用于存档时间戳）。
--- 使用 os.clock()（进程单调时间）而非 _G["time"]，避免部分宿主访问崩溃。
-local function nowFloat()
-    return os.clock()
-end
-
-local function EnsureRecord(state, activityId, today)
+local function EnsureRecord(state, activityId, today, now)
     state.activities = type(state.activities) == "table" and state.activities or {}
     local record = state.activities[activityId]
     if type(record) ~= "table" then
@@ -60,11 +54,14 @@ local function EnsureRecord(state, activityId, today)
         }
         state.activities[activityId] = record
     end
-    -- 打桩会话跨日或长期未结算则清理（亚秒刻度判断超时）。
+    -- Epoch timestamps survive persistence/reconnection; process CPU time does not.
     if type(record.session) == "table" then
-        local stale = nowFloat() - (record.session.startedAt or 0)
-        if record.strikeDay ~= today or stale > STRIKE.DURATION * 3 then
+        if record.strikeDay ~= today then
             record.session = nil
+        elseif (record.session.startedAt or 0) < 1000000000 then
+            -- Recover the old frozen CPU-clock session without consuming another attempt.
+            record.session.startedAt = now
+            record.session.lastHitAt = 0
         end
     end
     return record
@@ -76,7 +73,7 @@ function ActivityEngine.EnsureActivityState(state, now)
     state.activities = type(state.activities) == "table" and state.activities or {}
     local today = serverDayKey(now)
     for id in pairs(ActivityDefinitions.ALL) do
-        EnsureRecord(state, id, today)
+        EnsureRecord(state, id, today, now)
     end
 end
 
@@ -89,7 +86,7 @@ function ActivityEngine.SignIn(inputState, activityId, now)
     end
     local working = PlayerTransition.Copy(inputState, now)
     local today = serverDayKey(now)
-    local record = EnsureRecord(working, activityId, today)
+    local record = EnsureRecord(working, activityId, today, now)
     local loopDays = def.loopDays or #def.days
     local totalDays = math.max(0, math.floor(tonumber(record.totalDays) or 0))
     if def.once and totalDays >= loopDays then
@@ -159,28 +156,21 @@ function ActivityEngine.BeginStrike(inputState, activityId, now)
     end
     local working = PlayerTransition.Copy(inputState, now)
     local today = serverDayKey(now)
-    local record = EnsureRecord(working, activityId, today)
+    local record = EnsureRecord(working, activityId, today, now)
     if record.strikeDay ~= today then
         record.strikeDay = today
         record.strikeCount = 0
         record.adCount = 0
     end
     local limit = STRIKE.BASE_PER_DAY + record.adCount
+    if type(record.session) == "table" and record.session.finished ~= true then
+        return PlayerTransition.Finalize(inputState, working, now, "activity_strike_resumed", {}, false, false)
+    end
     if record.strikeCount >= limit then
         return PlayerTransition.Failure(inputState, now, "STRIKE_LIMIT", "今日次数已用完")
     end
-    -- 已有未结算会话（如中途退出残留）：先自动结算旧会话，再从 0 开始新会话。
-    -- 满足「每次从 0 进入，只看次数，没有继续」的产品语义。
-    if type(record.session) == "table" then
-        local settled = ActivityEngine.FinishStrike(working, activityId, now)
-        if settled.ok and settled.state then
-            working = settled.state
-            record = EnsureRecord(working, activityId, today)
-        end
-    end
     record.strikeCount = record.strikeCount + 1
-    local t = nowFloat()
-    record.session = { startedAt = t, lastHitAt = t - STRIKE.INTERVAL, damage = 0, finished = false }
+    record.session = { startedAt = now, lastHitAt = 0, damage = 0, finished = false }
     local events = {
         PlayerTransition.Event("activity_strike_begin", {
             activityId = activityId,
@@ -199,20 +189,19 @@ function ActivityEngine.Strike(inputState, activityId, now)
     end
     local working = PlayerTransition.Copy(inputState, now)
     local today = serverDayKey(now)
-    local record = EnsureRecord(working, activityId, today)
+    local record = EnsureRecord(working, activityId, today, now)
     local session = type(record.session) == "table" and record.session or nil
     if not session or session.finished then
         return PlayerTransition.Failure(inputState, now, "STRIKE_NOT_STARTED", "打桩尚未开始")
     end
-    local t = nowFloat()
-    local elapsed = t - (session.startedAt or t)
-    if elapsed > STRIKE.DURATION then
+    local elapsed = now - (session.startedAt or now)
+    if elapsed >= STRIKE.DURATION then
         return ActivityEngine.FinishStrike(inputState, activityId, now)
     end
-    if (t - (session.lastHitAt or t)) < STRIKE.INTERVAL then
+    if (now - (session.lastHitAt or 0)) < STRIKE.INTERVAL then
         return PlayerTransition.NoCommit(inputState, now, "strike_too_fast", {})
     end
-    session.lastHitAt = t
+    session.lastHitAt = now
     -- 与放置挂机同一套伤害计算：木桩防御为 0，按攻击序列多段权重结算总伤害
     -- （放置挂机一次攻击含多段命中 weights 0.30~0.85，累计约 2 倍攻击）
     local sequenceIndex = math.random(1, 3)
@@ -253,7 +242,7 @@ function ActivityEngine.FinishStrike(inputState, activityId, now)
     end
     local working = PlayerTransition.Copy(inputState, now)
     local today = serverDayKey(now)
-    local record = EnsureRecord(working, activityId, today)
+    local record = EnsureRecord(working, activityId, today, now)
     local session = type(record.session) == "table" and record.session or nil
     if not session or session.finished then
         return PlayerTransition.NoCommit(inputState, now, "strike_not_active", {})
@@ -295,7 +284,7 @@ function ActivityEngine.UnlockExtraStrike(inputState, activityId, now)
     end
     local working = PlayerTransition.Copy(inputState, now)
     local today = serverDayKey(now)
-    local record = EnsureRecord(working, activityId, today)
+    local record = EnsureRecord(working, activityId, today, now)
     if record.strikeDay ~= today then
         record.strikeDay = today
         record.strikeCount = 0

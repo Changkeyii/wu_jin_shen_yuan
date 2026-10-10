@@ -6,6 +6,7 @@ local Assets = require("client.ViewAssets").ASSETS
 local Theme = require("client.Theme")
 local LargeNumber = require("shared.LargeNumber")
 local D = require("shared.AdGiftDefinitions")
+local Video = require("client.RewardVideo")
 local M = {}
 
 -- 复用通用弹窗边界合同：766x386 素材外框(16,2)-(765,382)，内框(34,66)-(746,302)。
@@ -17,12 +18,12 @@ function M.Menu(offers, onSelect, progress)
     local rows = {}
     for _, kind in ipairs(D.ORDER) do
         local id, spec = kind, D.KINDS[kind]
-        local hint = offers[id] and (id == "forge" and "常驻补给 · 自愿观看" or "事件补给 · 每笔限领一次") or spec.hint
+        local hint = offers[id] and (id == "forge" and Video.ActionText("常驻补给 · 自愿观看", "常驻补给 · 免广告领取") or "事件补给 · 每笔限领一次") or spec.hint
         if id == "wishSupply" then
             hint = string.format("今日已领 %d/4 次 · %s", progress.wishUsed or 0,
                 offers[id] and ("本次 " .. offers[id].tickets .. " 张") or "今日已领完")
         elseif id == "lucky" then
-            hint = string.format("可领 %d 次 · 每次广告 2 张", progress.luckyCount or 0)
+            hint = string.format(Video.ActionText("可领 %d 次 · 每次广告 2 张", "可领 %d 次 · 免广告领取 2 张"), progress.luckyCount or 0)
         end
         rows[#rows + 1] = UI.Panel {
             width = "100%", height = 84, flexShrink = 0, flexDirection = "row", alignItems = "center", gap = 12,
@@ -76,11 +77,12 @@ function M.Reward(quote, options)
     elseif quote.kind == "boss" or quote.kind == "offline" or quote.kind == "journey" then
         lines[#lines + 1] = "补给可用于装备强化、升星；多笔未领奖励会合并，上方卡片为本次实际到账数量。"
     end
-    lines[#lines + 1] = "自愿观看，关闭不消耗领取机会；本礼包不参与五倍加成。"
+    lines[#lines + 1] = Video.ActionText("自愿观看，关闭不消耗领取机会；本礼包不参与五倍加成。",
+        "免广告直接领取，关闭不消耗领取机会；本礼包不参与五倍加成。")
     return Rewards.Show { queueKey = "ad_gift_dialog", title = D.KINDS[quote.kind].title,
-        cards = cards, message = options.message or "完整观看后领取以下奖励",
+        cards = cards, message = options.message or Video.ActionText("完整观看后领取以下奖励", "免广告领取以下奖励"),
         lines = options.lines or lines,
-        confirmText = options.confirmText or "看广告领取", cancelText = options.cancelText or "暂时不用",
+        confirmText = options.confirmText or Video.ActionText("看广告领取", "免广告领取"), cancelText = options.cancelText or "暂时不用",
         showClose = true, onConfirm = options.onConfirm, onCancel = options.onCancel }
 end
 return M

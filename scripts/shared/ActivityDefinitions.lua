@@ -6,6 +6,7 @@
 local QuestDefinitions = require("shared.QuestDefinitions")
 local LargeNumber = require("shared.LargeNumber")
 
+---@class ActivityDefinitions
 local ActivityDefinitions = {}
 
 -- 每日补充玩法（木桩）通用参数。
@@ -160,7 +161,7 @@ local function SigninState(state, def, now)
 end
 
 -- 打桩进度：今日次数 / 剩余可打 / 广告可解锁 / 是否有进行中会话。
-local function StrikeState(state, def, today)
+local function StrikeState(state, def, today, now)
     local record = state.activities and state.activities[def.id] or {}
     local dayKey = record.strikeDay or 0
     local current = dayKey == today
@@ -177,6 +178,8 @@ local function StrikeState(state, def, today)
         adCan = ActivityDefinitions.STRIKE.AD_PER_DAY > adCount and count > 0,
         sessionActive = sessionActive,
         sessionDamage = sessionActive and math.floor(tonumber(session.damage) or 0) or nil,
+        sessionStartedAt = sessionActive and session.startedAt or nil,
+        sessionRemaining = sessionActive and math.max(0, ActivityDefinitions.STRIKE.DURATION - (now - (session.startedAt or now))) or nil,
     }
 end
 
@@ -234,7 +237,7 @@ function ActivityDefinitions.BuildView(state, now)
 
     for _, id in ipairs(STRIKE_IDS) do
         local def = ALL[id]
-        local info = StrikeState(state, def, today)
+        local info = StrikeState(state, def, today, now)
         local tiers = {}
         for _, tier in ipairs(def.tiers) do
             tiers[#tiers + 1] = {
@@ -256,6 +259,8 @@ function ActivityDefinitions.BuildView(state, now)
             adCan = info.adCan,
             sessionActive = info.sessionActive,
             sessionDamage = info.sessionDamage,
+            sessionStartedAt = info.sessionStartedAt,
+            sessionRemaining = info.sessionRemaining,
             duration = ActivityDefinitions.STRIKE.DURATION,
             tiers = tiers,
         }

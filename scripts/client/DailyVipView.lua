@@ -161,13 +161,14 @@ function DailyVipView.BuildContent(game, options)
             onClick = options.onClaimSignIn,
         },
         ActionCard {
-            title = "激励视频",
-            description = "完整观看后领取，VIP 等级 +1",
+            title = game.adFree and "免广告权益" or "激励视频",
+            description = game.adFree and "直接领取，VIP 等级 +1，每日一次" or "完整观看后领取，VIP 等级 +1",
             claimed = adClaimed,
             disabled = options.requestPending == true or options.adInFlight == true,
             accent = C.secondary,
             buttonText = adClaimed and (atCap and "已满级" or "奖励已领取")
-                or (options.adInFlight and "广告播放中" or "看广告 +1 VIP"),
+                or (options.adInFlight and (game.adFree and "身份确认中" or "广告播放中")
+                    or (game.adFree and "免广告 +1 VIP" or "看广告 +1 VIP")),
             buttonImage = ASSETS.ui.inventoryActionBlue,
             onClick = options.onWatchAd,
         },
@@ -262,13 +263,15 @@ end
 
 local function BuildDigitRow(vipLevel)
     local levelText = tostring(vipLevel)
+    ---@type string[]
+    local digitImages = ASSETS.ui.vipDigits
     local children = {}
     for i = 1, #levelText do
         local digit = tonumber(string.sub(levelText, i, i)) or 0
         children[#children + 1] = UI.Panel {
             width = 74,
             height = 92,
-            backgroundImage = ASSETS.ui.vipDigits[digit + 1],
+            backgroundImage = digitImages[digit + 1],
             backgroundFit = "contain",
             pointerEvents = "none",
         }

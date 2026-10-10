@@ -10,6 +10,7 @@ local PlayerTransition = {}
 
 local SCALAR_DELTA_FIELDS = {
     "pendingOfflineSeconds", "level", "vipLevel", "dailyVip", "exp", "nextExp",
+    "adFree",
     "floor", "maxFloor", "position", "transitionRemaining", "gold", "fragments",
     "autoRun", "pauseReason", "hp", "hpBig", "floorDefeats", "aidPending",
     "aidGrantedFloors", "floorKillBonus", "permanentBonus", "inventoryPolicy",

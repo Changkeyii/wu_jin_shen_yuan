@@ -169,6 +169,7 @@ PERSISTED_SCHEMA = {
         pendingOfflineSeconds = { type = "integer", min = 0, max = GameStateSchema.OFFLINE_MAX_SECONDS },
         level = { type = "integer", min = 1, max = 1000000 },
         vipLevel = { type = "integer", min = 0, max = 10 },
+        adFree = { type = "boolean" },
         dailyVip = DAILY_VIP_SCHEMA,
         trashTalkIndex = { type = "integer", min = 0, max = TrashTalk.MAX - 1 },
         exp = { type = "integer", min = 0, max = 1000000000 },
@@ -281,6 +282,7 @@ local PERSISTED_VALUE_SCHEMAS = PERSISTED_SCHEMA.fields
 local SNAPSHOT_VALUE_SCHEMAS = {
     level = PERSISTED_VALUE_SCHEMAS.level,
     vipLevel = PERSISTED_VALUE_SCHEMAS.vipLevel,
+    adFree = PERSISTED_VALUE_SCHEMAS.adFree,
     dailyVip = PERSISTED_VALUE_SCHEMAS.dailyVip,
     exp = PERSISTED_VALUE_SCHEMAS.exp,
     floor = PERSISTED_VALUE_SCHEMAS.floor,

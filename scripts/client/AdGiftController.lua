@@ -25,8 +25,8 @@ local claim
 local function showReceipt()
     if not receipt then return false end
     local quote = receipt
-    return View.Reward(quote, { message = "广告已完成，奖励等待到账", confirmText = "重试领取", cancelText = "稍后领取",
-        lines = { "无需再次观看广告。", "可从活动页的塔灵礼包继续领取。" },
+    return View.Reward(quote, { message = Video.ActionText("广告已完成，奖励等待到账", "免广告身份已确认，奖励等待到账"), confirmText = "重试领取", cancelText = "稍后领取",
+        lines = { "领取资格已确认，可直接重试领取。", "可从活动页的塔灵礼包继续领取。" },
         onConfirm = function() claim(quote) end })
 end
 claim = function(quote)

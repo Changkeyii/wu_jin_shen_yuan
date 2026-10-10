@@ -11,7 +11,9 @@ local ServerClock = require("client.ServerClock")
 
 local GameStateAdapter = {}
 
+---@type table<string, any>?
 local authoritative_ = nil
+---@type table<string, any>?
 local view_ = nil
 local page_ = "home"
 local connectionState_ = "syncing"
@@ -70,6 +72,7 @@ local function MarkDirtyForKey(key)
         nextExp = { "player", "progression" },
         level = { "player", "progression" },
         vipLevel = { "player" },
+        adFree = { "player", "home", "activity", "bag" },
         dailyVip = { "player" },
         pendingOfflineSeconds = { "player" },
         offlineSeconds = { "player" },
@@ -513,6 +516,7 @@ local function EmptyView()
         position = 0,
         level = 1,
         vipLevel = 0,
+        adFree = false,
         dailyVip = { signInDay = 0, adDay = 0 },
         wishPool = {
             tickets = 0, jars = {}, adDayKey = 0, adUsed = 0, totalWishes = 0,
@@ -583,7 +587,7 @@ local function NeedsInventoryProjection(domains)
     return not domains or domains.all or domains.inventory or domains.equipment or domains.wish or domains.abyss
 end
 
-local function RebuildView()
+local function RebuildView(reuseProjectedInventory)
     if not authoritative_ then
         view_ = EmptyView()
         return view_
@@ -591,7 +595,7 @@ local function RebuildView()
 
     local reuseInventory = view_
         and view_.itemById
-        and not NeedsInventoryProjection(dirtyDomains_)
+        and (reuseProjectedInventory or not NeedsInventoryProjection(dirtyDomains_))
     local nextView = ShallowCopy(authoritative_)
     nextView.page = page_
     nextView.connectionState = connectionState_
@@ -637,8 +641,9 @@ local function RebuildView()
         if type(nextView.displayedPower) == "table" and nextView.displayedPower.mantissa ~= nil then
             nextView.powerRatio = BigNumber.Ratio(nextView.displayedPower, nextView.recommendedPower)
         else
-            local displayed = LargeNumber.ToNumber and LargeNumber.ToNumber(nextView.displayedPower) or nextView.displayedPower
-            local recommended = LargeNumber.ToNumber and LargeNumber.ToNumber(nextView.recommendedPower) or nextView.recommendedPower
+            local toNumber = rawget(LargeNumber, "ToNumber")
+            local displayed = toNumber and toNumber(nextView.displayedPower) or nextView.displayedPower
+            local recommended = toNumber and toNumber(nextView.recommendedPower) or nextView.recommendedPower
             if type(displayed) == "number" and type(recommended) == "number" and recommended > 0 then
                 nextView.powerRatio = displayed / recommended
             end
@@ -859,9 +864,11 @@ end
 
 function GameStateAdapter.ApplySnapshotEvents(events)
     if not authoritative_ then return false end
+    if not events or #events == 0 then return true end
     MarkDirtyForEvents(events)
     ApplyEvents(authoritative_, events)
-    RebuildView()
+    -- Snapshot events update combat/gates/logs, never the inventory just projected.
+    RebuildView(true)
     return true
 end
 
@@ -955,9 +962,11 @@ function GameStateAdapter.ApplyDelta(delta)
 end
 
 function GameStateAdapter.SetConnectionState(state)
-    connectionState_ = state or "disconnected"
+    local nextState = state or "disconnected"
+    if connectionState_ == nextState then return end
+    connectionState_ = nextState
     MarkDirty("all")
-    RebuildView()
+    RebuildView(true)
 end
 
 function GameStateAdapter.SetPage(page)
