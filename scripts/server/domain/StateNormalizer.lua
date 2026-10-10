@@ -838,6 +838,8 @@ function StateNormalizer.Normalize(rawState, now)
     local state = {
         schemaVersion = Catalog.SCHEMA_VERSION,
         revision = math.max(0, TableUtils.ToInteger(rawState.revision, 0)),
+        storageVersion = math.max(0, TableUtils.ToInteger(rawState.storageVersion, 0)),
+        storageWriteId = tostring(rawState.storageWriteId or ""),
         updatedAt = math.max(0, TableUtils.ToInteger(rawState.updatedAt, now)),
         lastActiveAt = math.max(0, TableUtils.ToInteger(rawState.lastActiveAt, now)),
         pendingOfflineSeconds = clampInteger(rawState.pendingOfflineSeconds or rawState.offlineSeconds, 0, Catalog.OFFLINE_MAX_SECONDS, 0),

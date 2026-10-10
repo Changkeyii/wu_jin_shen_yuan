@@ -10,11 +10,17 @@ local LargeNumber = require("shared.LargeNumber")
 ---@field clock fun(): integer
 ---@field listIds table<integer, table>
 ---@field itemIds table<integer, table>
+---@field requests table
+---@field uncertain table
+---@field writeSeq integer
+---@field instanceId string
+---@field onReconciled function?
 local PlayerProfileRepository = {}
 PlayerProfileRepository.__index = PlayerProfileRepository
 
 PlayerProfileRepository.Keys = {
     PROFILE = "abyss_profile",
+    STORAGE_GUARD = "abyss_profile_write_v3",
     SCHEMA_VERSION = "abyss_schema_version",
     REVISION = "abyss_revision",
     UPDATED_AT = "abyss_updated_at",
@@ -172,6 +178,10 @@ function PlayerProfileRepository.New(options)
         clock = options.clock or os.time,
         listIds = {},
         itemIds = {},
+        requests = {},
+        uncertain = {},
+        writeSeq = 0,
+        instanceId = tostring({}):gsub("[^%w]", "") .. tostring(math.random(1, 999999999)),
     }, PlayerProfileRepository)
 end
 
@@ -181,20 +191,41 @@ function PlayerProfileRepository:_joinReads(userId, onComplete)
     local remaining = 3
     local finished = false
     local values = {}
+    local request = { deadline = self.clock() + 10 }
+    self.requests[request] = true
+    local original = onComplete
+    onComplete = function(result)
+        if not self.requests[request] then return end
+        self.requests[request] = nil
+        finished = true
+        original(result)
+    end
+    request.finish = onComplete
 
     local function receive(name)
         return function(result)
             if finished then return end
             if not result.ok then
-                finished = true
                 onComplete(Result(false, { source = name }, result.code, result.reason))
                 return
             end
             values[name] = result.data
             remaining = remaining - 1
             if remaining == 0 then
-                finished = true
-                onComplete(Result(true, values))
+                -- Independent list/header reads may straddle another instance's
+                -- transaction. Re-read the header before exposing a mixed profile.
+                self.gateway:ScoreGet(userId, self.Keys.PROFILE, function(check)
+                    if finished then return end
+                    if not check.ok then onComplete(check); return end
+                    local first = (values.score.scores or {})[self.Keys.PROFILE]
+                    local last = (check.data.scores or {})[self.Keys.PROFILE]
+                    if (first == nil) ~= (last == nil)
+                        or (type(first) == "table" and type(last) == "table"
+                        and (first.storageVersion or 0) ~= (last.storageVersion or 0)) then
+                        onComplete(Result(false, {}, "PROFILE_CONFLICT", "存档已由其他实例更新，请重新同步")); return
+                    end
+                    onComplete(Result(true, values))
+                end)
             end
         end
     end
@@ -237,6 +268,10 @@ function PlayerProfileRepository:Load(userId, onComplete)
         end
 
         local raw = TableUtils.DeepCopy(profile)
+        if raw.storageVersion ~= nil and (type(raw.storageVersion) ~= "number"
+            or raw.storageVersion % 1 ~= 0 or raw.storageVersion < 0 or raw.storageVersion > 2147483647) then
+            onComplete(Result(false, {}, "CORRUPT_PROFILE", "存档云写入版本无效")); return
+        end
         raw.schemaVersion = iscores[self.Keys.SCHEMA_VERSION] or raw.schemaVersion
         raw.revision = iscores[self.Keys.REVISION] or raw.revision
         raw.updatedAt = iscores[self.Keys.UPDATED_AT] or raw.updatedAt
@@ -383,10 +418,20 @@ function PlayerProfileRepository:_buildOperations(userId, oldState, newState)
 end
 
 function PlayerProfileRepository:Commit(userId, oldState, newState, description, onComplete, extraOperations)
+    if self.uncertain[userId] then
+        onComplete(Result(false, {}, "WRITE_UNCONFIRMED", "上次存档结果正在确认，请稍后重试")); return
+    end
     if oldState and newState.revision <= oldState.revision then
         onComplete(Result(false, {}, "REVISION_MISMATCH", "new state revision must advance"))
         return
     end
+    local expected = oldState and (oldState.storageVersion or 0) or 0
+    if expected >= 2147483647 then
+        onComplete(Result(false, {}, "STORAGE_VERSION_LIMIT", "存档版本达到上限")); return
+    end
+    self.writeSeq = self.writeSeq + 1
+    newState.storageVersion = expected + 1
+    newState.storageWriteId = "pw-" .. self.instanceId .. "-" .. tostring(self.writeSeq)
     local operations, buildReason = self:_buildOperations(userId, oldState, newState)
     if not operations then
         onComplete(Result(false, {}, "PERSISTENCE_MAP_MISSING", buildReason))
@@ -397,23 +442,85 @@ function PlayerProfileRepository:Commit(userId, oldState, newState, description,
     for _, extraOperation in ipairs(extraOperations or {}) do
         operations[#operations + 1] = extraOperation
     end
+    table.insert(operations, 1, { kind = "quota_add", userId = userId,
+        key = self.Keys.STORAGE_GUARD, value = 1, limit = expected + 1 })
     if #operations > 1000 then
         onComplete(Result(false, {}, "BATCH_TOO_LARGE", "transaction exceeds serverCloud operation limit"))
         return
     end
 
+    local request = { deadline = self.clock() + 10, userId = userId,
+        expected = expected, writeId = newState.storageWriteId, retryAt = self.clock() + 15 }
+    self.requests[request] = true
+    request.finish = function(result)
+        if not self.requests[request] then return end
+        self.requests[request] = nil
+        if result.code == "WRITE_UNCONFIRMED" then self.uncertain[userId] = request end
+        onComplete(result)
+    end
     self.gateway:BatchCommit(description or "abyss profile mutation", operations, function(result)
-        if not result.ok then onComplete(result); return end
+        request.actualResult = result
+        if not self.requests[request] then return end
+        if not result.ok then
+            -- Quota failures have no stable documented error code. Compare the
+            -- authoritative version rather than interpreting all errors as CAS.
+            self:Load(userId, function(loaded)
+                if loaded.ok and loaded.data.state
+                    and (loaded.data.state.storageVersion or 0) ~= expected then
+                    request.finish(Result(false, { conflictState = loaded.data.state }, "PROFILE_CONFLICT", "存档已由其他实例更新，请重新同步"))
+                else request.finish(result) end
+            end)
+            return
+        end
         local map = self.listIds[userId] or {}
         local oldIndex = IndexInventory(oldState and oldState.inventory or {})
         local newIndex = IndexInventory(newState.inventory or {})
         for itemId in pairs(oldIndex) do
             if not newIndex[itemId] then map[itemId] = nil end
         end
-        for itemId, listId in pairs(result.data.listIds or {}) do map[itemId] = listId end
+        for itemId, listId in pairs(result.data.listIds or {}) do
+            if newIndex[itemId] then map[itemId] = listId end
+        end
         self.listIds[userId] = map
-        onComplete(Result(true, { state = newState, operationCount = #operations }))
+        request.finish(Result(true, { state = newState, operationCount = #operations, listIds = result.data.listIds }))
     end)
+end
+
+function PlayerProfileRepository:IsWriteBlocked(userId)
+    return self.uncertain[userId] ~= nil
+end
+
+function PlayerProfileRepository:Update()
+    local now = self.clock()
+    local expired = {}
+    for request in pairs(self.requests) do
+        if now >= request.deadline then expired[#expired + 1] = request end
+    end
+    for _, request in ipairs(expired) do
+        if self.requests[request] then
+            request.finish(Result(false, {}, request.writeId and "WRITE_UNCONFIRMED" or "CLOUD_READ_TIMEOUT",
+                request.writeId and "存档请求超时，正在确认结果" or "云读取超时，请稍后重试"))
+        end
+    end
+    for uid, request in pairs(self.uncertain) do
+        if not request.reading and now >= request.retryAt then
+            request.reading = true
+            request.retryAt = now + 5
+            self:Load(uid, function(result)
+                request.reading = false
+                if self.uncertain[uid] ~= request or not result.ok then return end
+                local state = result.data.state
+                local version = state and (state.storageVersion or 0) or 0
+                -- Seeing the old value is NOT evidence that a timed-out write
+                -- failed: it can still arrive later. Keep the session frozen.
+                if version > request.expected or (request.actualResult and not request.actualResult.ok) then
+                    self.uncertain[uid] = nil
+                    if self.onReconciled then self.onReconciled(uid, result,
+                        state and state.storageWriteId == request.writeId) end
+                end
+            end)
+        end
+    end
 end
 
 function PlayerProfileRepository:Create(userId, initialState, onComplete)

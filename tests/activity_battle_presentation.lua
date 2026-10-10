@@ -21,7 +21,7 @@ package.loaded['client.UI.UILayout'] = {ContentHeight = function() return 1200 e
 package.loaded['client.ServerClock'] = {Now = function() return math.floor(now + 0.0001) end,
     DayKey = function(t) return math.floor((t + 28800) / 86400) end}
 package.loaded['client.AbyssPresentation'] = {BuildPillar = function() return Widget{} end}
-package.loaded['client.RewardVideo'] = {WATCHDOG_SECONDS = 60}
+package.loaded['client.RewardVideo'] = {WATCHDOG_SECONDS = 60, ActionText = function(label) return label end}
 package.loaded['client.RewardClaimController'] = {}
 local confirmation
 package.loaded['client.CommonPromptDialog'] = {Show = function(p) confirmation = p end}

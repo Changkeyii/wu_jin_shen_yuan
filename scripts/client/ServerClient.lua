@@ -877,8 +877,8 @@ function ServerClient.AdminSetAdFree(uid, enabled, reason, callback)
     return ServerClient.Send("Admin.SetAdFree", { targetUid = tostring(uid), enabled = enabled, reason = reason }, callback)
 end
 function ServerClient.VerifyAdFree(callback) return ServerClient.Send("Reward.VerifyAdFree", {}, callback) end
-function ServerClient.AdminMailDeliveryStatus(uid, callback)
-    return ServerClient.Send("Admin.MailDeliveryStatus", { targetUid = tostring(uid) }, callback)
+function ServerClient.AdminMailDeliveryStatus(uid, callback, mailId)
+    return ServerClient.Send("Admin.MailDeliveryStatus", { targetUid = tostring(uid), mailId = mailId }, callback)
 end
 
 -- 市场 -----------------------------------------------------------------------

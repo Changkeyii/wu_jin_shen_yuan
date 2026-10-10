@@ -1,3 +1,6 @@
+---@class ProjectServerCloudGateway
+---@field cloud table?
+---@field requestTotals table
 local ServerCloudGateway = {}
 ServerCloudGateway.__index = ServerCloudGateway
 
@@ -92,10 +95,11 @@ local function validateOperations(operations)
 end
 
 ---@param cloud? ServerCloud
----@return table
+---@return ProjectServerCloudGateway
 function ServerCloudGateway.new(cloud)
     local instance = {
         cloud = cloud or _G["serverCloud"],
+        requestTotals = { at = os.time(), read = 0, write = 0, peakRead = 0, peakWrite = 0 },
     }
     return setmetatable(instance, ServerCloudGateway)
 end
@@ -606,5 +610,35 @@ end
 
 ServerCloudGateway.Success = success
 ServerCloudGateway.Failure = failure
+
+-- Count gateway REQUESTS across gameplay, mail, rankings and administration.
+-- The platform's actual limiting scope/operation accounting must be verified
+-- against a development cloud; this is instrumentation, not a guessed hard cap.
+function ServerCloudGateway:RequestTotals()
+    local totals = self.requestTotals
+    if os.time() >= totals.at + 60 then
+        totals.peakRead = math.max(totals.peakRead, totals.read)
+        totals.peakWrite = math.max(totals.peakWrite, totals.write)
+        totals.at, totals.read, totals.write = os.time(), 0, 0
+    end
+    return { at = totals.at, read = totals.read, write = totals.write,
+        peakRead = totals.peakRead, peakWrite = totals.peakWrite,
+        accounting = "gateway-requests", platformScopeVerified = false }
+end
+local reads = { ScoreGet=true, MoneyGet=true, ListGet=true, ListGetById=true, ItemGet=true,
+    MessageGet=true, QuotaGet=true, RankGetList=true, RankGetUser=true, RankGetTotal=true, BatchGet=true }
+local methods = { "ScoreGet", "ScoreSet", "ScoreSetInt", "ScoreAdd", "ScoreDelete", "MoneyGet", "MoneyAdd", "MoneyCost",
+    "ListGet", "ListGetById", "ListAdd", "ListModify", "ListModifyKey", "ListDelete", "ItemGet", "ItemAdd", "ItemUse",
+    "MessageSend", "MessageGet", "MessageMarkRead", "MessageDelete", "QuotaGet", "QuotaAdd", "QuotaReset",
+    "RankGetList", "RankGetUser", "RankGetTotal", "BatchGet", "BatchSet", "BatchCommit" }
+for _, name in ipairs(methods) do
+    local invoke = ServerCloudGateway[name]
+    ServerCloudGateway[name] = function(self, ...)
+        self:RequestTotals()
+        local kind = reads[name] and "read" or "write"
+        self.requestTotals[kind] = self.requestTotals[kind] + 1
+        return invoke(self, ...)
+    end
+end
 
 return ServerCloudGateway

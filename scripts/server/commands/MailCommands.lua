@@ -60,16 +60,22 @@ function MailCommands.Register(router, services)
                 return CommandRouter.PENDING
             end
             local session = services.profileService:GetSession(context.uid)
+            local generation = session and session.generation
             local broadcastPending = false
             local function list(inbox)
-                if services.profileService:GetSession(context.uid) ~= session then
+                if services.profileService:GetSession(context.uid) ~= session or (session and session.generation ~= generation) then
                     done(false, { code = "STALE_SESSION", reason = "连接已变化，请重新打开邮箱" })
                     return
                 end
                 local result = service:List(context.uid, payload and payload.scope == "favorite" and "favorite" or "all")
                 if result.ok then
-                    result.data.deliveryPending = broadcastPending or (inbox and (not inbox.ok or inbox.data.status == "busy"
+                    result.data.deliveryPending = result.data.deliveryPending == true or broadcastPending or (inbox and (not inbox.ok or inbox.data.status == "busy"
                         or (inbox.data.pending or 0) > 0) or false)
+                    if inbox and (not inbox.ok or (inbox.data.pending or 0) > 0) then
+                        result.data.syncState = "pending"
+                        result.data.syncError = inbox.code ~= 0 and inbox.code or "LEGACY_MAIL_PENDING"
+                        result.data.retryAt = math.max(result.data.retryAt or 0, os.time() + 5)
+                    end
                 end
                 done(result.ok, result)
             end

@@ -27,6 +27,7 @@ local LeaderboardService = require("server.services.LeaderboardService")
 local ScoreLeaderboardService = require("server.services.ScoreLeaderboardService")
 local ChallengeCommands = require("server.commands.ChallengeCommands")
 local MailService = require("server.services.MailService")
+local CloudMailStore = require("server.services.CloudMailStore")
 local MailEngine = require("server.domain.MailEngine")
 local GameEngine = require("server.domain.GameEngine")
 local Catalog = require("server.domain.Catalog")
@@ -595,6 +596,7 @@ end
 
 local function HandleUpdate(eventType, eventData)
     local timeStep = eventData:GetFloat("TimeStep")
+    if profileService_ then profileService_:Update() end
     idleService_:Update(timeStep)
     adminService_:Update(timeStep)
     marketService_:Tick()
@@ -616,7 +618,19 @@ local function InitializeServices()
     })
     gateway_ = ServerCloudGateway.New(serverCloud)
     repository_ = PlayerProfileRepository.New({ gateway = gateway_ })
-    profileService_ = PlayerProfileService.New({ repository = repository_ })
+    profileService_ = PlayerProfileService.New({ repository = repository_,
+        onResynced = function(uid)
+            local entry = CurrentEntry(uid)
+            if entry and entry.connection then SendSnapshot(uid) end
+        end,
+        onConflict = function(uid, session, result)
+            if session.connection then
+                SendStatus(session.connection, "error", result.code, result.reason)
+                session.connection:Disconnect(100)
+            end
+            profileService_:DropSession(uid, session.generation)
+        end,
+    })
     idleService_ = IdleRuntimeService.New({
         operationQueue = operationQueue_,
         profileService = profileService_,
@@ -689,7 +703,12 @@ local function InitializeServices()
         onDelta = SendDelta,
         clock = os.time,
         log = function(message) print(message) end,
+        sharedStore = CloudMailStore.New({ gateway = gateway_, encodeJson = cjson.encode, decodeJson = cjson.decode }),
     })
+    adminService_.mailService = mailService_
+    -- Bound all legacy message reads/writes too; a missing callback cannot leave
+    -- login or the player operation queue permanently busy.
+    adminService_.gateway = mailService_.sharedStore:LegacyGateway()
 
     -- 个性签名变化后仅重建排行榜 blob（不重发完整快照）
     local function RefreshLeaderboardEntry(userId)

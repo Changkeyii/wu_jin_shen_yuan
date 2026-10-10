@@ -16,6 +16,8 @@ GameStateContracts.EVENT_TYPES = {
 GameStateContracts.PERSISTED_FIELDS = {
     "schemaVersion",
     "revision",
+    "storageVersion",
+    "storageWriteId",
     "updatedAt",
     "lastActiveAt",
     "pendingOfflineSeconds",

@@ -109,6 +109,8 @@ function Persistence.NewInitialState(now)
     return {
         schemaVersion = GameStateSchema.VERSION,
         revision = 0,
+        storageVersion = 0,
+        storageWriteId = "",
         updatedAt = now,
         lastActiveAt = now,
         pendingOfflineSeconds = 0,

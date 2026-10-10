@@ -164,6 +164,8 @@ PERSISTED_SCHEMA = {
     fields = {
         schemaVersion = { type = "integer", enum = { GameStateSchema.VERSION } },
         revision = SAFE_INTEGER_SCHEMA,
+        storageVersion = { type = "integer", min = 0, max = 2147483647 },
+        storageWriteId = { type = "string", maxLength = 128 },
         updatedAt = SAFE_INTEGER_SCHEMA,
         lastActiveAt = SAFE_INTEGER_SCHEMA,
         pendingOfflineSeconds = { type = "integer", min = 0, max = GameStateSchema.OFFLINE_MAX_SECONDS },

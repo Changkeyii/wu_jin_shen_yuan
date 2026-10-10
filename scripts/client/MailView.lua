@@ -42,6 +42,7 @@ local detailRebuild_ = nil
 local listWidget_ = nil
 local actionBarHost_ = nil
 local deliveryPending_ = false
+local syncState_, syncRetryAt_, syncError_ = "synced", 0, nil
 local refreshElapsed_ = 0
 local refreshInFlight_ = false
 local requestSerial_ = 0
@@ -324,7 +325,8 @@ local function BuildListContent()
                 alignItems = "center",
                 justifyContent = "center",
                 children = {
-                    Kit.Txt(deliveryPending_ and "邮件正在同步，将自动重试"
+                    Kit.Txt(deliveryPending_ and (syncState_ == "confirming" and "正在确认邮件保存结果"
+                        or (syncError_ and "邮件同步暂未完成，将自动重试" or "邮件正在同步，将自动重试"))
                         or (scope_ == "favorite" and "暂无收藏邮件" or "邮箱空空如也"), 26, C.textSecondary, {
                         width = "100%",
                         textAlign = "center",
@@ -516,6 +518,7 @@ function MailView.Show()
         end
         list_ = (response.data and response.data.items) or {}
         deliveryPending_ = response.data and response.data.deliveryPending == true or false
+        syncState_, syncRetryAt_, syncError_ = response.data.syncState, response.data.retryAt or 0, response.data.syncError
         summaryToken_ = SummaryToken()
         MailView.Present()
     end)
@@ -524,8 +527,10 @@ end
 function MailView.Present()
     if not root_ then return end
     local deliveryPending = deliveryPending_
+    local savedState, savedRetry, savedError = syncState_, syncRetryAt_, syncError_
     MailView.Hide()
     deliveryPending_ = deliveryPending
+    syncState_, syncRetryAt_, syncError_ = savedState, savedRetry, savedError
     local function Close()
         MailView.Hide()
     end
@@ -618,6 +623,7 @@ function MailView.Refresh()
         if response and response.ok then
             local wasPending = deliveryPending_
             deliveryPending_ = response.data and response.data.deliveryPending == true or false
+            syncState_, syncRetryAt_, syncError_ = response.data.syncState, response.data.retryAt or 0, response.data.syncError
             list_ = (response.data and response.data.items) or {}
             summaryToken_ = SummaryToken()
             if listWidget_ and #list_ > 0 and wasPending == deliveryPending_ then
@@ -637,7 +643,8 @@ function MailView.Update(dt)
     refreshElapsed_ = refreshElapsed_ + math.max(0, tonumber(dt) or 0)
     -- Retry unfinished delivery, or refresh when a server delta reports new mail.
     -- An unchanged open mailbox does not generate continuous cloud reads.
-    if refreshElapsed_ >= 5 and (deliveryPending_ or SummaryToken() ~= summaryToken_) then MailView.Refresh() end
+    if refreshElapsed_ >= 5 and ServerClock.Now() >= syncRetryAt_
+        and (deliveryPending_ or SummaryToken() ~= summaryToken_) then MailView.Refresh() end
 end
 
 function MailView.AttachRoot(root)

@@ -24,6 +24,8 @@ local ServerConfig = require("server.ServerConfig")
 ---@field broadcastPolling table<integer, boolean>
 ---@field broadcastLoadedAt integer?
 ---@field expiryElapsed number
+---@field sharedStore CloudMailStore?
+---@field sharedDelivery SharedMailDelivery?
 local MailService = {}
 MailService.__index = MailService
 
@@ -38,7 +40,7 @@ end
 function MailService.New(options)
     options = options or {}
     assert(options.profileService, "MailService requires profileService")
-    return setmetatable({
+    local self = setmetatable({
         profileService = options.profileService,
         log = options.log or print,
         clock = options.clock or os.time,
@@ -55,6 +57,13 @@ function MailService.New(options)
         broadcastPolling = {},
         broadcastLoadedAt = nil,
     }, MailService)
+    if options.sharedStore then
+        local Shared = require("server.services.SharedMailDelivery")
+        self.sharedStore = options.sharedStore
+        self.sharedDelivery = Shared.New({ store = options.sharedStore, profileService = self.profileService,
+            operationQueue = self.operationQueue, onDelta = self.onDelta, clock = self.clock, log = self.log })
+    end
+    return self
 end
 
 -- ============================================================================
@@ -70,7 +79,14 @@ end
 function MailService:List(userId, scope)
     local state = self.profileService:GetState(userId)
     if not state then return Result(false, {}, "PROFILE_NOT_LOADED", "玩家档案未加载") end
-    return Result(true, MailEngine.List(state, self.clock(), scope))
+    local data = MailEngine.List(state, self.clock(), scope)
+    if self.sharedDelivery then
+        local status = self.sharedDelivery:Status(userId)
+        data.deliveryPending = status.state ~= "synced"
+        data.syncState, data.retryAt, data.syncError = status.state, status.retryAt, status.error
+        data.deliveryProtocol = status.protocol
+    end
+    return Result(true, data)
 end
 
 function MailService:Detail(userId, mailId)
@@ -86,9 +102,21 @@ end
 -- 玩家操作（提交型）
 -- ============================================================================
 
+function MailService:_apply(userId, name, mutator, callback)
+    if self.sharedStore and name ~= "mail expiry" then self.sharedStore.foregroundUntil[userId] = self.clock() + 10 end
+    self.profileService:Apply(userId, name, function(state, now)
+        local proposal = mutator(state, now)
+        if self.sharedStore and proposal.ok and proposal.commit and proposal.commit.kind ~= "none" then
+            local allowed = self.sharedStore:Reserve("write", name ~= "mail expiry")
+            if not allowed then return PlayerTransition.Failure(state, now, "MAIL_RATE_DEFERRED", "邮件操作繁忙，请稍后重试") end
+        end
+        return proposal
+    end, callback)
+end
+
 --- 阅读标记（玩家手动/自动标记已读）
 function MailService:MarkRead(userId, mailId, onComplete)
-    self.profileService:Apply(userId, "mail read", function(state, now)
+    self:_apply(userId, "mail read", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local mail = MailEngine.Find(working.mails, mailId)
@@ -105,7 +133,7 @@ end
 
 --- 单封领取
 function MailService:Claim(userId, mailId, onComplete, resultSink)
-    self.profileService:Apply(userId, "mail claim", function(state, now)
+    self:_apply(userId, "mail claim", function(state, now)
         local proposal = MailEngine.Claim(state, mailId, now)
         if proposal.ok and proposal.state and type(resultSink) == "table" then
             MailEngine.Ensure(proposal.state)
@@ -135,7 +163,7 @@ end
 
 --- 一键领取
 function MailService:ClaimAll(userId, onComplete, resultSink)
-    self.profileService:Apply(userId, "mail claim all", function(state, now)
+    self:_apply(userId, "mail claim all", function(state, now)
         ---@type table
         local proposal = MailEngine.ClaimAll(state, now)
         if proposal.ok and proposal.state and type(resultSink) == "table" then
@@ -174,7 +202,7 @@ end
 
 --- 收藏 / 取消收藏
 function MailService:Favorite(userId, mailId, onComplete)
-    self.profileService:Apply(userId, "mail favorite", function(state, now)
+    self:_apply(userId, "mail favorite", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local ok, code = MailEngine.Favorite(working, mailId)
@@ -184,7 +212,7 @@ function MailService:Favorite(userId, mailId, onComplete)
 end
 
 function MailService:Unfavorite(userId, mailId, onComplete)
-    self.profileService:Apply(userId, "mail unfavorite", function(state, now)
+    self:_apply(userId, "mail unfavorite", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local ok, code = MailEngine.Unfavorite(working, mailId)
@@ -195,7 +223,7 @@ end
 
 --- 删除（普通）
 function MailService:Delete(userId, mailId, onComplete)
-    self.profileService:Apply(userId, "mail delete", function(state, now)
+    self:_apply(userId, "mail delete", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local ok, code = MailEngine.Delete(working, mailId, now)
@@ -209,7 +237,7 @@ end
 
 --- 收藏邮件确认后删除（取消收藏 + 删除）
 function MailService:UnfavoriteAndDelete(userId, mailId, onComplete)
-    self.profileService:Apply(userId, "mail unfavorite delete", function(state, now)
+    self:_apply(userId, "mail unfavorite delete", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local ok, code = MailEngine.UnfavoriteAndDelete(working, mailId, now)
@@ -223,7 +251,7 @@ end
 
 --- 一键删除已读
 function MailService:DeleteRead(userId, onComplete, resultSink)
-    self.profileService:Apply(userId, "mail delete read", function(state, now)
+    self:_apply(userId, "mail delete read", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local deleted = MailEngine.DeleteRead(working, now)
@@ -244,7 +272,7 @@ end
 ---   favorite?, bizOrderId?, batchId?, reason?, overduePolicy?,
 ---   attachments = [{ kind, currency/count | equipmentId/count }] }
 function MailService:SendMail(userId, spec, onComplete, resultSink)
-    self.profileService:Apply(userId, "mail send", function(state, now)
+    self:_apply(userId, "mail send", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local mail = MailEngine.Create(working, spec, now)
@@ -280,6 +308,7 @@ end
 --- 给单个玩家补发所有尚未送达的全服邮件（幂等：receivedBroadcasts 标记 + bizOrderId 双保险）。
 --- 在线投递与离线登录补发共用此函数；已送达的批次自动跳过。
 function MailService:_loadBroadcasts(onComplete)
+    if self.sharedStore then self.sharedStore:ReadPublic(onComplete, true); return end
     if not self.gateway then onComplete(Result(false, {}, "MAIL_CLOUD_UNAVAILABLE", "邮件云存储不可用")); return end
     if self.broadcastLoadedAt and self.clock() - self.broadcastLoadedAt < 5 then
         onComplete(Result(true, { entries = self.broadcasts })); return
@@ -338,7 +367,7 @@ function MailService:_deliverBroadcastEntries(userId, queue, onComplete)
         end
         local entry = queue[index]
         index = index + 1
-        self.profileService:Apply(userId, "mail broadcast", function(state, now)
+        self:_apply(userId, "mail broadcast", function(state, now)
             local working = PlayerTransition.Copy(state, now)
             MailEngine.Ensure(working)
             if type(working.receivedBroadcasts) ~= "table" then working.receivedBroadcasts = {} end
@@ -380,6 +409,7 @@ function MailService:_deliverBroadcastEntries(userId, queue, onComplete)
 end
 
 function MailService:DeliverBroadcasts(userId, onComplete)
+    if self.sharedDelivery then self.sharedDelivery:Sync(userId, onComplete, true); return end
     onComplete = onComplete or function() end
     if self.broadcastPolling[userId] then onComplete(Result(true, { status = "busy", pending = 1 })); return end
     local session = self.profileService:GetSession(userId)
@@ -416,6 +446,16 @@ end
 --- 创建一封全服邮件批次并立即投递给当前在线玩家；离线玩家登录时自动补发。
 --- spec 与 SendMail 一致（title/body/mailType/sender/favorite/expireAt/attachments 等）。
 function MailService:SendBroadcast(spec, onComplete, resultSink)
+    if self.sharedStore then
+        self.sharedStore:QueueBroadcast(spec, function(result)
+            if type(resultSink) == "table" then for key, value in pairs(result.data or {}) do resultSink[key] = value end end
+            if onComplete then onComplete(result) end
+            if result.ok then for _, uid in ipairs(self.profileService:OnlineUserIds()) do
+                self.sharedDelivery:Sync(uid, function() end, false)
+            end end
+        end)
+        return
+    end
     spec = type(spec) == "table" and spec or {}
     self.broadcastSeq = (self.broadcastSeq or 0) + 1
     local batchId = string.format("broadcast-%d-%s-%d", self.clock(), self.instanceNonce, self.broadcastSeq)
@@ -496,7 +536,7 @@ end
 -- ============================================================================
 
 function MailService:ForceExpire(userId, mailId, onComplete)
-    self.profileService:Apply(userId, "mail force expire", function(state, now)
+    self:_apply(userId, "mail force expire", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local mail = MailEngine.Find(working.mails, mailId)
@@ -509,7 +549,7 @@ function MailService:ForceExpire(userId, mailId, onComplete)
 end
 
 function MailService:CleanTest(userId, onComplete, resultSink)
-    self.profileService:Apply(userId, "mail clean test", function(state, now)
+    self:_apply(userId, "mail clean test", function(state, now)
         local working = PlayerTransition.Copy(state, now)
         MailEngine.Ensure(working)
         local removed = 0
@@ -540,15 +580,20 @@ end
 -- ============================================================================
 
 function MailService:Update(timeStep)
+    if self.sharedStore then self.sharedStore:Update() end
+    if self.sharedDelivery then self.sharedDelivery:Update(timeStep) end
     self.expiryElapsed = self.expiryElapsed + (timeStep or 0)
     if self.expiryElapsed < 30 then return end
     self.expiryElapsed = 0
-    for _, userId in ipairs(self.profileService:OnlineUserIds()) do
-        self:DeliverBroadcasts(userId, function(result)
+    local online = self.sharedDelivery and self.sharedDelivery:OnlineInSyncOrder() or self.profileService:OnlineUserIds()
+    for _, userId in ipairs(online) do
+        local function receive(result)
             if not result.ok then self.log("[Mail] broadcast sync failed uid=" .. tostring(userId) .. " code=" .. tostring(result.code)) end
-        end)
+        end
+        if self.sharedDelivery then self.sharedDelivery:Sync(userId, receive, false)
+        else self:DeliverBroadcasts(userId, receive) end
         local function expire(done)
-            self.profileService:Apply(userId, "mail expiry", function(state, now)
+            self:_apply(userId, "mail expiry", function(state, now)
                 local working = PlayerTransition.Copy(state, now)
                 MailEngine.Ensure(working)
                 local _, changed = MailEngine.ProcessExpiry(working, now)

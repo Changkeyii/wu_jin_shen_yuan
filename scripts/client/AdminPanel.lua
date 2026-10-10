@@ -114,7 +114,7 @@ local function SetStatus(response, onChanged)
         local data = response.data or {}
         if data.action == "send_mail" then
             local mailStatus = {
-                queued = "邮件已保存，等待玩家上线或同步后投递",
+                queued = "邮件已进入待派发队列",
                 applied = "个人邮件已投递",
                 alreadyApplied = "个人邮件已投递，无需重复发送",
                 rejected = "个人邮件投递失败",
@@ -129,11 +129,15 @@ local function SetStatus(response, onChanged)
             }
             status_ = entitlementStatus[status_] or status_
         end
+        if data.mailId then status_ = status_ .. "｜邮件ID " .. tostring(data.mailId) end
         if response.data and response.data.audit then audit_ = response.data.audit end
         if response.data and response.data.player then queriedPlayer_ = response.data.player end
     else
         statusKind_ = "error"
         status_ = (response and (response.reason or response.code)) or "请求失败"
+        if response and response.data and response.data.mailId then
+            status_ = status_ .. "｜邮件ID " .. tostring(response.data.mailId)
+        end
     end
     UI.Toast.Show(status_, {
         duration = 2.4,
@@ -478,6 +482,7 @@ function AdminPanel.Build(UI, options)
     -- 玩家管理页
     local querySection = Section(UI, "玩家查询", {
         Field(UI, "目标玩家编号", "targetUid", "玩家编号"),
+        Field(UI, "投递邮件ID（选填）", "mailId", "留空查询全部待派发邮件"),
         ButtonRow(UI, {
             UI.Button {
                 text = "查询玩家",
@@ -499,7 +504,8 @@ function AdminPanel.Build(UI, options)
                     if form_.targetUid == "" then
                         SetStatus({ ok = false, reason = "目标玩家编号不能为空" }, onChanged); return
                     end
-                    ServerClient.AdminMailDeliveryStatus(form_.targetUid, function(response) SetStatus(response, onChanged) end)
+                    ServerClient.AdminMailDeliveryStatus(form_.targetUid, function(response) SetStatus(response, onChanged) end,
+                        form_.mailId ~= "" and form_.mailId or nil)
                 end,
             },
         }),

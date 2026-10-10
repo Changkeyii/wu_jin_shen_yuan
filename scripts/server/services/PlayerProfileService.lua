@@ -9,6 +9,14 @@ local TutorialEngine = require("server.domain.TutorialEngine")
 -- 错误 string 的联合类型无法赋给运行时实际类型），此处按需关闭该诊断类型。
 ---@diagnostic disable: assign-type-mismatch
 
+---@class PlayerProfileService
+---@field repository table
+---@field clock fun(): integer
+---@field sessions table<integer, table>
+---@field offlineQuoteCounter integer
+---@field playTimeElapsed number
+---@field onResynced function
+---@field onConflict function
 local PlayerProfileService = {}
 PlayerProfileService.__index = PlayerProfileService
 
@@ -28,16 +36,32 @@ local function PrintValidationFailure(userId, stage, validationError)
         .. " path=" .. tostring(details and details.path or nil))
 end
 
+---@return PlayerProfileService
 function PlayerProfileService.New(options)
     options = options or {}
     assert(options.repository, "PlayerProfileService requires repository")
-    return setmetatable({
+    local self = setmetatable({
         repository = options.repository,
         clock = options.clock or os.time,
         sessions = {},
         offlineQuoteCounter = 0,
         playTimeElapsed = 0,
+        onResynced = options.onResynced or function() end,
+        onConflict = options.onConflict or function() end,
     }, PlayerProfileService)
+    self.repository.onReconciled = function(uid, result)
+        local session = self.sessions[uid]
+        if not session or not result.data.state then return end
+        session.state = result.data.state
+        session.persistedState = TableUtils.DeepCopy(result.data.state)
+        session.writeBlocked = false
+        session.offlineReceipts = {}
+        session.offlineQuoteToken = nil
+        self:FreezeOfflineReward(uid)
+        self.onResynced(uid)
+        if not session.connection then self.sessions[uid] = nil end
+    end
+    return self
 end
 
 PlayerProfileService.new = PlayerProfileService.New
@@ -56,7 +80,7 @@ function PlayerProfileService:_finishLoad(userId, state, ban, warning, onComplet
         onComplete(Result(false, {}, "OFFLINE_ACCRUAL_FAILED", tostring(proposalOrError)))
         return
     end
-    local proposal = proposalOrError
+    local proposal = proposalOrError --[[@as table]]
     print("[ProfileDiag] uid=" .. tostring(userId)
         .. " offlineAccrualComplete commit=" .. tostring(proposal.commit and proposal.commit.kind))
     if proposal.ok then
@@ -381,6 +405,10 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
         onComplete(Result(false, {}, "PROFILE_NOT_LOADED", "player profile is not loaded"))
         return
     end
+    if session.writing or session.writeBlocked or (self.repository.IsWriteBlocked and self.repository:IsWriteBlocked(userId)) then
+        onComplete(Result(false, {}, "WRITE_UNCONFIRMED", "存档正在保存或确认，请稍后重试")); return
+    end
+    local generation = session.generation
     local before = session.state
     local persistedBefore = session.persistedState or before
     if commandId and HasAppliedGmCommand(before, commandId) then
@@ -429,13 +457,34 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
 
     -- 领域层可附带跨域云操作（市场账本 / 对方信箱），与本次存档写入同批提交。
     local extraOperations = proposal.cloudOperations
+    session.writing = true
     self.repository:Commit(userId, persistedBefore, proposal.state, "abyss " .. tostring(operationName), function(commitResult)
+        local current = self.sessions[userId]
+        if current == session then session.writing = false end
         if not commitResult.ok then
+            if current == session and commitResult.code == "WRITE_UNCONFIRMED" then session.writeBlocked = true end
+            if current == session and commitResult.code == "PROFILE_CONFLICT" then
+                if session.generation == generation then
+                    session.writeBlocked = true
+                    session.ready = false
+                    self.onConflict(userId, session, commitResult)
+                elseif commitResult.data.conflictState then
+                    session.state = commitResult.data.conflictState
+                    session.persistedState = TableUtils.DeepCopy(session.state)
+                    self.onResynced(userId)
+                end
+            end
             onComplete(Result(false, { rollbackRevision = before.revision }, commitResult.code, commitResult.reason))
             return
         end
-        local current = self.sessions[userId]
-        if current ~= session then
+        if current ~= session or session.generation ~= generation then
+            if current == session then
+                -- A reconnect reused this object while the transaction ran.
+                -- Reconcile with the committed state but never clear the new connection.
+                session.state = proposal.state
+                session.persistedState = TableUtils.DeepCopy(proposal.state)
+                self.onResynced(userId)
+            end
             onComplete(Result(false, {}, "STALE_SESSION", "session changed while cloud transaction was pending"))
             return
         end
@@ -447,6 +496,7 @@ function PlayerProfileService:_apply(userId, operationName, commandId, mutator, 
             committed = true,
             alreadyApplied = false,
             market = proposal.market,
+            listIds = commitResult.data.listIds,
         }))
     end, extraOperations)
 end
@@ -456,6 +506,9 @@ function PlayerProfileService:ApplyRuntime(userId, operationName, mutator, onCom
     if not session or not session.state then
         onComplete(Result(false, {}, "PROFILE_NOT_LOADED", "玩家存档尚未加载"))
         return
+    end
+    if session.writing or session.writeBlocked then
+        onComplete(Result(false, {}, "WRITE_UNCONFIRMED", "存档正在保存或确认")); return
     end
     local before = session.state
     local ok, proposal = pcall(mutator, before, self.clock())
@@ -527,22 +580,30 @@ function PlayerProfileService:TouchAndDetach(userId, generation, onComplete)
         onComplete(Result(true, { detached = true, persisted = false }))
         return
     end
-    local before = session.state
-    local persistedBefore = session.persistedState or before
-    local proposal = touch(before, now)
-    if not proposal.ok or not proposal.commit or proposal.commit.kind == "none" then
-        self.sessions[userId] = nil
-        onComplete(Result(proposal.ok, { detached = true, persisted = false }, proposal.error and proposal.error.code, proposal.error and proposal.error.reason))
-        return
-    end
-    self.repository:Commit(userId, persistedBefore, proposal.state, "abyss disconnect checkpoint", function(result)
-        if self.sessions[userId] == session then self.sessions[userId] = nil end
+    self:Apply(userId, "disconnect checkpoint", function(state, timestamp)
+        local proposal = touch(state, timestamp)
+        if proposal.ok and proposal.commit and proposal.commit.kind == "none"
+            and not TableUtils.DeepEqual(state, session.persistedState) then
+            -- Runtime combat can finish in the same second as the previous cloud
+            -- save. Persist dirty progress even when TouchActive has no time delta.
+            local transition = require("server.domain.PlayerTransition")
+            proposal = transition.Finalize(state, transition.Copy(state, timestamp), timestamp,
+                "disconnect_checkpoint", {}, false, false)
+        end
+        return proposal
+    end, function(result)
+        if self.sessions[userId] == session and session.generation == generation
+            and result.code ~= "WRITE_UNCONFIRMED" then self.sessions[userId] = nil end
         if result.ok then
             onComplete(Result(true, { detached = true, persisted = true }))
         else
             onComplete(result)
         end
     end)
+end
+
+function PlayerProfileService:Update()
+    if self.repository.Update then self.repository:Update() end
 end
 
 function PlayerProfileService:DropSession(userId, generation)

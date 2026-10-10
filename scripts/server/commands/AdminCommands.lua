@@ -146,14 +146,15 @@ function AdminCommands.Register(router, adminService, services)
     }, ServerConfig.RATES.AdminMutation, AsyncAdmin(adminService, "set_ad_free")))
 
     router:Register(Definition("Admin.MailDeliveryStatus", {
-        type = "object", required = { "targetUid" }, allowUnknown = false, fields = { targetUid = UID },
+        type = "object", required = { "targetUid" }, allowUnknown = false, fields = { targetUid = UID,
+            mailId = { type = "string", minLength = 1, maxLength = 128, pattern = "^[%w%._:%-]+$" } },
     }, ServerConfig.RATES.AdminQuery, function(context, payload, done)
         if not services.mailService then
             done(false, { code = "MAIL_UNAVAILABLE", reason = "邮件系统暂不可用" })
         else
             adminService:InspectMailDelivery(context.uid, payload.targetUid, services.mailService, function(result)
                 done(result.ok, result)
-            end)
+            end, payload.mailId)
         end
         return CommandRouter.PENDING
     end))

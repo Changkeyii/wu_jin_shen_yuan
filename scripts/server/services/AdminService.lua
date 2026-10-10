@@ -24,6 +24,8 @@ local AdminMailDefinitions = require("shared.AdminMailDefinitions")
 ---@field resultPolling table<integer, boolean>
 ---@field legacyMailSessions table<integer, table>
 ---@field decodeJson function?
+---@field mailService MailService?
+---@field pollCursor integer?
 local AdminService = {}
 AdminService.__index = AdminService
 
@@ -337,6 +339,9 @@ function AdminService:_applyMutation(command, onComplete)
             return PlayerTransition.Finalize(state, working, now, "ad_free_changed", {}, false, false)
         end
     elseif command.action == "send_mail" then
+        if self.mailService and self.mailService.sharedDelivery then
+            self.mailService.sharedDelivery:DeliverLegacy(command, onComplete); return
+        end
         operationName = "GM send mail"
         mutator = function(state, now)
             local working = PlayerTransition.Copy(state, now)
@@ -554,6 +559,16 @@ if action == "audit" then self:GetAudit(actorUserId, onComplete); return end
     }
     if action == "ban" then self:_directBan(command, true, onComplete); return end
     if action == "unban" then self:_directBan(command, false, onComplete); return end
+    if action == "send_mail" and self.mailService and self.mailService.sharedStore then
+        self.mailService.sharedStore:QueuePersonal(targetUserId, "gm-mail:" .. command.commandId,
+            sanitized.spec, function(result)
+                onComplete(result)
+                if result.ok and self.profileService:IsOnline(targetUserId) then
+                    self.mailService.sharedDelivery:Sync(targetUserId, function() end, true)
+                end
+            end)
+        return
+    end
     if DurableAction(action) then
         -- Always persist first, including local online targets. A disconnect or
         -- instance restart between acceptance and delivery cannot lose the mail.
@@ -616,12 +631,13 @@ end
 
 -- A production administrator can inspect delivery from the running game even
 -- when development tools have no access to production logs or cloud data.
-function AdminService:InspectMailDelivery(actorUserId, targetUserId, mailService, onComplete)
+function AdminService:InspectMailDelivery(actorUserId, targetUserId, mailService, onComplete, mailId)
     if not self.adminPolicy:IsAdmin(actorUserId) then
         onComplete(Result(false, {}, "FORBIDDEN", "administrator permission required")); return
     end
     targetUserId = UserId(targetUserId)
     if not targetUserId then onComplete(Result(false, {}, "INVALID_UID", "target UID is invalid")); return end
+    if mailService.sharedDelivery then mailService.sharedDelivery:Inspect(targetUserId, mailId, onComplete); return end
     self.profileService:Inspect(targetUserId, function(profile)
         if not profile.ok then onComplete(profile); return end
         self:_loadInbox(targetUserId, function(inbox)
@@ -666,7 +682,7 @@ function AdminService:_loadInbox(targetUserId, onComplete)
     end
     local function recoverLegacy()
         if not session or self.legacyMailSessions[targetUserId] == session then finish(); return end
-        self.gateway:MessageGet(targetUserId, self.repository.Keys.GM_COMMAND, true, function(history)
+        local function inspectHistory(history)
             if not history.ok then failed("legacy_fetch", history); finish(); return end
             local candidates, actors, actorSeen, rejected, succeeded, receiptReadable = {}, {}, {}, {}, {}, {}
             for _, message in ipairs(history.data.messages or {}) do
@@ -725,6 +741,17 @@ function AdminService:_loadInbox(targetUserId, onComplete)
                 end)
             end
             nextReceipts()
+        end
+        self.gateway:MessageGet(targetUserId, self.repository.Keys.GM_COMMAND, true, function(history)
+            if not history.ok or not (self.mailService and self.mailService.sharedStore) then inspectHistory(history); return end
+            self.gateway:MessageGet(targetUserId, self.repository.Keys.PERSONAL_MAIL, true, function(personalHistory)
+                if not personalHistory.ok then failed("personal_history", personalHistory); inspectHistory(history); return end
+                for _, message in ipairs(personalHistory.data.messages or {}) do
+                    message.personalMail = true
+                    history.data.messages[#history.data.messages + 1] = message
+                end
+                inspectHistory(history)
+            end)
         end)
     end
     self.gateway:MessageGet(targetUserId, self.repository.Keys.GM_COMMAND, false, function(legacy)
@@ -769,8 +796,14 @@ end
 
 function AdminService:ProcessInbox(targetUserId, onComplete)
     if self.polling[targetUserId] then onComplete(Result(true, { status = "busy" })); return end
-    self.polling[targetUserId] = true
+    local session = self.profileService:GetSession(targetUserId)
+    local generation = session and session.generation
+    local token = {}; self.polling[targetUserId] = token
     self:_loadInbox(targetUserId, function(result)
+        if self.polling[targetUserId] ~= token then return end
+        if self.profileService:GetSession(targetUserId) ~= session or (session and session.generation ~= generation) then
+            self.polling[targetUserId] = nil; onComplete(Result(false, {}, "STALE_SESSION", "玩家连接已变化")); return
+        end
         if not result.ok then self.polling[targetUserId] = nil; onComplete(result); return end
         local messages = result.data.messages or {}
         local index = 0
@@ -783,11 +816,15 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
         local function finish(resultValue)
             if finished then return end
             finished = true
-            self.polling[targetUserId] = nil
+            if self.polling[targetUserId] == token then self.polling[targetUserId] = nil end
             onComplete(resultValue)
         end
 
         local function nextMessage()
+            if finished then return end
+            if self.profileService:GetSession(targetUserId) ~= session or (session and session.generation ~= generation) then
+                finish(Result(false, {}, "STALE_SESSION", "玩家连接已变化")); return
+            end
             index = index + 1
             local message = messages[index]
             if not message then
@@ -807,9 +844,11 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                 return
             end
             local valid = type(command) == "table"
+                and messageId ~= nil
                 and type(command.commandId) == "string"
                 and command.targetUid == targetUserId
                 and self.adminPolicy:IsAdmin(command.actorUid)
+                and (command.action ~= "send_mail" or (type(command.payload) == "table" and type(command.payload.spec) == "table"))
                 and (not message.personalMail or command.action == "send_mail")
                 and (not message.playerEntitlement or command.action == "set_ad_free")
             if not valid then
@@ -821,7 +860,10 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                 nextMessage()
                 return
             end
-            if message.legacyComplete then
+            command.messageId = messageId
+            command.messageKey = message.personalMail and self.repository.Keys.PERSONAL_MAIL or self.repository.Keys.GM_COMMAND
+            command.legacyComplete = message.legacyComplete
+            if message.legacyComplete and not (self.mailService and self.mailService.sharedDelivery) then
                 -- A durable success receipt remains proof after the player
                 -- claims/deletes a mail and the bounded ApplyOnce history rolls.
                 alreadyApplied = alreadyApplied + 1
@@ -860,6 +902,25 @@ function AdminService:ProcessInbox(targetUserId, onComplete)
                     else
                         applied = applied + 1
                     end
+                end
+                if command.action == "send_mail" and self.mailService and self.mailService.sharedDelivery then
+                    -- The transaction already stored an untrimmed handoff proof.
+                    -- Delete directly; do not hide it behind a failed MarkRead.
+                    self.gateway:MessageDelete(messageId, function(deleted)
+                        if not deleted.ok then pending = pending + 1; self.legacyMailSessions[targetUserId] = nil end
+                        if deleted.ok then
+                            local row = applyResult.data.handoff or { list_id = applyResult.data.listIds and applyResult.data.listIds.mailHandoff }
+                            if row.list_id or row.listId then
+                                self.mailService.sharedDelivery:_ack(targetUserId, row, function(acked)
+                                    if not acked.ok then pending = pending + 1 end
+                                    nextMessage()
+                                end)
+                                return
+                            end
+                        end
+                        nextMessage()
+                    end)
+                    return
                 end
                 self:_sendResult(command, applyResult, function(sendResult)
                     if not sendResult.ok then
@@ -982,14 +1043,22 @@ end
 
 function AdminService:Update(timeStep)
     self.pollElapsed = self.pollElapsed + (timeStep or 0)
-    if self.pollElapsed < 5 then return end
+    if self.pollElapsed < (self.mailService and self.mailService.sharedStore and 30 or 5) then return end
     self.pollElapsed = 0
     for userId, session in pairs(self.legacyMailSessions) do
         if self.profileService:GetSession(userId) ~= session then
             self.legacyMailSessions[userId] = nil
         end
     end
-    for _, userId in ipairs(self.profileService:OnlineUserIds()) do
+    local online = self.profileService:OnlineUserIds()
+    if self.mailService and self.mailService.sharedStore and #online > 0 then
+        table.sort(online)
+        local offset, rotated = self.pollCursor or 0, {}
+        for i = 1, #online do rotated[i] = online[(offset + i - 1) % #online + 1] end
+        self.pollCursor = (offset + 1) % #online
+        online = rotated
+    end
+    for _, userId in ipairs(online) do
         self:ProcessInbox(userId, function(result)
             if not result.ok then print("[AdminService] inbox poll failed: " .. tostring(result.reason)) end
         end)
